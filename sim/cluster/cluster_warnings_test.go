@@ -109,6 +109,63 @@ func TestClusterSimulator_ZeroCompletions_WarnsAfterRun(t *testing.T) {
 	}
 }
 
+func TestClusterSimulator_PDDeciderEmpty_WarnsAtStartup(t *testing.T) {
+	// GIVEN pool topology configured with empty pd-decider (defaults to never-disaggregate)
+	config := newTestDeploymentConfig(4)
+	config.PrefillInstances = 2
+	config.DecodeInstances = 2
+	config.PDDecider = ""
+	workload := newTestRequests(10)
+
+	// WHEN the cluster simulator is constructed
+	output := captureLogOutput(func() {
+		NewClusterSimulator(config, workload)
+	})
+
+	// THEN a warning about no disaggregation effect MUST be logged
+	if !strings.Contains(output, "no requests will be disaggregated") {
+		t.Errorf("expected pool-topology-but-no-effect warning for empty decider, got: %q", output)
+	}
+}
+
+func TestClusterSimulator_PDDeciderNever_WarnsAtStartup(t *testing.T) {
+	// GIVEN pool topology configured with decider="never"
+	config := newTestDeploymentConfig(4)
+	config.PrefillInstances = 2
+	config.DecodeInstances = 2
+	config.PDDecider = "never"
+	workload := newTestRequests(10)
+
+	// WHEN the cluster simulator is constructed
+	output := captureLogOutput(func() {
+		NewClusterSimulator(config, workload)
+	})
+
+	// THEN a warning about no disaggregation effect MUST be logged
+	if !strings.Contains(output, "no requests will be disaggregated") {
+		t.Errorf("expected pool-topology-but-no-effect warning for decider=%q, got: %q", "never", output)
+	}
+}
+
+func TestClusterSimulator_PDDeciderAlways_NoNeverWarning(t *testing.T) {
+	// GIVEN pool topology configured with a functional decider
+	config := newTestDeploymentConfig(4)
+	config.PrefillInstances = 2
+	config.DecodeInstances = 2
+	config.PDDecider = "always"
+	workload := newTestRequests(10)
+
+	// WHEN the cluster simulator is constructed
+	output := captureLogOutput(func() {
+		NewClusterSimulator(config, workload)
+	})
+
+	// THEN no "no requests will be disaggregated" warning MUST be logged
+	if strings.Contains(output, "no requests will be disaggregated") {
+		t.Errorf("unexpected no-effect warning for functional decider, got: %q", output)
+	}
+}
+
 func TestClusterSimulator_NormalOperation_NoPostSimWarning(t *testing.T) {
 	// GIVEN a properly configured cluster that will complete requests
 	config := newTestDeploymentConfig(1)

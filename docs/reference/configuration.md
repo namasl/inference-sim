@@ -142,6 +142,23 @@ Default (when `--routing-scorers` is empty): `prefix-affinity:3, queue-depth:2, 
 
 See [Cluster Architecture: Scorer Composition](../concepts/architecture.md#scorer-composition) for details on each scorer.
 
+## PD Disaggregation (Prefill-Decode Disaggregation)
+
+Optional pool topology that partitions instances into dedicated prefill and decode pools. When disabled (the default), all instances handle the full prefill+decode pipeline. When enabled, the cluster event pipeline gains a disaggregation decision stage between admission and routing.
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--prefill-instances` | int | 0 | Number of instances dedicated to prefill (0 = disabled). |
+| `--decode-instances` | int | 0 | Number of instances dedicated to decode (0 = disabled). |
+| `--pd-decider` | string | "never" | Disaggregation decider: `never`, `always`. |
+
+**Topology constraints:**
+- Both `--prefill-instances` and `--decode-instances` must be set together (or both omitted).
+- `--prefill-instances + --decode-instances` must not exceed `--num-instances`.
+- If `--prefill-instances + --decode-instances < --num-instances`, the remaining instances are unassigned and still receive requests via the standard routing policy.
+
+**Current behavior (PR1 scaffolding):** When pools are configured, a `DisaggregationDecisionEvent` is inserted into the pipeline between admission and routing. The disaggregation decision is logged but not yet acted upon — both `disaggregate=true` and `disaggregate=false` paths lead to the same routing policy. Pool-aware routing (separating prefill requests to the prefill pool) will be implemented in a subsequent PR.
+
 ## Scheduling and Priority
 
 Per-instance policies that control request ordering within the wait queue. Maps to `PolicyConfig`.

@@ -46,6 +46,38 @@ Examples:
 - See `scoreQueueDepth` for a scorer with edge case handling (uniform load)
 - See `newPrefixAffinityScorer` in `sim/routing_prefix_scorer.go` for a stateful scorer with observer and router-side cache
 
+## Adding New Disaggregation Deciders
+
+To add a new disaggregation strategy (e.g., `TokenThresholdDecider` that disaggregates long prompts):
+
+1. **Implement the `DisaggregationDecider` interface** in `sim/disaggregation.go`:
+   ```go
+   type TokenThresholdDecider struct{ Threshold int }
+   func (d *TokenThresholdDecider) Decide(req *Request) DisaggregationDecision {
+       return DisaggregationDecision{Disaggregate: len(req.InputTokens) >= d.Threshold}
+   }
+   ```
+   - `Decide()` receives only the `*Request` object — no cluster state or snapshots
+   - Decisions are request-local and synchronously fresh (INV-7: no stale signals)
+   - For cluster-level state, accept `*RouterState` via constructor parameter, not via the interface
+
+2. **Register in two places**:
+   - Add to `validDisaggregationDeciders` map in `sim/bundle.go`
+   - Add `case` to `NewDisaggregationDecider` factory switch in `sim/disaggregation.go`
+
+3. **Add CLI parameter** (if configurable): add a `--pd-threshold` flag in `cmd/root.go`, validate at CLI boundary (R3), and pass via `DeploymentConfig.PDDecider` or a new config field
+
+4. **Add behavioral tests** in `sim/disaggregation_test.go`:
+   - Test the invariant (e.g., requests above threshold always return `Disaggregate=true`)
+   - Test boundary values (exactly at threshold)
+   - Test the factory dispatches correctly via `NewDisaggregationDecider`
+
+**Extension friction: 3 touch points** (new type in `sim/disaggregation.go` + `case` in `NewDisaggregationDecider` factory + entry in `validDisaggregationDeciders` map in `sim/bundle.go`).
+
+Examples:
+- See `NeverDisaggregate` in `sim/disaggregation.go` for a minimal constant-return implementation
+- See `AlwaysDisaggregate` for the other constant (used in tests to verify pipeline wiring)
+
 ## Extending KV Cache Tiers
 
 To add a new KV tier (e.g., NVMe offloading for 3-tier GPU+CPU+NVMe):

@@ -12,9 +12,27 @@ import (
 
 // ClusterEvent defines the interface for cluster-level events.
 // These are separate from sim.Event and processed by ClusterSimulator's control plane.
+//
+// Priority() controls which event is extracted first when two events share the same timestamp.
+// Lower value = higher queue priority (extracted first):
+//   0=Arrival, 1=Admission, 2=Routing, 3=Disaggregation
+//
+// NOTE: these queue-priority numbers do NOT reflect the per-request processing order.
+// For a single request, the pipeline is: Arrival → Admission → Disaggregation → Routing.
+// Queue-priority values for these stages are 0, 1, 3, and 2 respectively.
+// Disaggregation's priority (3) is numerically higher than Routing's (2), so Routing events
+// for other requests at the same timestamp are extracted before Disaggregation events for
+// later requests — this is the correct cross-request ordering and does not affect
+// per-request causality.
+//
+// Per-request causality is guaranteed by timestamp sequencing: when PD pools are configured,
+// Admission schedules Disaggregation at time T (same timestamp); otherwise Admission
+// schedules Routing directly at T+routingLatency. When routingLatency==0, the newly-pushed
+// RoutingDecisionEvent has a larger seqID than any existing queue entry, so FIFO tie-breaking
+// ensures correct per-request order even at identical timestamps.
 type ClusterEvent interface {
 	Timestamp() int64
-	Priority() int // 0=Arrival, 1=Admission, 2=Routing
+	Priority() int
 	Execute(*ClusterSimulator)
 }
 
@@ -125,13 +143,26 @@ func (e *AdmissionDecisionEvent) Execute(cs *ClusterSimulator) {
 		cs.rejectedRequests++
 		return
 	}
-	heap.Push(&cs.clusterEvents, clusterEventEntry{
-		event: &RoutingDecisionEvent{
-			time:    e.time + cs.routingLatency,
-			request: e.request,
-		},
-		seqID: cs.nextSeqID(),
-	})
+
+	// BC-PD-4: When pools are configured, schedule DisaggregationDecisionEvent
+	// between admission and routing. When not configured, go directly to routing.
+	if cs.poolsConfigured() {
+		heap.Push(&cs.clusterEvents, clusterEventEntry{
+			event: &DisaggregationDecisionEvent{
+				time:    e.time,
+				request: e.request,
+			},
+			seqID: cs.nextSeqID(),
+		})
+	} else {
+		heap.Push(&cs.clusterEvents, clusterEventEntry{
+			event: &RoutingDecisionEvent{
+				time:    e.time + cs.routingLatency,
+				request: e.request,
+			},
+			seqID: cs.nextSeqID(),
+		})
+	}
 }
 
 // RoutingDecisionEvent represents the routing decision point for a request.
@@ -190,4 +221,35 @@ func (e *RoutingDecisionEvent) Execute(cs *ClusterSimulator) {
 
 	// Should never reach here (policy contract ensures valid target)
 	panic(fmt.Sprintf("RoutingDecisionEvent: invalid TargetInstance %q", decision.TargetInstance))
+}
+
+// DisaggregationDecisionEvent represents the PD disaggregation decision point for a request.
+// Queue priority 3 (lowest among cluster events): at the same timestamp, Disaggregation
+// events are processed after Arrival/Admission/Routing events for other requests.
+// For the same request, ordering is guaranteed by timestamp: Admission schedules this event
+// at time T, which then schedules Routing at time T+routingLatency.
+// Bifurcates: disaggregate=true → PrefillRoutingEvent, disaggregate=false → RoutingDecisionEvent.
+type DisaggregationDecisionEvent struct {
+	time    int64
+	request *sim.Request
+}
+
+func (e *DisaggregationDecisionEvent) Timestamp() int64 { return e.time }
+func (e *DisaggregationDecisionEvent) Priority() int     { return 3 }
+
+// Execute calls the disaggregation decider and schedules a RoutingDecisionEvent.
+// TODO: bifurcate on decision.Disaggregate — true → prefill pool routing,
+// false → default routing. Currently both paths schedule RoutingDecisionEvent.
+func (e *DisaggregationDecisionEvent) Execute(cs *ClusterSimulator) {
+	decision := cs.disaggregationDecider.Decide(e.request)
+	logrus.Debugf("[cluster] req %s: disaggregate=%v", e.request.ID, decision.Disaggregate)
+
+	// TODO: bifurcate here once pool-aware routing is implemented.
+	heap.Push(&cs.clusterEvents, clusterEventEntry{
+		event: &RoutingDecisionEvent{
+			time:    e.time + cs.routingLatency,
+			request: e.request,
+		},
+		seqID: cs.nextSeqID(),
+	})
 }
