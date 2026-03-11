@@ -82,29 +82,17 @@ func TestValidatePoolTopology(t *testing.T) {
 }
 
 // TestBuildPoolMembership verifies BC-PD-3: membership construction and correctness.
+// Uses actual instance IDs from the simulator rather than hardcoded names, so the
+// test survives changes to the instance ID naming convention.
 func TestBuildPoolMembership(t *testing.T) {
 	tests := []struct {
-		name          string
-		numInstances  int
-		prefill       int
-		decode        int
-		wantPrefill   []string
-		wantDecode    []string
+		name         string
+		numInstances int
+		prefill      int
+		decode       int
 	}{
-		{
-			name:         "2 prefill, 2 decode",
-			numInstances: 4,
-			prefill:      2, decode: 2,
-			wantPrefill: []string{"instance_0", "instance_1"},
-			wantDecode:  []string{"instance_2", "instance_3"},
-		},
-		{
-			name:         "1 prefill, 3 decode",
-			numInstances: 4,
-			prefill:      1, decode: 3,
-			wantPrefill: []string{"instance_0"},
-			wantDecode:  []string{"instance_1", "instance_2", "instance_3"},
-		},
+		{name: "2 prefill, 2 decode", numInstances: 4, prefill: 2, decode: 2},
+		{name: "1 prefill, 3 decode", numInstances: 4, prefill: 1, decode: 3},
 	}
 
 	for _, tc := range tests {
@@ -119,27 +107,30 @@ func TestBuildPoolMembership(t *testing.T) {
 				t.Errorf("membership size = %d, want %d", len(membership), tc.prefill+tc.decode)
 			}
 
-			// Verify prefill instances
-			for _, id := range tc.wantPrefill {
+			// Verify first tc.prefill instances are PoolRolePrefill.
+			// Uses actual instance IDs to avoid coupling to the naming convention.
+			for i := 0; i < tc.prefill; i++ {
+				id := string(cs.instances[i].ID())
 				role, ok := membership[id]
 				if !ok {
-					t.Errorf("instance %q not in membership", id)
+					t.Errorf("instance[%d] (id=%q) not in membership", i, id)
 					continue
 				}
 				if role != PoolRolePrefill {
-					t.Errorf("instance %q role = %v, want Prefill", id, role)
+					t.Errorf("instance[%d] (id=%q) role = %v, want Prefill", i, id, role)
 				}
 			}
 
-			// Verify decode instances
-			for _, id := range tc.wantDecode {
+			// Verify next tc.decode instances are PoolRoleDecode.
+			for i := tc.prefill; i < tc.prefill+tc.decode; i++ {
+				id := string(cs.instances[i].ID())
 				role, ok := membership[id]
 				if !ok {
-					t.Errorf("instance %q not in membership", id)
+					t.Errorf("instance[%d] (id=%q) not in membership", i, id)
 					continue
 				}
 				if role != PoolRoleDecode {
-					t.Errorf("instance %q role = %v, want Decode", id, role)
+					t.Errorf("instance[%d] (id=%q) role = %v, want Decode", i, id, role)
 				}
 			}
 		})

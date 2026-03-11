@@ -72,7 +72,7 @@ To add a new disaggregation strategy (e.g., `TokenThresholdDecider` that disaggr
    - Test boundary values (exactly at threshold)
    - Test the factory dispatches correctly via `NewDisaggregationDecider`
 
-**Extension friction: 2 touch points** (implementation + registration in `NewDisaggregationDecider` + `validDisaggregationDeciders`).
+**Extension friction: 3 touch points** (new type in `sim/disaggregation.go` + `case` in `NewDisaggregationDecider` factory + entry in `validDisaggregationDeciders` map in `sim/bundle.go`).
 
 Examples:
 - See `NeverDisaggregate` in `sim/disaggregation.go` for a minimal constant-return implementation
