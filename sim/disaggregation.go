@@ -10,6 +10,12 @@ type DisaggregationDecision struct {
 // DisaggregationDecider decides whether a request should be disaggregated
 // (sent to a dedicated prefill pool) or handled by the default routing pipeline.
 // Used by ClusterSimulator's event pipeline when pool topology is configured.
+//
+// Signal freshness (INV-7): Decide() receives only the request object — no RouterState
+// or cluster snapshots. Decisions are based on request-local state (e.g., input token
+// count, SLO class, tenant ID) and are therefore synchronously fresh (never stale).
+// Implementations that need cluster visibility must accept RouterState via a separate
+// constructor parameter, not by modifying this interface.
 type DisaggregationDecider interface {
 	Decide(req *Request) DisaggregationDecision
 }

@@ -226,12 +226,6 @@ func TestRoutingDecisionEvent_PriorityHint_ZeroDoesNotOverride(t *testing.T) {
 
 // TestFullPipelineOrdering_WithDisaggregation verifies event ordering with disaggregation event.
 func TestFullPipelineOrdering_WithDisaggregation(t *testing.T) {
-	type eventSpec struct {
-		timestamp int64
-		priority  int
-		seqID     int64
-	}
-
 	q := &ClusterEventQueue{}
 	heap.Init(q)
 
@@ -251,9 +245,11 @@ func TestFullPipelineOrdering_WithDisaggregation(t *testing.T) {
 	}
 }
 
-// TestAdmissionDecisionEvent_PoolsConfigured_SchedulesDisaggregation verifies BC-PD-4:
-// when pools are configured, AdmissionDecisionEvent schedules DisaggregationDecisionEvent.
-func TestAdmissionDecisionEvent_PoolsConfigured_SchedulesDisaggregation(t *testing.T) {
+// TestAdmissionDecisionEvent_PoolsConfigured_RequestsComplete verifies BC-PD-4:
+// when pools are configured, requests complete (disaggregation pipeline is wired end-to-end).
+// For scheduling-level verification (i.e., that DisaggregationDecisionEvent is enqueued),
+// see TestFullPipelineOrdering_WithDisaggregation which inspects event queue priority order.
+func TestAdmissionDecisionEvent_PoolsConfigured_RequestsComplete(t *testing.T) {
 	config := newTestDeploymentConfig(4)
 	config.PrefillInstances = 2
 	config.DecodeInstances = 2
@@ -292,9 +288,9 @@ func TestAdmissionDecisionEvent_PoolsConfigured_SchedulesDisaggregation(t *testi
 	}
 }
 
-// TestAdmissionDecisionEvent_NoPools_SchedulesRouting verifies BC-PD-4:
-// when pools are NOT configured, AdmissionDecisionEvent schedules RoutingDecisionEvent (unchanged).
-func TestAdmissionDecisionEvent_NoPools_SchedulesRouting(t *testing.T) {
+// TestAdmissionDecisionEvent_NoPools_RequestsComplete verifies BC-PD-4:
+// when pools are NOT configured, requests complete via the standard (Admission → Routing) path.
+func TestAdmissionDecisionEvent_NoPools_RequestsComplete(t *testing.T) {
 	config := newTestDeploymentConfig(2)
 	// PrefillInstances and DecodeInstances are 0 (default)
 
@@ -315,9 +311,9 @@ func TestAdmissionDecisionEvent_NoPools_SchedulesRouting(t *testing.T) {
 	}
 }
 
-// TestDisaggregationDecisionEvent_SchedulesRouting verifies that
-// DisaggregationDecisionEvent.Execute always schedules RoutingDecisionEvent in PR1.
-func TestDisaggregationDecisionEvent_SchedulesRouting(t *testing.T) {
+// TestDisaggregationDecisionEvent_RequestsComplete verifies that requests complete
+// when disaggregation is enabled with NeverDisaggregate — both paths reach RoutingDecisionEvent in PR1.
+func TestDisaggregationDecisionEvent_RequestsComplete(t *testing.T) {
 	config := newTestDeploymentConfig(4)
 	config.PrefillInstances = 2
 	config.DecodeInstances = 2
@@ -339,5 +335,38 @@ func TestDisaggregationDecisionEvent_SchedulesRouting(t *testing.T) {
 	if total != numRequests {
 		t.Errorf("INV-1 request conservation: completed(%d) + queued(%d) + running(%d) + dropped(%d) = %d, want %d",
 			m.CompletedRequests, m.StillQueued, m.StillRunning, m.DroppedUnservable, total, numRequests)
+	}
+}
+
+// TestDisaggregationPipeline_BehavioralEquivalence verifies that PR1 disaggregation
+// is transparent: enabling pools+NeverDisaggregate produces identical completion counts
+// as the standard (no-pools) path for the same workload and seed.
+// This ensures PR1 scaffolding has zero functional effect on simulation outcomes.
+func TestDisaggregationPipeline_BehavioralEquivalence(t *testing.T) {
+	const numRequests = 10
+
+	// Baseline: standard path (no disaggregation)
+	baseConfig := newTestDeploymentConfig(4)
+	baseCS := NewClusterSimulator(baseConfig, newTestRequests(numRequests))
+	mustRun(t, baseCS)
+	baseMetrics := baseCS.AggregatedMetrics()
+
+	// Disaggregated path: pools configured, NeverDisaggregate (PR1 scaffolding)
+	disaggConfig := newTestDeploymentConfig(4)
+	disaggConfig.PrefillInstances = 2
+	disaggConfig.DecodeInstances = 2
+	disaggConfig.PDDecider = "never"
+	disaggCS := NewClusterSimulator(disaggConfig, newTestRequests(numRequests))
+	mustRun(t, disaggCS)
+	disaggMetrics := disaggCS.AggregatedMetrics()
+
+	// PR1 behavioral equivalence: same completion counts (disaggregation is transparent)
+	if baseMetrics.CompletedRequests != disaggMetrics.CompletedRequests {
+		t.Errorf("behavioral equivalence: base completed=%d, disagg completed=%d — disaggregation pipeline changed outcomes",
+			baseMetrics.CompletedRequests, disaggMetrics.CompletedRequests)
+	}
+	if baseMetrics.StillQueued != disaggMetrics.StillQueued {
+		t.Errorf("behavioral equivalence: base queued=%d, disagg queued=%d",
+			baseMetrics.StillQueued, disaggMetrics.StillQueued)
 	}
 }

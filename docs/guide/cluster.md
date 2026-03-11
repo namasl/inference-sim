@@ -107,6 +107,42 @@ The cluster uses `(timestamp, priority, seqID)` ordering for deterministic event
 
 BLIS is work-conserving (INV-8): it never idles while requests wait. After every step completion, if the WaitQ has requests, a new StepEvent is immediately scheduled. Real systems may have scheduling delays not modeled here.
 
+## PD Disaggregation
+
+BLIS supports optional prefill-decode disaggregation: partitioning the cluster into dedicated prefill instances (which process the input prompt) and decode instances (which generate output tokens). This models architectures like [Mooncake](https://arxiv.org/abs/2407.00079) and Splitwise that separate these two workload phases.
+
+### Enabling Disaggregation
+
+```bash
+./blis run --model meta-llama/llama-3.1-8b-instruct \
+  --num-instances 4 \
+  --prefill-instances 2 \
+  --decode-instances 2 \
+  --pd-decider always
+```
+
+### Pool Topology Rules
+
+| Rule | Description |
+|------|-------------|
+| Both or neither | `--prefill-instances` and `--decode-instances` must both be set or both omitted. |
+| Sum constraint | `prefill + decode ≤ num-instances`. |
+| Instance assignment | Instances `0..prefill-1` → prefill pool; `prefill..prefill+decode-1` → decode pool. |
+| Unassigned instances | If `prefill + decode < num-instances`, remaining instances are unassigned and receive requests via the standard routing policy. |
+
+### Disaggregation Deciders
+
+| Name | Behavior |
+|------|---------|
+| `never` (default) | Never disaggregate — all requests go through standard routing. |
+| `always` | Always disaggregate — marks every request for disaggregated routing. |
+
+Custom deciders implement `sim.DisaggregationDecider`. See [Extension Recipes](../contributing/extension-recipes.md#adding-new-disaggregation-deciders).
+
+### Current Limitations (PR1 Scaffolding)
+
+The disaggregation pipeline is available but pool-aware routing is not yet implemented. Both `disaggregate=true` and `disaggregate=false` currently lead to the same (pool-unfiltered) routing policy. Enabling disaggregation has zero effect on simulation outcomes until pool-aware routing is implemented in a subsequent PR. Use this configuration to validate topology constraints and pipeline wiring.
+
 ## Further Reading
 
 - [Cluster Architecture](../concepts/architecture.md) — internal mechanics of the shared-clock event loop

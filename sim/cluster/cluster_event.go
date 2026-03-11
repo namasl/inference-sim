@@ -17,8 +17,14 @@ import (
 // Priority values: 0=Arrival, 1=Admission, 2=Routing, 3=Disaggregation.
 // Note: this is queue-priority order, not the per-request pipeline stage order.
 // For a single request, the pipeline is: Arrival → Admission → Disaggregation → Routing.
-// This is preserved because each stage schedules the next at a future (or equal) timestamp,
-// and Disaggregation (priority 3) never conflicts with Routing (priority 2) for the same request.
+// Per-request ordering is guaranteed by timestamp sequencing: each stage schedules the next
+// at a strictly future (or equal) timestamp, so the heap extracts them in pipeline order
+// regardless of priority. Priority values only affect ordering across different requests at
+// the same timestamp (e.g., a Disaggregation event for request A at time T is processed after
+// Routing events for other requests at the same time T).
+// When routingLatency==0, DisaggregationDecisionEvent at time T schedules RoutingDecisionEvent
+// also at time T; per-request ordering still holds because the newly-pushed event has a
+// larger seqID than any already-queued event and is extracted by FIFO tie-breaking.
 type ClusterEvent interface {
 	Timestamp() int64
 	Priority() int

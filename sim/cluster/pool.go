@@ -33,9 +33,11 @@ func (r PoolRole) String() string {
 //   - only one of prefill/decode is set (both must be set or neither)
 //   - prefill + decode exceeds total instances
 //
-// When prefill + decode < total, the remaining instances are unassigned and
-// will not participate in disaggregated routing. They may still serve requests
-// via the standard (non-disaggregated) path if NeverDisaggregate is configured.
+// When prefill + decode < total, the remaining instances are unassigned (no
+// PoolRole entry in the membership map). In PR1, unassigned instances are still
+// included in routing snapshots and can receive requests via the standard routing
+// policy. PR2 will filter snapshots by pool role so that routing decisions only
+// target instances appropriate for the current disaggregation path.
 func ValidatePoolTopology(prefill, decode, total int) error {
 	if prefill < 0 {
 		return fmt.Errorf("prefill-instances must be >= 0, got %d", prefill)
