@@ -13,18 +13,23 @@ import (
 // ClusterEvent defines the interface for cluster-level events.
 // These are separate from sim.Event and processed by ClusterSimulator's control plane.
 //
-// Priority() controls queue ordering within the same timestamp: lower value = processed first.
-// Priority values: 0=Arrival, 1=Admission, 2=Routing, 3=Disaggregation.
-// Note: this is queue-priority order, not the per-request pipeline stage order.
+// Priority() controls which event is extracted first when two events share the same timestamp.
+// Lower value = higher queue priority (extracted first):
+//   0=Arrival, 1=Admission, 2=Routing, 3=Disaggregation
+//
+// NOTE: these queue-priority numbers do NOT reflect the per-request processing order.
 // For a single request, the pipeline is: Arrival → Admission → Disaggregation → Routing.
-// Per-request ordering is guaranteed by timestamp sequencing: each stage schedules the next
-// at a strictly future (or equal) timestamp, so the heap extracts them in pipeline order
-// regardless of priority. Priority values only affect ordering across different requests at
-// the same timestamp (e.g., a Disaggregation event for request A at time T is processed after
-// Routing events for other requests at the same time T).
-// When routingLatency==0, DisaggregationDecisionEvent at time T schedules RoutingDecisionEvent
-// also at time T; per-request ordering still holds because the newly-pushed event has a
-// larger seqID than any already-queued event and is extracted by FIFO tie-breaking.
+// Queue-priority values for these stages are 0, 1, 3, and 2 respectively.
+// Disaggregation's priority (3) is numerically higher than Routing's (2), so Routing events
+// for other requests at the same timestamp are extracted before Disaggregation events for
+// later requests — this is the correct cross-request ordering and does not affect
+// per-request causality.
+//
+// Per-request causality is guaranteed by timestamp sequencing: when PD pools are configured,
+// Admission schedules Disaggregation at time T (same timestamp); otherwise Admission
+// schedules Routing directly at T+routingLatency. When routingLatency==0, the newly-pushed
+// RoutingDecisionEvent has a larger seqID than any existing queue entry, so FIFO tie-breaking
+// ensures correct per-request order even at identical timestamps.
 type ClusterEvent interface {
 	Timestamp() int64
 	Priority() int
@@ -233,14 +238,13 @@ func (e *DisaggregationDecisionEvent) Timestamp() int64 { return e.time }
 func (e *DisaggregationDecisionEvent) Priority() int     { return 3 }
 
 // Execute calls the disaggregation decider and schedules a RoutingDecisionEvent.
-// In PR1, the decider's decision is logged but both paths lead to routing.
+// TODO: bifurcate on decision.Disaggregate — true → prefill pool routing,
+// false → default routing. Currently both paths schedule RoutingDecisionEvent.
 func (e *DisaggregationDecisionEvent) Execute(cs *ClusterSimulator) {
 	decision := cs.disaggregationDecider.Decide(e.request)
 	logrus.Debugf("[cluster] req %s: disaggregate=%v", e.request.ID, decision.Disaggregate)
 
-	// PR1: Both paths schedule RoutingDecisionEvent regardless of decision.
-	// PR2 will bifurcate: disaggregate=true → prefill pool routing,
-	// disaggregate=false → default routing.
+	// TODO: bifurcate here once pool-aware routing is implemented.
 	heap.Push(&cs.clusterEvents, clusterEventEntry{
 		event: &RoutingDecisionEvent{
 			time:    e.time + cs.routingLatency,

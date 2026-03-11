@@ -94,8 +94,13 @@ func NewClusterSimulator(config DeploymentConfig, requests []*sim.Request) *Clus
 		}
 		cs.poolMembership = BuildPoolMembership(instances, config.PrefillInstances, config.DecodeInstances)
 		cs.disaggregationDecider = sim.NewDisaggregationDecider(config.PDDecider)
-		logrus.Infof("[cluster] PD disaggregation enabled: %d prefill, %d decode instances, decider=%q",
-			config.PrefillInstances, config.DecodeInstances, config.PDDecider)
+		if config.PDDecider == "" || config.PDDecider == "never" {
+			logrus.Warnf("[cluster] pool topology configured (prefill=%d, decode=%d) but decider=%q — no requests will be disaggregated; pool assignments have no routing effect",
+				config.PrefillInstances, config.DecodeInstances, config.PDDecider)
+		} else {
+			logrus.Infof("[cluster] PD disaggregation enabled: %d prefill, %d decode instances, decider=%q",
+				config.PrefillInstances, config.DecodeInstances, config.PDDecider)
+		}
 	}
 
 	// Startup warning: horizon too small for pipeline (BC-1)
