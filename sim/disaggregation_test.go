@@ -1,7 +1,6 @@
 package sim
 
 import (
-	"fmt"
 	"testing"
 )
 
@@ -37,15 +36,19 @@ func TestDisaggregationDecider_Interface(t *testing.T) {
 	var _ DisaggregationDecider = &AlwaysDisaggregate{}
 }
 
-// TestNewDisaggregationDecider_Factory verifies factory dispatches correctly.
+// TestNewDisaggregationDecider_Factory verifies factory dispatches to the correct behavior.
+// GIVEN a named decider
+// WHEN Decide() is called
+// THEN the decision matches the expected disaggregation behavior for that name.
 func TestNewDisaggregationDecider_Factory(t *testing.T) {
+	req := &Request{ID: "req-1", InputTokens: make([]int, 100)}
 	tests := []struct {
-		name     string
-		wantType string
+		name             string
+		wantDisaggregate bool
 	}{
-		{"", "*sim.NeverDisaggregate"},
-		{"never", "*sim.NeverDisaggregate"},
-		{"always", "*sim.AlwaysDisaggregate"},
+		{"", false},      // empty string → NeverDisaggregate
+		{"never", false}, // explicit never → NeverDisaggregate
+		{"always", true}, // always → AlwaysDisaggregate
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -53,9 +56,10 @@ func TestNewDisaggregationDecider_Factory(t *testing.T) {
 			if decider == nil {
 				t.Fatal("NewDisaggregationDecider returned nil")
 			}
-			gotType := fmt.Sprintf("%T", decider)
-			if gotType != tc.wantType {
-				t.Errorf("NewDisaggregationDecider(%q) type = %s, want %s", tc.name, gotType, tc.wantType)
+			got := decider.Decide(req).Disaggregate
+			if got != tc.wantDisaggregate {
+				t.Errorf("NewDisaggregationDecider(%q).Decide(req).Disaggregate = %v, want %v",
+					tc.name, got, tc.wantDisaggregate)
 			}
 		})
 	}

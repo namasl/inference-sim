@@ -32,6 +32,10 @@ func (r PoolRole) String() string {
 //   - prefill or decode is negative
 //   - only one of prefill/decode is set (both must be set or neither)
 //   - prefill + decode exceeds total instances
+//
+// When prefill + decode < total, the remaining instances are unassigned and
+// will not participate in disaggregated routing. They may still serve requests
+// via the standard (non-disaggregated) path if NeverDisaggregate is configured.
 func ValidatePoolTopology(prefill, decode, total int) error {
 	if prefill < 0 {
 		return fmt.Errorf("prefill-instances must be >= 0, got %d", prefill)
@@ -55,8 +59,12 @@ func ValidatePoolTopology(prefill, decode, total int) error {
 
 // BuildPoolMembership constructs an immutable map of instance ID → PoolRole.
 // Instances 0..prefill-1 are assigned PoolRolePrefill, prefill..prefill+decode-1 are PoolRoleDecode.
-// Caller must validate prefill+decode <= len(instances) before calling.
+// Instances beyond prefill+decode are unassigned (no pool role entry in the map).
+// Panics if prefill+decode > len(instances) — callers must validate via ValidatePoolTopology first.
 func BuildPoolMembership(instances []*InstanceSimulator, prefill, decode int) map[string]PoolRole {
+	if prefill+decode > len(instances) {
+		panic(fmt.Sprintf("BuildPoolMembership: prefill+decode (%d) exceeds len(instances) (%d)", prefill+decode, len(instances)))
+	}
 	membership := make(map[string]PoolRole, prefill+decode)
 	for i := 0; i < prefill; i++ {
 		membership[string(instances[i].ID())] = PoolRolePrefill

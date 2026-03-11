@@ -12,9 +12,16 @@ import (
 
 // ClusterEvent defines the interface for cluster-level events.
 // These are separate from sim.Event and processed by ClusterSimulator's control plane.
+//
+// Priority() controls queue ordering within the same timestamp: lower value = processed first.
+// Priority values: 0=Arrival, 1=Admission, 2=Routing, 3=Disaggregation.
+// Note: this is queue-priority order, not the per-request pipeline stage order.
+// For a single request, the pipeline is: Arrival → Admission → Disaggregation → Routing.
+// This is preserved because each stage schedules the next at a future (or equal) timestamp,
+// and Disaggregation (priority 3) never conflicts with Routing (priority 2) for the same request.
 type ClusterEvent interface {
 	Timestamp() int64
-	Priority() int // 0=Arrival, 1=Admission, 2=Routing, 3=Disaggregation
+	Priority() int
 	Execute(*ClusterSimulator)
 }
 
@@ -206,9 +213,11 @@ func (e *RoutingDecisionEvent) Execute(cs *ClusterSimulator) {
 }
 
 // DisaggregationDecisionEvent represents the PD disaggregation decision point for a request.
-// Priority 3: processed after routing events at the same timestamp.
-// In PR1, both paths (disaggregate=true/false) schedule RoutingDecisionEvent.
-// PR2 will add actual bifurcation (prefill routing vs decode routing).
+// Queue priority 3 (lowest among cluster events): at the same timestamp, Disaggregation
+// events are processed after Arrival/Admission/Routing events for other requests.
+// For the same request, ordering is guaranteed by timestamp: Admission schedules this event
+// at time T, which then schedules Routing at time T+routingLatency.
+// Bifurcates: disaggregate=true → PrefillRoutingEvent, disaggregate=false → RoutingDecisionEvent.
 type DisaggregationDecisionEvent struct {
 	time    int64
 	request *sim.Request

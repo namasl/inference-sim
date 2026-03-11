@@ -13,6 +13,8 @@ import (
 )
 
 // newTestDeploymentConfig creates a DeploymentConfig suitable for testing.
+// PrefillInstances, DecodeInstances, and PDDecider are intentionally zero/empty:
+// zero values disable PD disaggregation (BC-PD-1). Tests that need PD must set these fields.
 func newTestDeploymentConfig(numInstances int) DeploymentConfig {
 	return DeploymentConfig{
 		SimConfig: sim.SimConfig{

@@ -171,6 +171,9 @@ func TestBuildPoolMembership_Immutability(t *testing.T) {
 }
 
 // TestClusterSimulator_WithPools verifies that pool topology is wired into ClusterSimulator.
+// GIVEN PrefillInstances=2 and DecodeInstances=2 in config
+// WHEN ClusterSimulator is constructed
+// THEN poolsConfigured() returns true and PoolMembership() contains all 4 instances.
 func TestClusterSimulator_WithPools(t *testing.T) {
 	config := newTestDeploymentConfig(4)
 	config.PrefillInstances = 2
@@ -185,15 +188,17 @@ func TestClusterSimulator_WithPools(t *testing.T) {
 	if len(cs.PoolMembership()) != 4 {
 		t.Errorf("PoolMembership() size = %d, want 4", len(cs.PoolMembership()))
 	}
-	if cs.disaggregationDecider == nil {
-		t.Error("disaggregationDecider should be non-nil when pools are configured")
-	}
+	// Behavioral verification: poolsConfigured() is the observable indicator that
+	// disaggregation is active. Full behavioral coverage is in disaggregation_test.go.
 }
 
 // TestClusterSimulator_WithoutPools verifies BC-PD-4: no pool topology when disabled.
+// GIVEN PrefillInstances=0 and DecodeInstances=0 (zero values, default)
+// WHEN ClusterSimulator is constructed
+// THEN poolsConfigured() returns false and PoolMembership() is nil.
 func TestClusterSimulator_WithoutPools(t *testing.T) {
 	config := newTestDeploymentConfig(4)
-	// PrefillInstances and DecodeInstances are 0 (zero values)
+	// PrefillInstances and DecodeInstances are 0 (zero values = PD disaggregation disabled)
 
 	cs := NewClusterSimulator(config, nil)
 
@@ -202,9 +207,6 @@ func TestClusterSimulator_WithoutPools(t *testing.T) {
 	}
 	if cs.PoolMembership() != nil {
 		t.Errorf("PoolMembership() should be nil, got %v", cs.PoolMembership())
-	}
-	if cs.disaggregationDecider != nil {
-		t.Error("disaggregationDecider should be nil when pools are not configured")
 	}
 }
 
