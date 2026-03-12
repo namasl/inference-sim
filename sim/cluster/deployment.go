@@ -28,6 +28,24 @@ type DeploymentConfig struct {
 	// When > 0, all Prometheus-sourced signals (QueueDepth, BatchSize, KVUtilization)
 	// use Periodic refresh with this interval (microseconds). 0 = Immediate (default).
 	SnapshotRefreshInterval int64
+
+	// PD disaggregation configuration (PR1)
+	// When both PrefillInstances and DecodeInstances are 0, disaggregation is disabled
+	// and the pipeline is unchanged (BC-PD-1).
+	PrefillInstances int    // Number of instances dedicated to prefill (0 = disabled)
+	DecodeInstances  int    // Number of instances dedicated to decode (0 = disabled)
+	PDDecider         string // Disaggregation decider: "" or "never" (default), "always", "prefix-threshold"
+	PDPrefixThreshold int    // Non-cached token threshold for prefix-threshold decider (>= 0, default 512 from CLI)
+
+	// PD KV transfer configuration (PR2)
+	PDTransferBandwidthGBps float64 // Inter-instance KV transfer bandwidth in GB/s (default 25.0)
+	PDTransferBaseLatencyMs float64 // Inter-instance KV transfer base latency in ms (default 0.05)
+	PDKVBytesPerToken       int64   // KV cache bytes per token for transfer duration (default 512)
+
+	// Per-pool routing scorer configuration (PR2)
+	// When nil, both pools use the main RoutingScorerConfigs.
+	PrefillScorerConfigs []sim.ScorerConfig // Scorer configs for prefill pool routing
+	DecodeScorerConfigs  []sim.ScorerConfig // Scorer configs for decode pool routing
 }
 
 // ToSimConfig returns the embedded SimConfig for per-instance construction.

@@ -142,6 +142,7 @@ func TestClusterEventPriorities(t *testing.T) {
 		{"ClusterArrivalEvent", &ClusterArrivalEvent{time: 0}, 0},
 		{"AdmissionDecisionEvent", &AdmissionDecisionEvent{time: 0}, 1},
 		{"RoutingDecisionEvent", &RoutingDecisionEvent{time: 0}, 2},
+		{"DisaggregationDecisionEvent", &DisaggregationDecisionEvent{time: 0}, 3},
 	}
 
 	for _, tc := range tests {
@@ -220,5 +221,132 @@ func TestRoutingDecisionEvent_PriorityHint_ZeroDoesNotOverride(t *testing.T) {
 	// All requests completed with default priority behavior
 	if cs.AggregatedMetrics().CompletedRequests == 0 {
 		t.Fatal("expected at least one completed request")
+	}
+}
+
+// TestFullPipelineOrdering_WithDisaggregation verifies event ordering with disaggregation event.
+func TestFullPipelineOrdering_WithDisaggregation(t *testing.T) {
+	type eventSpec struct {
+		timestamp int64
+		priority  int
+		seqID     int64
+	}
+
+	q := &ClusterEventQueue{}
+	heap.Init(q)
+
+	// Push all 4 event types at same timestamp
+	heap.Push(q, clusterEventEntry{event: &DisaggregationDecisionEvent{time: 100}, seqID: 3})
+	heap.Push(q, clusterEventEntry{event: &RoutingDecisionEvent{time: 100, request: &sim.Request{}}, seqID: 2})
+	heap.Push(q, clusterEventEntry{event: &AdmissionDecisionEvent{time: 100, request: &sim.Request{}}, seqID: 1})
+	heap.Push(q, clusterEventEntry{event: &ClusterArrivalEvent{time: 100, request: &sim.Request{}}, seqID: 0})
+
+	// Expected order: Arrival(0) → Admission(1) → Routing(2) → Disaggregation(3)
+	expectedPriorities := []int{0, 1, 2, 3}
+	for i, wantPrio := range expectedPriorities {
+		entry := heap.Pop(q).(clusterEventEntry)
+		if entry.event.Priority() != wantPrio {
+			t.Errorf("pop %d: priority = %d, want %d", i, entry.event.Priority(), wantPrio)
+		}
+	}
+}
+
+// TestAdmissionDecisionEvent_PoolsConfigured_SchedulesDisaggregation verifies BC-PD-4:
+// when pools are configured, AdmissionDecisionEvent schedules DisaggregationDecisionEvent.
+func TestAdmissionDecisionEvent_PoolsConfigured_SchedulesDisaggregation(t *testing.T) {
+	config := newTestDeploymentConfig(4)
+	config.PrefillInstances = 2
+	config.DecodeInstances = 2
+	config.PDDecider = "always"
+	config.PDTransferBandwidthGBps = 25.0
+	config.PDTransferBaseLatencyMs = 0.05
+	config.PDKVBytesPerToken = 512
+
+	numRequests := 3
+	cs := NewClusterSimulator(config, newTestRequests(numRequests))
+
+	// Run the full simulation — verifies no panics with disaggregation in the pipeline
+	mustRun(t, cs)
+
+	m := cs.AggregatedMetrics()
+	if m.CompletedRequests == 0 {
+		t.Fatal("expected at least one completed request with pools configured")
+	}
+
+	// INV-1: Request conservation (with disaggregation, sub-requests are counted)
+	// Each parent produces 1 prefill sub-request + 1 decode sub-request = 2 completed per parent.
+	total := m.CompletedRequests + m.StillQueued + m.StillRunning + m.DroppedUnservable
+	expectedSubRequests := numRequests * 2 // prefill + decode per parent
+	if total != expectedSubRequests {
+		t.Errorf("INV-1 request conservation: completed(%d) + queued(%d) + running(%d) + dropped(%d) = %d, want %d",
+			m.CompletedRequests, m.StillQueued, m.StillRunning, m.DroppedUnservable, total, expectedSubRequests)
+	}
+
+	// INV-5: Causality — for every completed request with TTFT, E2E >= TTFT.
+	// Decode sub-requests (suffix "_decode") skip prefill and do not record TTFT (by design).
+	for reqID, e2e := range m.RequestE2Es {
+		ttft, hasTTFT := m.RequestTTFTs[reqID]
+		if !hasTTFT {
+			continue // Decode sub-requests don't have TTFT
+		}
+		if ttft < 0 {
+			t.Errorf("INV-5 causality: request %q TTFT = %v < 0", reqID, ttft)
+		}
+		if e2e < ttft {
+			t.Errorf("INV-5 causality: request %q E2E (%v) < TTFT (%v)", reqID, e2e, ttft)
+		}
+	}
+}
+
+// TestAdmissionDecisionEvent_NoPools_SchedulesRouting verifies BC-PD-4:
+// when pools are NOT configured, AdmissionDecisionEvent schedules RoutingDecisionEvent (unchanged).
+func TestAdmissionDecisionEvent_NoPools_SchedulesRouting(t *testing.T) {
+	config := newTestDeploymentConfig(2)
+	// PrefillInstances and DecodeInstances are 0 (default)
+
+	numRequests := 5
+	cs := NewClusterSimulator(config, newTestRequests(numRequests))
+	mustRun(t, cs)
+
+	m := cs.AggregatedMetrics()
+	if m.CompletedRequests == 0 {
+		t.Fatal("expected at least one completed request without pools")
+	}
+
+	// INV-1: Request conservation
+	total := m.CompletedRequests + m.StillQueued + m.StillRunning + m.DroppedUnservable
+	if total != numRequests {
+		t.Errorf("INV-1 request conservation: completed(%d) + queued(%d) + running(%d) + dropped(%d) = %d, want %d",
+			m.CompletedRequests, m.StillQueued, m.StillRunning, m.DroppedUnservable, total, numRequests)
+	}
+}
+
+// TestDisaggregationDecisionEvent_SchedulesRouting verifies that
+// DisaggregationDecisionEvent.Execute with NeverDisaggregate schedules RoutingDecisionEvent (local routing path).
+func TestDisaggregationDecisionEvent_SchedulesRouting(t *testing.T) {
+	config := newTestDeploymentConfig(4)
+	config.PrefillInstances = 2
+	config.DecodeInstances = 2
+	config.PDDecider = "never"
+	config.PDTransferBandwidthGBps = 25.0
+	config.PDTransferBaseLatencyMs = 0.05
+	config.PDKVBytesPerToken = 512
+
+	numRequests := 5
+	cs := NewClusterSimulator(config, newTestRequests(numRequests))
+
+	// Run with NeverDisaggregate — should still complete (routes to RoutingDecisionEvent)
+	mustRun(t, cs)
+
+	m := cs.AggregatedMetrics()
+	if m.CompletedRequests == 0 {
+		t.Fatal("expected at least one completed request with NeverDisaggregate")
+	}
+
+	// INV-1: Request conservation
+	total := m.CompletedRequests + m.StillQueued + m.StillRunning + m.DroppedUnservable
+	if total != numRequests {
+		t.Errorf("INV-1 request conservation: completed(%d) + queued(%d) + running(%d) + dropped(%d) = %d, want %d",
+			m.CompletedRequests, m.StillQueued, m.StillRunning, m.DroppedUnservable, total, numRequests)
 	}
 }

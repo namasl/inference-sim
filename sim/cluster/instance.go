@@ -142,3 +142,30 @@ func (i *InstanceSimulator) CacheHitRate() float64 {
 func (i *InstanceSimulator) InjectRequestOnline(req *sim.Request, eventTime int64) {
 	i.sim.InjectArrivalAt(req, eventTime)
 }
+
+// AllocateTransferredKV simulates receiving transferred KV cache data from a prefill instance.
+// Pre-allocates KV blocks for the request's input tokens and sets ProgressIndex past input.
+// Returns false if insufficient KV capacity on this instance.
+func (i *InstanceSimulator) AllocateTransferredKV(req *sim.Request) bool {
+	inputLen := int64(len(req.InputTokens))
+	if inputLen == 0 {
+		req.ProgressIndex = 0
+		return true
+	}
+	ok := i.sim.KVCache.AllocateKVBlocks(req, 0, inputLen, nil)
+	if ok {
+		req.ProgressIndex = inputLen
+	}
+	return ok
+}
+
+// InjectDecodeOnline injects a decode sub-request with pre-allocated KV.
+// Bypasses the normal ArrivalEvent → QueuedEvent → EnqueueRequest chain to avoid
+// the oversized-request guard (KV already allocated) and TotalInputTokens double-counting.
+// currentTime is the cluster clock at injection — passed to EnqueueDecodeSubRequest to
+// avoid scheduling the idle StepEvent in the past (INV-PD-4).
+// Registers request in metrics and directly enqueues into wait queue.
+func (i *InstanceSimulator) InjectDecodeOnline(req *sim.Request, currentTime int64) {
+	i.sim.Metrics.Requests[req.ID] = sim.NewRequestMetrics(req, float64(req.ArrivalTime)/1e6)
+	i.sim.EnqueueDecodeSubRequest(req, currentTime)
+}

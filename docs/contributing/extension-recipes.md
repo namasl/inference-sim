@@ -71,14 +71,25 @@ To add a new trace record type (e.g., `ScaleRecord` for autoscaling events):
 1. **Define the record struct** in `sim/trace/record.go` (pure data, no `sim/` dependency)
 2. **Add a slice field** to `SimulationTrace` in `sim/trace/trace.go` (e.g., `Scales []ScaleRecord`)
 3. **Add a recording method** to `SimulationTrace` (e.g., `RecordScale(ScaleRecord)`)
-4. **Hook recording** into the cluster event pipeline in `sim/cluster/cluster_event.go` (guard with `if cs.trace != nil` for zero-overhead default)
+4. **Hook recording** into the cluster event pipeline (guard with `if cs.trace != nil` for zero-overhead default):
+   - For standard routing events: `sim/cluster/cluster_event.go`
+   - For PD disaggregation events: `sim/cluster/pd_events.go` (PrefillRoutingEvent and DecodeRoutingEvent). Note: `KVTransferRecord` is recorded in `DecodeRoutingEvent.Execute()` (not `KVTransferStartedEvent`) because `DecodeInstanceID` is only populated at decode routing time.
+   - **Pool-filtered snapshots:** PD routing events must pass `filteredSnapshots` (not `state.Snapshots`) to `computeCounterfactual()`. Pool-filtered snapshots contain only pool-member instances; passing full-cluster snapshots would produce candidates from the wrong pool.
 5. **Update `Summarize()`** in `sim/trace/summary.go` to aggregate the new record type
-6. **Add behavioral tests** in `sim/trace/*_test.go`
+6. **Update the `--summarize-trace` output block** in `cmd/root.go` to print the new summary fields (guard with a non-zero count check so they only appear when the feature is active)
+7. **Add behavioral tests** in `sim/trace/*_test.go`
+
+**Activation conditions for PD trace records:** PD-specific records (`DisaggregationRecord`, `PrefillRoutingRecord`, `DecodeRoutingRecord`, `KVTransferRecord`) are only emitted when **both** of the following are configured:
+- `--trace-level decisions` (or higher) — enables the trace recorder
+- `--prefill-instances N --decode-instances M` — enables PD disaggregation pool topology
+
+Setting `--trace-level decisions` alone (without pool flags) produces admission and standard routing records but zero PD records.
 
 Examples:
 - See `AdmissionRecord` in `sim/trace/record.go` for a simple record
 - See `RoutingRecord` with `CandidateScore` for a record with nested counterfactual data
 - See `computeCounterfactual()` in `sim/cluster/counterfactual.go` for derived computation that lives in `sim/cluster/` (not `sim/trace/`) because it needs `sim.RoutingSnapshot`
+- See `PrefillRoutingRecord`/`DecodeRoutingRecord` for records with pool-scoped counterfactual candidates
 
 ## Adding New Latency Model Backends
 
@@ -96,6 +107,63 @@ Examples:
 - See `BlackboxLatencyModel` in `sim/latency/latency.go` for a simple stateless model (alpha/beta regression)
 - See `RooflineLatencyModel` in `sim/latency/latency.go` for a model that uses hardware config (FLOPs/bandwidth)
 - See `CrossModelLatencyModel` in `sim/latency/crossmodel.go` for a physics-informed model that derives step time from HuggingFace architecture features (MoE-aware)
+
+## Adding New Disaggregation Deciders
+
+To add a new prefill-decode disaggregation decider (e.g., adaptive-rate, popularity-based, load-sensitive):
+
+**Two patterns:** stateless (simple case) and stateful with observer (for deciders that learn from routing decisions).
+
+### Stateless decider (no feedback needed)
+
+1. **Implement `DisaggregationDecider`** in `sim/disaggregation.go` — 1 method: `Decide(req *Request) DisaggregationDecision`. Return `Disaggregate: true` to route via the prefill pool, `false` to use standard routing.
+2. **Register in two places** (both required):
+   - Add name to `validDisaggregationDeciders` in `sim/bundle.go`
+   - Add `case` to `NewDisaggregationDecider` in `sim/disaggregation.go`
+3. **Update CLI flag description** in `cmd/root.go` (`--pd-decider` flag help text)
+4. **Update `docs/reference/configuration.md`** — add a row to the Disaggregation Deciders table under `## PD Disaggregation`
+5. **Add behavioral tests** in `sim/disaggregation_test.go` and cluster integration tests in `sim/cluster/disaggregation_test.go`
+6. Extension friction: **4 touch points** (implementation + bundle registration + CLI description + documentation)
+
+### Stateful decider with observer (needs routing feedback to update internal state)
+
+1. **Implement both `DisaggregationDecider` AND `DisaggregationObserver`** in `sim/disaggregation.go`:
+   - `Decide(req *Request) DisaggregationDecision` — make the disaggregation decision
+   - `ObserveRouting(req *Request, instanceID string)` — update internal state after routing
+
+2. **Create a dedicated constructor** (e.g., `NewMyDecider(param1, param2 int)`):
+   - Do NOT add a case to `NewDisaggregationDecider` — that factory is for parameter-free deciders.
+   - Instead, add a panic case: `case "my-decider": panic("use NewMyDecider(...) to construct my-decider")` so the factory fails loudly if called incorrectly
+   - Register in `validDisaggregationDeciders` (so `IsValidDisaggregationDecider` accepts the name)
+
+3. **Wire the constructor in `NewClusterSimulator`** in `sim/cluster/cluster.go`:
+   ```go
+   if config.PDDecider == "my-decider" {
+       cs.disaggregationDecider = sim.NewMyDecider(config.MyDeciderParam, ...)
+   } else {
+       cs.disaggregationDecider = sim.NewDisaggregationDecider(config.PDDecider)
+   }
+   ```
+
+4. **Add config field** to `DeploymentConfig` in `sim/cluster/deployment.go` for any parameters:
+   ```go
+   MyDeciderParam int  // Description (>= 0, default X from CLI)
+   ```
+
+5. **Add CLI flag** in `cmd/root.go` and validate it (add validation before `ValidatePoolTopology`)
+
+6. **`notifyDisaggregationObserver` is already wired**: `ClusterSimulator` type-asserts the decider to `DisaggregationObserver` and calls `ObserveRouting` automatically after each routing decision. No changes needed to `cluster_event.go` or `pd_events.go`.
+   - Observer is called after: standard routing (`RoutingDecisionEvent`) and prefill routing (`PrefillRoutingEvent`)
+   - Observer is NOT called after decode routing (`DecodeRoutingEvent`) — decode sub-requests carry the same input tokens as the original, so prefix information was already recorded at prefill routing time
+
+7. **R13**: `DisaggregationObserver` is designed for >=2 backends. Add a no-op test implementation in your test file to satisfy R13.
+
+8. **Add behavioral tests** — both unit tests for `Decide/ObserveRouting` and cluster integration tests
+
+Examples:
+- See `PrefixThresholdDecider` in `sim/disaggregation.go` for a complete stateful decider with router-side `PrefixCacheIndex`
+- See `sim/cluster/cluster.go` for the constructor dispatch pattern
+- See `sim/cluster/disaggregation_test.go` for integration test examples
 
 ## Adding New Batch Formation Strategies
 

@@ -97,6 +97,19 @@ var (
 	kvTransferBaseLatency   int64
 	snapshotRefreshInterval int64
 
+	// PD disaggregation config (PR1)
+	prefillInstances  int    // Number of instances dedicated to prefill
+	decodeInstances   int    // Number of instances dedicated to decode
+	pdDecider         string // Disaggregation decider name
+	pdPrefixThreshold int    // Non-cached token threshold for prefix-threshold decider
+
+	// PD KV transfer config (PR2)
+	pdTransferBandwidth   float64 // Inter-instance KV transfer bandwidth in GB/s
+	pdTransferBaseLatency float64 // Inter-instance KV transfer base latency in ms
+	pdKVBytesPerToken     int     // KV cache bytes per token for transfer duration
+	prefillRoutingScorers string  // Scorer weights for prefill pool routing
+	decodeRoutingScorers  string  // Scorer weights for decode pool routing
+
 	// results file path
 	resultsPath string // File to save BLIS results to
 )
@@ -652,6 +665,40 @@ var runCmd = &cobra.Command{
 		if snapshotRefreshInterval < 0 {
 			logrus.Fatalf("--snapshot-refresh-interval must be >= 0, got %d", snapshotRefreshInterval)
 		}
+		// PD disaggregation validation (R3: validate at CLI boundary)
+		if prefillInstances < 0 {
+			logrus.Fatalf("--prefill-instances must be >= 0, got %d", prefillInstances)
+		}
+		if decodeInstances < 0 {
+			logrus.Fatalf("--decode-instances must be >= 0, got %d", decodeInstances)
+		}
+		if !sim.IsValidDisaggregationDecider(pdDecider) {
+			logrus.Fatalf("Unknown PD decider %q. Valid: %s", pdDecider, strings.Join(sim.ValidDisaggregationDeciderNames(), ", "))
+		}
+		if pdDecider == "prefix-threshold" && pdPrefixThreshold < 0 {
+			logrus.Fatalf("--pd-prefix-threshold must be >= 0, got %d", pdPrefixThreshold)
+		}
+		if pdDecider != "prefix-threshold" && cmd.Flags().Changed("pd-prefix-threshold") {
+			logrus.Warnf("--pd-prefix-threshold=%d is ignored when --pd-decider=%q (only applies to the prefix-threshold decider)", pdPrefixThreshold, pdDecider)
+		}
+		if pdDecider != "" && pdDecider != "never" && prefillInstances == 0 && decodeInstances == 0 {
+			logrus.Fatalf("--pd-decider=%q requires --prefill-instances and --decode-instances to be set (both are 0)", pdDecider)
+		}
+		if err := cluster.ValidatePoolTopology(prefillInstances, decodeInstances, numInstances); err != nil {
+			logrus.Fatalf("Invalid PD pool topology: %v", err)
+		}
+		// PD transfer parameter validation (R3, R11)
+		if prefillInstances > 0 {
+			if pdTransferBandwidth <= 0 || math.IsInf(pdTransferBandwidth, 0) || math.IsNaN(pdTransferBandwidth) {
+				logrus.Fatalf("--pd-transfer-bandwidth must be a finite positive number, got %f", pdTransferBandwidth)
+			}
+			if pdTransferBaseLatency < 0 || math.IsInf(pdTransferBaseLatency, 0) || math.IsNaN(pdTransferBaseLatency) {
+				logrus.Fatalf("--pd-transfer-base-latency must be a finite non-negative number, got %f", pdTransferBaseLatency)
+			}
+			if pdKVBytesPerToken <= 0 {
+				logrus.Fatalf("--pd-kv-bytes-per-token must be > 0, got %d", pdKVBytesPerToken)
+			}
+		}
 		if admissionLatency < 0 {
 			logrus.Fatalf("--admission-latency must be >= 0, got %d", admissionLatency)
 		}
@@ -689,6 +736,22 @@ var runCmd = &cobra.Command{
 		if routingPolicy != "weighted" && routingScorers != "" {
 			logrus.Warnf("--routing-scorers has no effect when routing policy is %q (only applies to 'weighted')", routingPolicy)
 		}
+		// Parse per-pool scorer configs (PR2)
+		var prefillScorerCfgs, decodeScorerCfgs []sim.ScorerConfig
+		if prefillRoutingScorers != "" {
+			var err error
+			prefillScorerCfgs, err = sim.ParseScorerConfigs(prefillRoutingScorers)
+			if err != nil {
+				logrus.Fatalf("Invalid --prefill-routing-scorers: %v", err)
+			}
+		}
+		if decodeRoutingScorers != "" {
+			var err error
+			decodeScorerCfgs, err = sim.ParseScorerConfigs(decodeRoutingScorers)
+			if err != nil {
+				logrus.Fatalf("Invalid --decode-routing-scorers: %v", err)
+			}
+		}
 		if admissionPolicy == "token-bucket" {
 			logrus.Infof("Token bucket: capacity=%.0f, refill-rate=%.0f",
 				tokenBucketCapacity, tokenBucketRefillRate)
@@ -723,6 +786,15 @@ var runCmd = &cobra.Command{
 			TraceLevel:              traceLevel,
 			CounterfactualK:         counterfactualK,
 			SnapshotRefreshInterval: snapshotRefreshInterval,
+			PrefillInstances:        prefillInstances,
+			DecodeInstances:         decodeInstances,
+			PDDecider:               pdDecider,
+			PDPrefixThreshold:       pdPrefixThreshold,
+			PDTransferBandwidthGBps: pdTransferBandwidth,
+			PDTransferBaseLatencyMs: pdTransferBaseLatency,
+			PDKVBytesPerToken:       int64(pdKVBytesPerToken),
+			PrefillScorerConfigs:    prefillScorerCfgs,
+			DecodeScorerConfigs:     decodeScorerCfgs,
 		}
 		cs := cluster.NewClusterSimulator(config, preGeneratedRequests)
 		if err := cs.Run(); err != nil {
@@ -753,6 +825,14 @@ var runCmd = &cobra.Command{
 			priorityPolicy,
 		)
 
+		// Collect PD disaggregation metrics if disaggregation was active (PR3).
+		rawMetrics.PD = cluster.CollectPDMetrics(
+			cs.ParentRequests(),
+			cs.AggregatedMetrics(),
+			cs.PoolMembership(),
+			cs.PerInstanceMetricsByID(),
+		)
+
 		if fitnessWeights != "" {
 			weights, err := cluster.ParseFitnessWeights(fitnessWeights)
 			if err != nil {
@@ -776,16 +856,22 @@ var runCmd = &cobra.Command{
 		}
 
 		// Print anomaly counters if any detected
-		if rawMetrics.PriorityInversions > 0 || rawMetrics.HOLBlockingEvents > 0 || rawMetrics.RejectedRequests > 0 || rawMetrics.DroppedUnservable > 0 {
+		if rawMetrics.PriorityInversions > 0 || rawMetrics.HOLBlockingEvents > 0 || rawMetrics.RejectedRequests > 0 || rawMetrics.DroppedUnservable > 0 || cs.DroppedKVAllocations() > 0 {
 			fmt.Println("=== Anomaly Counters ===")
 			fmt.Printf("Priority Inversions: %d\n", rawMetrics.PriorityInversions)
 			fmt.Printf("HOL Blocking Events: %d\n", rawMetrics.HOLBlockingEvents)
 			fmt.Printf("Rejected Requests: %d\n", rawMetrics.RejectedRequests)
 			fmt.Printf("Dropped Unservable: %d\n", rawMetrics.DroppedUnservable)
+			if cs.DroppedKVAllocations() > 0 {
+				fmt.Printf("Dropped KV Allocations: %d\n", cs.DroppedKVAllocations())
+			}
 		}
 
 		// Print KV cache metrics if any nonzero (BC-1, BC-2)
 		printKVCacheMetrics(os.Stdout, rawMetrics.PreemptionRate, rawMetrics.CacheHitRate, rawMetrics.KVThrashingRate)
+
+		// Print PD disaggregation metrics if active (PR3)
+		printPDMetrics(os.Stdout, rawMetrics.PD)
 
 		// Print per-SLO metrics if multiple SLO classes present (BC-3, BC-4, BC-10)
 		sloDistributions := cluster.ComputePerSLODistributions(cs.AggregatedMetrics())
@@ -812,6 +898,14 @@ var runCmd = &cobra.Command{
 			}
 			fmt.Printf("Mean Regret: %.6f\n", traceSummary.MeanRegret)
 			fmt.Printf("Max Regret: %.6f\n", traceSummary.MaxRegret)
+			// PD disaggregation summary (only printed when disaggregation was active)
+			if traceSummary.DisaggregationCount > 0 {
+				fmt.Println("=== PD Disaggregation Summary ===")
+				fmt.Printf("Disaggregation Decisions: %d\n", traceSummary.DisaggregationCount)
+				fmt.Printf("  Disaggregated: %d\n", traceSummary.DisaggregatedCount)
+				fmt.Printf("KV Transfers: %d\n", traceSummary.KVTransferCount)
+				fmt.Printf("Mean Transfer Duration (µs): %.2f\n", traceSummary.MeanTransferDuration)
+			}
 		}
 
 		logrus.Info("Simulation complete.")
@@ -827,6 +921,34 @@ func printKVCacheMetrics(w io.Writer, preemptionRate, cacheHitRate, kvThrashingR
 	_, _ = fmt.Fprintf(w, "Preemption Rate: %.4f\n", preemptionRate)
 	_, _ = fmt.Fprintf(w, "Cache Hit Rate: %.4f\n", cacheHitRate)
 	_, _ = fmt.Fprintf(w, "KV Thrashing Rate: %.4f\n", kvThrashingRate)
+}
+
+// printPDMetrics prints disaggregation-aware metrics when PD disaggregation was active.
+// No-op when pd is nil (disaggregation not active, BC-7).
+func printPDMetrics(w io.Writer, pd *cluster.PDMetrics) {
+	if pd == nil {
+		return
+	}
+	_, _ = fmt.Fprintln(w, "=== PD Metrics ===")
+	_, _ = fmt.Fprintf(w, "Disaggregated Requests: %d\n", pd.DisaggregatedCount)
+	if pd.DroppedAtDecodeKV > 0 {
+		_, _ = fmt.Fprintf(w, "Dropped at Decode KV: %d\n", pd.DroppedAtDecodeKV)
+	}
+	_, _ = fmt.Fprintf(w, "Prefill Throughput: %.4f sub-req/s\n", pd.PrefillThroughput)
+	_, _ = fmt.Fprintf(w, "Decode Throughput: %.4f sub-req/s\n", pd.DecodeThroughput)
+	if pd.LoadImbalanceRatio == math.MaxFloat64 {
+		_, _ = fmt.Fprintf(w, "Load Imbalance Ratio: inf (one pool idle)\n")
+	} else {
+		_, _ = fmt.Fprintf(w, "Load Imbalance Ratio: %.4f\n", pd.LoadImbalanceRatio)
+	}
+	if pd.ParentTTFT.Count > 0 {
+		_, _ = fmt.Fprintf(w, "Parent TTFT (μs): mean=%.1f p50=%.1f p95=%.1f p99=%.1f\n",
+			pd.ParentTTFT.Mean, pd.ParentTTFT.P50, pd.ParentTTFT.P95, pd.ParentTTFT.P99)
+	}
+	if pd.TransferDuration.Count > 0 {
+		_, _ = fmt.Fprintf(w, "KV Transfer Duration (μs): mean=%.1f p50=%.1f p95=%.1f p99=%.1f\n",
+			pd.TransferDuration.Mean, pd.TransferDuration.P50, pd.TransferDuration.P95, pd.TransferDuration.P99)
+	}
 }
 
 // printPerSLOMetrics prints per-SLO-class latency distributions when multiple classes exist.
@@ -938,6 +1060,19 @@ func init() {
 	runCmd.Flags().Float64Var(&kvTransferBandwidth, "kv-transfer-bandwidth", 100.0, "CPU↔GPU transfer rate in blocks per tick. Higher = faster transfers")
 	runCmd.Flags().Int64Var(&kvTransferBaseLatency, "kv-transfer-base-latency", 0, "Fixed per-transfer latency in ticks for CPU↔GPU KV transfers (0 = no fixed cost)")
 	runCmd.Flags().Int64Var(&snapshotRefreshInterval, "snapshot-refresh-interval", 0, "Prometheus snapshot refresh interval for all instance metrics in microseconds (0 = immediate)")
+
+	// PD disaggregation config (PR1)
+	runCmd.Flags().IntVar(&prefillInstances, "prefill-instances", 0, "Number of instances dedicated to prefill (0 = disabled)")
+	runCmd.Flags().IntVar(&decodeInstances, "decode-instances", 0, "Number of instances dedicated to decode (0 = disabled)")
+	runCmd.Flags().StringVar(&pdDecider, "pd-decider", "never", "PD disaggregation decider: never (default), always, prefix-threshold")
+	runCmd.Flags().IntVar(&pdPrefixThreshold, "pd-prefix-threshold", 512, "Non-cached token threshold for prefix-threshold decider (>= 0); disaggregate when non-cached tokens exceed this value")
+
+	// PD KV transfer config (PR2)
+	runCmd.Flags().Float64Var(&pdTransferBandwidth, "pd-transfer-bandwidth", 25.0, "PD KV transfer bandwidth in GB/s (NIXL RDMA default)")
+	runCmd.Flags().Float64Var(&pdTransferBaseLatency, "pd-transfer-base-latency", 0.05, "PD KV transfer base latency in ms")
+	runCmd.Flags().IntVar(&pdKVBytesPerToken, "pd-kv-bytes-per-token", 512, "KV cache bytes per token for PD transfer duration computation")
+	runCmd.Flags().StringVar(&prefillRoutingScorers, "prefill-routing-scorers", "", "Scorer weights for prefill pool routing (e.g., queue-depth:2,kv-utilization:2)")
+	runCmd.Flags().StringVar(&decodeRoutingScorers, "decode-routing-scorers", "", "Scorer weights for decode pool routing (e.g., queue-depth:2,kv-utilization:2)")
 
 	// Results path
 	runCmd.Flags().StringVar(&resultsPath, "results-path", "", "File to save BLIS results to")

@@ -97,6 +97,11 @@ Full details (verification strategies, evidence): see [`docs/contributing/standa
 - **INV-6 Determinism**: Same seed must produce byte-identical stdout across runs. Wall-clock timing goes to stderr.
 - **INV-7 Signal freshness**: Routing snapshot signals have tiered freshness — InFlightRequests (synchronous) vs QueueDepth/BatchSize/KVUtilization (Periodic when `--snapshot-refresh-interval > 0`, Immediate when 0). See `docs/contributing/standards/invariants.md` for the full hierarchy.
 - **INV-8 Work-conserving**: After every step completion, if `WaitQ.Len() > 0`, a `StepEvent` must exist in the event queue. The simulator must not idle while work is waiting.
+- **INV-PD-1 KV completeness**: `decode_enqueue_time >= transfer_complete_time` for every disaggregated request.
+- **INV-PD-2 Pool exclusivity**: Prefill sub-requests on prefill instances only; decode on decode only.
+- **INV-PD-3 Transfer conservation**: `initiated_transfers == completed_transfers` at simulation end.
+- **INV-PD-4 Phase causality**: `arrival ≤ prefill_enqueue ≤ prefill_complete ≤ transfer_start ≤ transfer_complete ≤ decode_enqueue ≤ completion`.
+- **INV-PD-5 Pool stability**: Pool membership unchanged after initialization.
 
 ### Engineering Principles
 
@@ -201,7 +206,7 @@ inference-sim/
 ├── .github/workflows/         # CI configuration (build, lint, test)
 ├── main.go                    # CLI entry point (Cobra)
 ├── cmd/
-│   ├── root.go                # CLI commands and flags (--num-instances, --policy-config, --routing-scorers, --workload-spec, --trace-level, --fitness-weights, --kv-cpu-blocks, --kv-offload-threshold, --kv-transfer-bandwidth, --kv-transfer-base-latency, --snapshot-refresh-interval, --latency-model)
+│   ├── root.go                # CLI commands and flags (--num-instances, --policy-config, --routing-scorers, --workload-spec, --trace-level, --fitness-weights, --kv-cpu-blocks, --kv-offload-threshold, --kv-transfer-bandwidth, --kv-transfer-base-latency, --snapshot-refresh-interval, --latency-model, --prefill-instances, --decode-instances, --pd-decider, --pd-prefix-threshold, --pd-transfer-bandwidth, --pd-transfer-base-latency, --pd-kv-bytes-per-token, --prefill-routing-scorers, --decode-routing-scorers)
 │   ├── observe.go             # Real mode HTTP client (OpenAI-compatible, streaming + non-streaming)
 │   ├── convert.go             # `blis convert` subcommands (servegen, csv-trace, preset, inference-perf)
 │   ├── compose.go             # `blis compose` for merging v2 specs
@@ -212,6 +217,7 @@ inference-sim/
 │   ├── doc.go                 # Package reading guide: start with request.go, event.go, simulator.go
 │   ├── simulator.go           # SimConfig struct (composed of embedded sub-configs + Horizon/Seed), NewSimulator(SimConfig) (*Simulator, error) constructor, event loop (Run()), batch formation (delegated to BatchFormation interface), step execution with phased metric recording, observation methods (QueueDepth(), BatchSize(), CurrentClock(), SimHorizon()). All workload generation external via InjectArrival().
 │   ├── admission.go           # AdmissionPolicy interface (accepts *RouterState), AlwaysAdmit, TokenBucket, RejectAll, NewAdmissionPolicy factory
+│   ├── disaggregation.go     # DisaggregationDecider interface, DisaggregationDecision type, NeverDisaggregate, AlwaysDisaggregate, NewDisaggregationDecider factory; DisaggregationObserver interface; PrefixThresholdDecider (prefix-aware, router-side cache, globalVirtualInstance), NewPrefixThresholdDecider(threshold, blockSize)
 │   ├── routing.go             # RoutingPolicy interface (accepts *RouterState), RoutingSnapshot (with EffectiveLoad() for canonical load calculation), RoutingDecision (with Priority hint), RoundRobin, LeastLoaded, WeightedScoring (composable scorer pipeline), AlwaysBusiest templates, NewRoutingPolicy factory
 │   ├── routing_scorers.go     # ScorerConfig, scorer implementations (queue-depth, kv-utilization, load-balance), ParseScorerConfigs, IsValidScorer, DefaultScorerConfigs, newScorerWithObserver factory
 │   ├── routing_prefix_scorer.go # Prefix-affinity scorer + observer (proportional prefix matching)
@@ -248,12 +254,16 @@ inference-sim/
 │   └── register.go            # init()-based registration of NewLatencyModelFunc into sim/
 ├── sim/cluster/               # Multi-replica cluster simulation
 │   ├── instance.go            # InstanceSimulator wraps sim.Simulator via NewInstanceSimulator(id, SimConfig) with run-once guard; delegates to Simulator observation methods (QueueDepth(), BatchSize(), etc.)
-│   ├── cluster.go             # ClusterSimulator orchestrates N instances with shared-clock event loop, online routing pipeline, and metrics aggregation; Run() returns error
-│   ├── cluster_event.go       # ClusterArrivalEvent, AdmissionDecisionEvent, RoutingDecisionEvent
+│   ├── cluster.go             # ClusterSimulator orchestrates N instances with shared-clock event loop, online routing pipeline, and metrics aggregation; Run() returns error; accessors: ParentRequests() (sorted slice), PerInstanceMetricsByID() (map copy)
+│   ├── cluster_event.go       # ClusterArrivalEvent, AdmissionDecisionEvent, RoutingDecisionEvent, DisaggregationDecisionEvent (PD disaggregation pipeline with bifurcation)
+│   ├── pd_events.go           # PrefillRoutingEvent, KVTransferStartedEvent, KVTransferCompletedEvent, DecodeRoutingEvent (PR2 disaggregated request flow)
+│   ├── parent_request.go      # ParentRequest type for tracking disaggregated request lifecycle across prefill and decode sub-requests
 │   ├── counterfactual.go      # computeCounterfactual() for top-k candidate ranking and regret computation
 │   ├── snapshot.go            # CachedSnapshotProvider (returns sim.RoutingSnapshot), ObservabilityConfig
-│   ├── metrics.go             # RawMetrics, Distribution, FitnessResult, CollectRawMetrics (accepts priorityPolicy), ComputeFitness (returns (FitnessResult, error)), anomaly detection, ParseFitnessWeights with NaN/Inf validation, per-SLO-class metrics, JainFairnessIndex
-│   ├── deployment.go          # DeploymentConfig embeds sim.SimConfig + cluster-only fields; ToSimConfig() returns the embedded config
+│   ├── metrics.go             # RawMetrics (includes PD *PDMetrics, nil when disaggregation inactive), Distribution, FitnessResult, CollectRawMetrics (accepts priorityPolicy), ComputeFitness (returns (FitnessResult, error)), anomaly detection, ParseFitnessWeights with NaN/Inf validation, per-SLO-class metrics, JainFairnessIndex
+│   ├── deployment.go          # DeploymentConfig embeds sim.SimConfig + cluster-only fields (PrefillInstances, DecodeInstances, PDDecider, PDPrefixThreshold for PD disaggregation); ToSimConfig() returns the embedded config
+│   ├── pd_metrics.go          # PDMetrics struct (DisaggregatedCount, ParentTTFT, TransferDuration, PrefillThroughput, DecodeThroughput, LoadImbalanceRatio), CollectPDMetrics (pure function, post-simulation), collectPoolThroughput (R2, R11)
+│   ├── pool.go                # PoolRole type, ValidatePoolTopology(), BuildPoolMembership() for PD disaggregation pool topology
 │   └── evaluation.go          # EvaluationResult wrapper (RawMetrics + FitnessResult + trace + summary)
 ├── sim/workload/              # ServeGen-informed workload generation (PR10)
 │   ├── spec.go                # WorkloadSpec v2, ClientSpec (with Model field), ArrivalSpec, DistSpec, YAML loading, v1→v2 auto-upgrade (UpgradeV1ToV2), IsValidSLOClass accessor
@@ -273,9 +283,9 @@ inference-sim/
 │   ├── convert.go             # Format converters: ConvertServeGen, ConvertCSVTrace, ConvertPreset, ComposeSpecs
 │   ├── cohort.go              # CohortSpec expansion: diurnal, spike, drain patterns → lifecycle windows
 │   └── synthesis.go           # Flag-to-spec synthesis: SynthesizeFromDistribution, SynthesizeFromPreset
-├── sim/trace/                 # Decision trace recording (PR13)
-│   ├── trace.go               # TraceLevel, TraceConfig, SimulationTrace, NewSimulationTrace, recording methods
-│   ├── record.go              # AdmissionRecord, RoutingRecord, CandidateScore (pure data types, no sim/ dependency)
+├── sim/trace/                 # Decision trace recording (PR13, extended in PR4)
+│   ├── trace.go               # TraceLevel, TraceConfig, SimulationTrace, NewSimulationTrace, recording methods (RecordAdmission, RecordRouting, RecordDisaggregation, RecordPrefillRouting, RecordDecodeRouting, RecordKVTransfer)
+│   ├── record.go              # AdmissionRecord, RoutingRecord, CandidateScore, DisaggregationRecord, PrefillRoutingRecord, DecodeRoutingRecord, KVTransferRecord (pure data types, no sim/ dependency)
 │   └── summary.go             # TraceSummary, Summarize()
 ├── model_configs/             # Auto-fetched HuggingFace config.json files (gitignored)
 ├── defaults.yaml              # Pre-trained coefficients, default GPU/TP/vLLM mappings, workload presets
@@ -367,6 +377,18 @@ Request Arrival → Admission → Routing → WaitQueue → Batch Formation → 
                                       KV Allocation   Latency Estimation (alpha/beta, roofline, or cross-model)
 ```
 Note: Admission and Routing steps apply in cluster mode (multi-instance). Single-instance mode skips directly to WaitQueue.
+
+### Disaggregated Data Flow (PD mode)
+
+When `--prefill-instances` and `--decode-instances` are configured:
+```
+Request Arrival → Admission → Disaggregation Decision
+  → [disaggregate] → Prefill Routing (pool-filtered) → Prefill Instance → Prefill Complete
+    → KV Transfer Started → KV Transfer Completed
+    → Decode Routing (pool-filtered) → KV Pre-Allocation → Decode Instance → Completion
+  → [local] → Standard Routing → Any Instance → Completion
+```
+CLI flags: `--pd-decider` (never/always/prefix-threshold), `--pd-prefix-threshold` (512, non-cached token threshold for prefix-threshold decider), `--pd-transfer-bandwidth` (25 GB/s), `--pd-transfer-base-latency` (0.05 ms), `--pd-kv-bytes-per-token` (512), `--prefill-routing-scorers`, `--decode-routing-scorers`
 
 ## Project Governance Documents
 

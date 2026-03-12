@@ -106,6 +106,36 @@ With `--num-instances 1` (the default), BLIS runs a single-instance simulation �
 |------|------|---------|-------------|
 | `--num-instances` | int | 1 | Number of inference instances. 1 = single-instance mode; > 1 = cluster mode with admission and routing. |
 
+## PD Disaggregation
+
+Prefill-Decode (PD) disaggregation splits each request into a prefill sub-request (runs on prefill instances) and a decode sub-request (runs on decode instances), connected by a simulated KV cache transfer. When both `--prefill-instances` and `--decode-instances` are > 0, the cluster activates PD mode automatically.
+
+**Requires:** `--num-instances` must equal `--prefill-instances + --decode-instances`. All instance flags (`--prefill-instances`, `--decode-instances`, transfer flags) must be set together.
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--prefill-instances` | int | 0 | Number of prefill pool instances. 0 = PD disaggregation disabled. |
+| `--decode-instances` | int | 0 | Number of decode pool instances. 0 = PD disaggregation disabled. |
+| `--pd-decider` | string | "never" | Disaggregation decider: `never` (standard routing), `always` (all disaggregated), `prefix-threshold` (cache-aware threshold). |
+| `--pd-transfer-bandwidth` | float64 | 25 | KV transfer bandwidth in GB/s. Typical values: 25 GB/s (RDMA CX7), 64 GB/s (PCIe5 p2p), 450 GB/s (NVLink4). |
+| `--pd-transfer-base-latency` | float64 | 0.05 | KV transfer base latency in milliseconds (fixed overhead added to every transfer). |
+| `--pd-kv-bytes-per-token` | int | 512 | KV cache bytes per token for transfer size estimation. Depends on model precision and head dimensions. |
+| `--prefill-routing-scorers` | string | "" | Scorer config for routing within the prefill pool. Format: `name:weight,...` (same as `--routing-scorers`). Empty = use main routing policy. |
+| `--decode-routing-scorers` | string | "" | Scorer config for routing within the decode pool. Empty = use main routing policy. |
+
+**Transfer duration formula:** `base_latency_us + (num_kv_blocks × block_size_tokens × pd_kv_bytes_per_token) / bandwidth_bytes_per_us`
+
+**Example — 2 prefill + 2 decode instances over RDMA:**
+```bash
+./blis run --model meta-llama/llama-3.1-8b-instruct \
+  --num-instances 4 \
+  --prefill-instances 2 --decode-instances 2 \
+  --pd-decider always \
+  --pd-transfer-bandwidth 25 \
+  --pd-transfer-base-latency 0.05 \
+  --pd-kv-bytes-per-token 512
+```
+
 ## Admission Policy
 
 Controls which requests enter the routing pipeline. See [Cluster Architecture: Admission](../concepts/architecture.md#admission-pipeline).
@@ -141,6 +171,48 @@ Available scorers: `prefix-affinity`, `queue-depth`, `kv-utilization`, `load-bal
 Default (when `--routing-scorers` is empty): `prefix-affinity:3, queue-depth:2, kv-utilization:2` (llm-d parity).
 
 See [Cluster Architecture: Scorer Composition](../concepts/architecture.md#scorer-composition) for details on each scorer.
+
+## PD Disaggregation
+
+Prefill-decode (PD) disaggregation splits the prefill and decode phases across separate instance pools. Prefill instances process the initial prompt tokens; decode instances generate output tokens. KV cache state is transferred between pools after prefill completes.
+
+PD disaggregation requires `--prefill-instances` and `--decode-instances` to be configured alongside `--num-instances`. The pool sizes must satisfy `prefill + decode ≤ num-instances`; any remaining instances receive locally-routed (non-disaggregated) requests via the standard routing path.
+
+### Disaggregation Deciders
+
+The `--pd-decider` flag selects the policy that decides whether each request is routed through the disaggregated PD path:
+
+| Decider | Description |
+|---------|-------------|
+| `never` | Never disaggregate. All requests use the standard routing path (default). |
+| `always` | Always disaggregate. All requests go through the PD prefill → transfer → decode pipeline. |
+| `prefix-threshold` | Disaggregate when the number of **non-cached input tokens** exceeds `--pd-prefix-threshold`. |
+
+### prefix-threshold Semantics
+
+The `prefix-threshold` decider compares non-cached token count (not total token count) against the threshold:
+
+- **Non-cached tokens** = `len(InputTokens) − (cached_blocks × block_size)`
+- Requests with a long cached prefix contribute fewer non-cached tokens even if the total prompt is large
+- Disaggregate when `non-cached_tokens > threshold`; route locally when `non-cached_tokens ≤ threshold`
+
+This reflects the real cost driver: disaggregating prefill is only beneficial when there is significant computation to offload. A request whose prefix is already in the router-side cache has less uncached compute, and disaggregating it would waste KV transfer bandwidth.
+
+**Default threshold: 512 tokens.** This means requests with more than 512 non-cached input tokens are disaggregated. Adjust based on your workload's typical uncached prompt length and your inter-pool transfer cost.
+
+### PD Disaggregation Flags
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--prefill-instances` | int | 0 | Number of prefill-pool instances (0 = PD disabled). |
+| `--decode-instances` | int | 0 | Number of decode-pool instances (0 = PD disabled). |
+| `--pd-decider` | string | "never" | Disaggregation decider: `never`, `always`, `prefix-threshold`. |
+| `--pd-prefix-threshold` | int | 512 | Non-cached token threshold for `prefix-threshold` decider (>= 0). Ignored for other deciders. |
+| `--pd-transfer-bandwidth` | float64 | 25.0 | KV cache transfer bandwidth between pools in GB/s. |
+| `--pd-transfer-base-latency` | float64 | 0.05 | Base transfer latency per transfer in milliseconds. |
+| `--pd-kv-bytes-per-token` | int | 512 | KV cache bytes per token for transfer size calculation. |
+| `--prefill-routing-scorers` | string | "" | Scorer config for weighted routing within the prefill pool. |
+| `--decode-routing-scorers` | string | "" | Scorer config for weighted routing within the decode pool. |
 
 ## Scheduling and Priority
 
@@ -379,4 +451,5 @@ For environments where live profiling is not feasible, the [Roofline model](../c
 | **PolicyConfig** | `--scheduler`, `--priority-policy` |
 | **WorkloadConfig** | `--workload`, `--workload-spec`, `--workload-traces-filepath`, `--defaults-filepath`, `--rate`, `--num-requests`, `--prompt-tokens*`, `--output-tokens*`, `--prefix-tokens` |
 | **DeploymentConfig** | `--num-instances`, `--admission-policy`, `--admission-latency`, `--token-bucket-capacity`, `--token-bucket-refill-rate`, `--routing-policy`, `--routing-latency`, `--routing-scorers`, `--snapshot-refresh-interval`, `--trace-level`, `--counterfactual-k` |
+| **PD Disaggregation** | `--prefill-instances`, `--decode-instances`, `--pd-decider` (`never`\|`always`\|`prefix-threshold`), `--pd-prefix-threshold`, `--pd-transfer-bandwidth`, `--pd-transfer-base-latency`, `--pd-kv-bytes-per-token`, `--prefill-routing-scorers`, `--decode-routing-scorers` |
 | **Top-level** | `--seed`, `--horizon`, `--log`, `--results-path`, `--policy-config`, `--fitness-weights`, `--summarize-trace` |
