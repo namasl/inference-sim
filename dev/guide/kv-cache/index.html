@@ -374,6 +374,28 @@
   
 
       
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../blog/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  Blog
+
+        </a>
+      </li>
+    
+  
+
+      
     </ul>
   </div>
 </nav>
@@ -2252,6 +2274,310 @@
   
 
     
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_8" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../blog/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Blog
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_8" id="__nav_8_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_8_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_8">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Blog
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_8_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_8_2" id="__nav_8_2_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Archive
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_8_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_8_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Archive
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+    
+  
+  
+    <li class="md-nav__item">
+      <a href="../../blog/archive/2026/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    2026
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_8_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_8_3" id="__nav_8_3_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Categories
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_8_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_8_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Categories
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+    
+  
+  
+    <li class="md-nav__item">
+      <a href="../../blog/category/capacity-planning/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Capacity Planning
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+    
+  
+  
+    <li class="md-nav__item">
+      <a href="../../blog/category/what-is-blis/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    What is BLIS?
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
   </ul>
 </nav>
                   </div>
@@ -2415,7 +2741,7 @@
 </tr>
 </tbody>
 </table>
-<p>*In blackbox mode, <code>defaults.yaml</code> overrides the 1,000,000 CLI default per model (e.g., Qwen3 14B / H100 / TP=1: 17,600 blocks). In roofline or crossmodel mode, the block count is auto-calculated from model architecture and GPU memory, superseding the <code>defaults.yaml</code> value. Explicit <code>--total-kv-blocks</code> always wins. See <a href="../../reference/configuration/#resolution-process">Configuration Reference</a>.</p>
+<p>*In blackbox mode (when using <code>--latency-model blackbox</code>), <code>defaults.yaml</code> overrides the 1,000,000 CLI default per model (e.g., Qwen3 14B / H100 / TP=1: 17,600 blocks). In roofline or crossmodel mode, the block count is auto-calculated from model architecture and GPU memory, superseding the <code>defaults.yaml</code> value. Explicit <code>--total-kv-blocks</code> always wins. See <a href="../../reference/configuration/#resolution-process">Configuration Reference</a>.</p>
 <div class="admonition tip">
 <p class="admonition-title">Block size affects prefix cache granularity</p>
 <p>Prefix caching uses block-aligned hashing (<code>hash.ComputeBlockHashes</code>). Smaller block sizes increase cache hit granularity but also increase allocation overhead. Choose block size relative to your typical prefix lengths.</p>
@@ -2439,8 +2765,8 @@
 <p>Both guards fire at enqueue time, before the request enters the wait queue.</p>
 </div>
 <div class="admonition info">
-<p class="admonition-title">Runtime length cap</p>
-<p>When <code>--max-model-len</code> is set, requests that grow beyond the limit during decode are force-completed. This is a defense-in-depth mechanism — under normal operation the enqueue guard prevents oversized requests, but the runtime cap protects against unbounded growth if a request bypasses the guard.</p>
+<p class="admonition-title">Proactive MaxModelLen cap</p>
+<p>When <code>--max-model-len</code> is set, a three-part enforcement matches vLLM's scheduler semantics: (1) <code>FormBatch</code> proactively clamps token scheduling to <code>maxModelLen - 1 - ProgressIndex</code>, (2) <code>executeBatchStep</code> skips decode when no tokens are allocated, and (3) <code>processCompletions</code> force-completes requests at the <code>maxModelLen - 1</code> boundary. Output per length-capped request: <code>maxModelLen - 1 - inputLen</code> tokens.</p>
 </div>
 <p>Compute the minimum blocks needed for your workload:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>min_blocks = ceil(max_input_tokens / block_size)
@@ -2486,7 +2812,7 @@
 </tbody>
 </table>
 <h2 id="chunked-prefill">Chunked Prefill<a class="headerlink" href="#chunked-prefill" title="Permanent link">&para;</a></h2>
-<p>Long prefill sequences can cause <strong>head-of-line (HOL) blocking</strong> — a 2,048-token prefill takes ~43ms, blocking shorter requests from starting.</p>
+<p>Long prefill sequences can cause <strong>head-of-line (HOL) blocking</strong> — a 2,048-token prefill takes ~97ms on Qwen3-14B / H100 / TP=1 (roofline mode), blocking shorter requests from starting.</p>
 <p>Chunked prefill splits long prefills into smaller chunks:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>./blis<span class="w"> </span>run<span class="w"> </span>--model<span class="w"> </span>qwen/qwen3-14b<span class="w"> </span><span class="se">\</span>
 <a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="w">  </span>--long-prefill-token-threshold<span class="w"> </span><span class="m">256</span><span class="w"> </span><span class="se">\</span>
