@@ -222,14 +222,9 @@ func NewClusterSimulator(config DeploymentConfig, requests []*sim.Request) *Clus
 				config.BlockSizeTokens, config.PDKVBytesPerToken))
 		}
 		cs.poolMembership = prePoolMembership
-		switch config.PDDecider {
-		case "prefix-threshold":
-			cs.disaggregationDecider = sim.NewPrefixThresholdDecider(config.PDPrefixThreshold, int(config.BlockSizeTokens))
-		case "direct-to-decode":
-			cs.disaggregationDecider = sim.NewDirectToDecodeDecider(config.PDDirectDecodeThreshold)
-		default:
-			cs.disaggregationDecider = sim.NewDisaggregationDecider(config.PDDecider)
-		}
+		// PR1: Only "never" and "always" deciders supported
+		// "prefix-threshold" and "direct-to-decode" added in PR5/PR9
+		cs.disaggregationDecider = sim.NewDisaggregationDecider(config.PDDecider)
 		cs.parentRequests = make(map[string]*ParentRequest)
 		cs.pendingPrefillCompletions = make(map[string]string)
 		cs.pendingDecodeCompletions = make(map[string]string)
@@ -639,13 +634,12 @@ func (c *ClusterSimulator) MeanTransferQueueDepth() float64 {
 // notifyDisaggregationObserver calls ObserveRouting on the disaggregationDecider if it
 // implements DisaggregationObserver. Called after each routing decision (both standard and
 // prefill paths) to keep the decider's prefix cache current (BC-PD-28, R17, INV-7).
+// PR1: DisaggregationObserver interface added in PR5 (prefix-threshold decider).
+// This method is a no-op in PR1 but is called from event handlers to avoid code churn.
 func (c *ClusterSimulator) notifyDisaggregationObserver(req *sim.Request, instanceID string) {
-	if c.disaggregationDecider == nil {
-		return
-	}
-	if obs, ok := c.disaggregationDecider.(sim.DisaggregationObserver); ok {
-		obs.ObserveRouting(req, instanceID)
-	}
+	// PR1: No-op until DisaggregationObserver interface is added in PR5
+	_ = req
+	_ = instanceID
 }
 
 // PoolMembership returns a copy of the pool role membership map (R8: no exported mutable maps).

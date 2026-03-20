@@ -1,0 +1,437 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## Project Overview
+
+BLIS (Blackbox Inference Simulator) is a discrete-event simulator for LLM inference serving systems. It models multi-instance clusters with configurable admission control, request routing, KV-cache dynamics (including tiered GPU+CPU offloading), scheduling policies, and token generation — all driven by trained performance coefficients (alpha/beta), analytical roofline estimates, or physics-informed cross-model prediction.
+
+The simulator is CPU-only, deterministic, and designed for capacity planning, policy optimization research, and performance prediction across model/GPU/TP configurations without requiring real GPUs.
+
+## Build and Run Commands
+
+```bash
+# Build
+go build -o blis main.go
+
+# Run with default model
+./blis run --model qwen/qwen3-14b
+
+# Convert workload formats
+./blis convert preset --name chatbot --rate 10 --num-requests 100
+./blis convert csv-trace --file trace.csv
+./blis convert servegen --path data/
+./blis compose --from spec1.yaml --from spec2.yaml
+```
+
+## Testing
+
+```bash
+# Run all tests
+go test ./...
+
+# Run tests in a specific package
+go test ./sim/...
+
+# Run a single test by name
+go test ./sim/... -run TestKVCache
+
+# Run tests with verbose output
+go test -v ./...
+
+# Run tests with coverage
+go test -cover ./...
+```
+
+## Development Guidelines
+
+### Design Principles
+
+BLIS follows a layered design document hierarchy. Each tier has a specific abstraction level and audience:
+
+- **Design guidelines** (`docs/contributing/templates/design-guidelines.md`): Target architecture, DES foundations, module contracts, extension framework. Read this first when designing a new feature or extending BLIS.
+- **Design docs** (per-feature): Behavioral specifications written per the guidelines. Describe what modules do and why, never how they're implemented. Four species: decision record, specification, problem analysis, system overview.
+- **Macro plans** (multi-PR features): PR decomposition with module contracts and extension types. Written per `docs/contributing/templates/macro-plan.md` (human template; agent prompt: `macro-plan-prompt.md`). May include frozen interface signatures (facts about merged code) but never method implementations (aspirations about unwritten code).
+- **Micro plans** (single PR): Full implementation detail with behavioral contracts, TDD tasks, exact code. Written per `docs/contributing/templates/micro-plan.md` (human template; agent prompt: `micro-plan-prompt.md`).
+
+**The abstraction rule:** Design docs describe *what a module does and what it guarantees*. Macro plans describe *what to build and in what order*. Micro plans describe *how to implement each piece*. Go struct definitions, method implementations, and file:line references belong only in micro plans.
+
+**Module architecture:** BLIS has a two-layer architecture — a domain-agnostic simulation kernel (event queue, clock, RNG, statistics) and domain-specific modules (router, scheduler, KV cache manager, latency model, autoscaler, batch formation). Each module is defined by a behavioral contract with six aspects: what it observes, what it controls, what state it owns, what invariants it maintains, what events it produces/consumes, and its extension friction (how many files to add one more variant). See design guidelines Section 4 for the full module map and contract template.
+
+**Extending BLIS:** Four extension types, each with a different recipe — policy template (new algorithm behind existing interface), subsystem module (new module with its own interface), backend swap (alternative implementation requiring interface extraction), tier composition (delegation wrapper). See design guidelines Section 5.
+
+### BDD/TDD Development
+
+> **Canonical source:** [`docs/contributing/standards/principles.md`](docs/contributing/standards/principles.md) (BDD/TDD section). If this section diverges, principles.md is authoritative.
+
+This project follows BDD/TDD practices. When implementing features:
+
+1. **Write behavioral contracts first**: Define invariants and expected behavior in Gherkin-style scenarios
+2. **Implement tests before code**: Tests verify contracts hold
+3. **Use table-driven tests**: Go's table-driven test pattern for comprehensive coverage
+4. **Test laws, not just values**: Golden tests answer "did the output change?" but not "is the output correct?" Every golden test should have a companion invariant test that verifies a law the system must satisfy (conservation, causality, monotonicity)
+5. **Refactor survival test**: Before accepting a test, ask: "Would this test still pass if the implementation were completely rewritten but the behavior preserved?" If no, the test is structural — rewrite it to assert observable behavior instead of internal structure. See `docs/contributing/standards/principles.md` BDD/TDD section for prohibited/required assertion patterns.
+6. **THEN clauses drive test quality**: A structural THEN clause produces a structural test. If a contract's THEN clause contains a concrete type name or internal field name, rewrite the THEN clause to describe observable behavior before writing the test.
+
+### PR Workflow
+
+Diligently follow the workflow in docs/contributing/pr-workflow.md. Before I approve any plan, validate it: 1) Check every task's dependencies — can each task actually start given what comes before it? 2) Verify all sections from the template are present and non-empty. 3) Read the executive summary as if you're a new team member — is it clear and human-readable? 4) Flag any tasks that seem under-specified for implementation. List all issues found.
+
+For new features that introduce module boundaries or modify the architecture, a design doc (per the design guidelines) should exist before micro-planning begins. For smaller changes (bug fixes, new policy templates behind existing interfaces), a design doc is optional — proceed directly to micro-planning.
+
+### Code Review Standards
+
+During PR reviews, check all Antipattern Prevention rules (1-23) below. Pay special attention to rules 8-10 (exported mutable maps, YAML pointer types, strict YAML parsing) which are easy to miss in new code. Always run `go test ./...` and lint after fixes.
+
+### Key Invariants to Maintain
+
+> **Canonical source:** [`docs/contributing/standards/invariants.md`](docs/contributing/standards/invariants.md). If this section diverges, invariants.md is authoritative.
+
+Full details (verification strategies, evidence): see [`docs/contributing/standards/invariants.md`](docs/contributing/standards/invariants.md).
+
+- **INV-1 Request conservation**: `injected_requests == completed_requests + still_queued + still_running + dropped_unservable` at simulation end. Full pipeline: `num_requests == injected_requests + rejected_requests`.
+- **INV-2 Request lifecycle**: Requests transition queued → running → completed; not completed before horizon remain in current state
+- **INV-3 Clock monotonicity**: Simulation clock never decreases
+- **INV-4 KV cache conservation**: `allocated_blocks + free_blocks = total_blocks` at all times
+- **INV-5 Causality**: `arrival_time <= enqueue_time <= schedule_time <= completion_time`
+- **INV-6 Determinism**: Same seed must produce byte-identical stdout across runs. Wall-clock timing goes to stderr.
+- **INV-7 Signal freshness**: Routing snapshot signals have tiered freshness — InFlightRequests (synchronous) vs QueueDepth/BatchSize/KVUtilization (Periodic when `--snapshot-refresh-interval > 0`, Immediate when 0). See `docs/contributing/standards/invariants.md` for the full hierarchy.
+- **INV-8 Work-conserving**: After every step completion, if `WaitQ.Len() > 0`, a `StepEvent` must exist in the event queue. The simulator must not idle while work is waiting.
+- **INV-9 Oracle knowledge boundary**: Servability decisions (enqueue guard, admission, routing, priority) must not read `Request.OutputTokens`. The control plane uses `MaxOutputLen` (client budget) or input-only checks. Only the execution engine may access `OutputTokens` for token generation and completion detection. See `docs/contributing/standards/invariants.md`.
+- **INV-PD-1 KV completeness**: `decode_enqueue_time >= transfer_complete_time` for every disaggregated request.
+- **INV-PD-2 Pool exclusivity**: Prefill sub-requests on prefill instances only; decode on decode only.
+- **INV-PD-3 Transfer conservation**: `initiated_transfers == completed_transfers` at simulation end.
+- **INV-PD-4 Phase causality**: `arrival ≤ prefill_enqueue ≤ prefill_complete ≤ transfer_start ≤ transfer_complete ≤ decode_enqueue ≤ completion`.
+- **INV-PD-5 Pool stability**: Pool membership unchanged after initialization.
+- **INV-P2-1 Pool-config consistency**: Each instance receives config consistent with its pool role. Instances with no pool role receive global config.
+- **INV-P2-2 Transfer fair-share**: When `active_transfers > 1`, `effective_bandwidth = total_bandwidth / active_transfers`; when `active_transfers == 1`, full bandwidth is used. INV-PD-3 (transfer conservation) still holds.
+- **INV-P2-3 Interference monotonicity**: Multiplier >= 1.0 (interference never speeds up execution). Multiplier = 1.0 when batch is phase-pure.
+- **INV-P2-4 Decode-targeted routing**: Non-disaggregated requests with pools configured route to decode pool only. Decode instances running mixed-phase batches have interference multiplier > 1.0.
+
+### Engineering Principles
+
+> **Canonical source:** [`docs/contributing/standards/principles.md`](docs/contributing/standards/principles.md). If this section diverges, principles.md is authoritative.
+
+Full details: see [`docs/contributing/standards/principles.md`](docs/contributing/standards/principles.md).
+
+**Separation of concerns:** `sim/` is a library (never terminates). Cluster-level policies see global state via `*RouterState`. Instance-level policies see only local data. Dependency direction: `cmd/ → sim/cluster/ → sim/`.
+
+**Interface design:** Single-method interfaces. Pure query methods. Factory validation. Behavioral contracts, not implementation-specific (R13). Single-module methods (R14).
+
+**Configuration design:** Group by module (R16). `SimConfig` composed of 6 embedded sub-configs. Factory signatures accept the narrowest sub-config: `NewKVStore(KVCacheConfig)`, `NewLatencyModel(LatencyCoeffs, ModelHardwareConfig)`. Each module's config independently validatable.
+
+**Canonical constructors:** Struct literals in exactly one place (R4). Grep for ALL construction sites before adding fields.
+
+**Output channel separation:** stdout (deterministic results), stderr (diagnostics via logrus).
+
+**Error handling boundaries:** CLI → `logrus.Fatalf`. Library → `error` or `panic`. Never silent `continue` (R1).
+
+### Antipattern Prevention
+
+> **Canonical source:** [`docs/contributing/standards/rules.md`](docs/contributing/standards/rules.md). If this section diverges, rules.md is authoritative.
+
+23 rules, each tracing to a real bug. Full details (evidence, checks, enforcement): see [`docs/contributing/standards/rules.md`](docs/contributing/standards/rules.md).
+
+| # | Rule | One-sentence summary |
+|---|------|---------------------|
+| R1 | No silent data loss | Every error path must return error, panic, or increment counter — never silently drop data |
+| R2 | Sort map keys | Map iteration feeding float sums or output ordering must sort keys first (determinism) |
+| R3 | Validate numeric parameters | Every numeric parameter validated — CLI flags AND library constructors |
+| R4 | Construction site audit | Adding a struct field? Grep for ALL literal construction sites, update every one |
+| R5 | Transactional mutation | Resource-allocating loops must rollback on mid-loop failure |
+| R6 | No Fatalf in library | `sim/` never terminates the process — return errors to callers |
+| R7 | Invariant tests | Every golden test needs a companion invariant test verifying a system law |
+| R8 | No exported maps | Validation maps unexported; expose via `IsValid*()` accessors |
+| R9 | YAML pointer types | Use `*float64` when zero is a valid user value |
+| R10 | Strict YAML parsing | `yaml.KnownFields(true)` — typos must cause errors |
+| R11 | Guard division | Runtime-derived denominators must be checked for zero |
+| R12 | Golden regeneration | Regenerate and document golden dataset when output changes |
+| R13 | Multi-impl interfaces | New interfaces must work for >=2 backends |
+| R14 | Single-module methods | No method spans scheduling + latency + metrics — extract concerns |
+| R15 | Stale PR references | Grep for `planned for PR N` after completing PR N |
+| R16 | Config by module | Group config parameters by module, not monolithic structs |
+| R17 | Signal freshness | Document which routing signals are synchronously fresh vs stale |
+| R18 | CLI flag precedence | defaults.yaml must not silently override user-provided CLI flags |
+| R19 | Livelock protection | Unbounded retry/requeue loops must have circuit breakers |
+| R20 | Degenerate detector inputs | Anomaly detectors must handle empty, skewed, or zero inputs explicitly |
+| R21 | No range over mutable slices | Go `range` captures slice header at entry — use index-based iteration when slice can shrink |
+| R22 | Pre-check consistency | Capacity pre-checks must not be stricter than the actual operation they guard |
+| R23 | Code path parity | Parallel code paths producing same output must apply equivalent transformations |
+
+
+### Current Implementation Focus
+
+Composable Scorer Framework completed: PR17 (scorer framework + stateless scorers) and PR18 (prefix-affinity scorer + router-side cache). Default weighted routing profile: `prefix-affinity:3,queue-depth:2,kv-utilization:2` (llm-d parity).
+
+Phase 0 workload unification complete (see issue #420): W0-1 (spec v2 schema + SLO tiers), W0-2 (binary rename + converters), W0-3 (cohort population dynamics), W0-4 (legacy retirement). All workload generation now flows through `sim/workload/GenerateRequests()`. SLO tiers: critical, standard, sheddable, batch, background. Arrival processes: poisson, gamma, weibull, constant. CLI binary renamed from `simulation_worker` to `blis`.
+
+Recent work: MkDocs documentation site (#450), roofline auto-fetch flag (#435), metrics substrate fixes (#458), cross-cutting documentation audit (#460).
+
+### Extension Recipes
+
+Step-by-step guides for adding policies, scorers, latency model backends, KV tiers, trace records, and per-request metrics: see `docs/contributing/extension-recipes.md`.
+
+### Code Style
+
+- Use composition over inheritance (e.g., `InstanceSimulator` wraps existing `sim` components)
+- Timestamp-based event ordering via min-heap; cluster event queue uses `(timestamp, priority, seqID)` ordering; per-instance queues use timestamp-only; cluster-level instance ties broken by lowest instance index
+- Partitioned RNG per subsystem to isolate randomness
+
+### CI/CD
+
+GitHub Actions CI runs on all PRs to main:
+
+- `.github/workflows/ci.yml` — Build verification (`go build ./...`), static analysis (`golangci-lint run ./...`, v2.9.0), test suite (`go test ./...`)
+- `.github/workflows/docs.yml` — MkDocs site: PR validation (build-only), deploy on push to main, versioned on tag
+
+Run lint locally before pushing: `golangci-lint run ./...`
+
+## Agent Behavioral Instructions
+
+The following instructions are for Claude Code and other AI assistants working on this codebase. Human contributors can skip this section.
+
+### Context Management
+
+When running multi-agent PR reviews, keep individual agent scopes narrow and summarize results concisely. Never try to synthesize all parallel agent outputs into one massive prompt. If hitting context limits, deliver incremental summaries per agent rather than a consolidated report.
+
+### Task Agent Guidelines
+
+When using Task agents: 1) Do NOT poll TaskList repeatedly — check at reasonable intervals (every 30-60 seconds, not continuously). 2) If a sub-agent goes idle or fails, fall back to doing the work directly rather than retrying indefinitely. 3) Keep sub-agent scopes focused to avoid context overflow.
+
+### Macro Plan Updates
+
+When asked to update the macro implementation plan, directly edit the document. Do NOT spend time re-reading all source documents or dispatching sub-agents to gather information you already have in context. Start writing immediately.
+
+## File Organization
+
+The simulator uses a discrete-event architecture with a min-heap event queue.
+
+```
+inference-sim/
+├── .github/workflows/         # CI configuration (build, lint, test)
+├── main.go                    # CLI entry point (Cobra)
+├── cmd/
+│   ├── root.go                # CLI commands and flags (--num-instances, --policy-config, --routing-scorers, --workload-spec, --trace-level, --fitness-weights, --kv-cpu-blocks, --kv-offload-threshold, --kv-transfer-bandwidth, --kv-transfer-base-latency, --snapshot-refresh-interval, --latency-model, --max-model-len, --prefill-instances, --decode-instances, --pd-decider, --pd-prefix-threshold, --pd-direct-decode-threshold, --pd-transfer-bandwidth, --pd-transfer-base-latency, --pd-kv-bytes-per-token, --pd-transfer-contention, --pd-interference-prefill, --pd-interference-decode, --prefill-routing-scorers, --decode-routing-scorers, --prefill-tp, --decode-tp, --prefill-hardware, --decode-hardware, --prefill-latency-model, --decode-latency-model, --prefill-max-model-len, --decode-max-model-len)
+│   ├── observe.go             # Real mode HTTP client (OpenAI-compatible, streaming + non-streaming)
+│   ├── convert.go             # `blis convert` subcommands (servegen, csv-trace, preset, inference-perf)
+│   ├── compose.go             # `blis compose` for merging v2 specs
+│   ├── hfconfig.go            # HuggingFace config resolution chain (--latency-model auto-fetch, caching)
+│   └── default_config.go      # defaults.yaml loading (includes GetHFRepo for HF repo name mapping)
+├── sim/                       # Core single-instance simulator
+│   ├── config.go              # Module-scoped sub-config types (KVCacheConfig, BatchConfig, LatencyCoeffs, ModelHardwareConfig, PolicyConfig, WorkloadConfig) — composed into SimConfig via embedding (R16)
+│   ├── doc.go                 # Package reading guide: start with request.go, event.go, simulator.go
+│   ├── simulator.go           # SimConfig struct (composed of embedded sub-configs + Horizon/Seed), NewSimulator(SimConfig) (*Simulator, error) constructor (validates MaxModelLen vs KV capacity), event loop (Run()), batch formation (delegated to BatchFormation interface), step execution with phased metric recording, EnqueueRequest (MaxModelLen + KV capacity guards), processCompletions (runtime length cap), observation methods (QueueDepth(), BatchSize(), CurrentClock(), SimHorizon()). All workload generation external via InjectArrival().
+│   ├── admission.go           # AdmissionPolicy interface (accepts *RouterState), AlwaysAdmit, TokenBucket, RejectAll, NewAdmissionPolicy factory
+│   ├── disaggregation.go     # DisaggregationDecider interface, DisaggregationDecision type, NeverDisaggregate, AlwaysDisaggregate, DirectToDecodeDecider (short-prompt bypass), NewDisaggregationDecider factory, NewDirectToDecodeDecider(threshold); DisaggregationObserver interface; PrefixThresholdDecider (prefix-aware, router-side cache, globalVirtualInstance), NewPrefixThresholdDecider(threshold, blockSize)
+│   ├── routing.go             # RoutingPolicy interface (accepts *RouterState), RoutingSnapshot (with EffectiveLoad() for canonical load calculation), RoutingDecision (with Priority hint), RoundRobin, LeastLoaded, WeightedScoring (composable scorer pipeline), AlwaysBusiest templates, NewRoutingPolicy factory
+│   ├── routing_scorers.go     # ScorerConfig, scorer implementations (queue-depth, kv-utilization, load-balance), ParseScorerConfigs, IsValidScorer, DefaultScorerConfigs, newScorerWithObserver factory
+│   ├── routing_prefix_scorer.go # Prefix-affinity scorer + observer (proportional prefix matching)
+│   ├── prefix_cache_index.go  # PrefixCacheIndex: per-instance LRU of hierarchical block hashes
+│   ├── priority.go            # PriorityPolicy interface with ConstantPriority, SLOBasedPriority, and InvertedSLO templates, NewPriorityPolicy factory
+│   ├── scheduler.go           # InstanceScheduler interface with FCFSScheduler, PriorityFCFSScheduler, SJFScheduler, and ReversePriority templates, NewScheduler factory
+│   ├── latency_model.go       # LatencyModel interface (3 methods), NewLatencyModelFunc registration variable, MustNewLatencyModel nil-guarded wrapper
+│   ├── router_state.go        # RouterState bridge type (Snapshots + Clock) for cluster-level policies
+│   ├── bundle.go              # PolicyBundle YAML loading, LoadPolicyBundle, Validate
+│   ├── event.go               # Event types (Arrival, Queued, Step, Scheduled, RequestLeft)
+│   ├── request.go             # RequestState typed constants (StateQueued, StateRunning, StateCompleted), Request lifecycle and state machine, Priority field for scheduler-aware ordering, AssignedInstance for cluster routing provenance (#181), workload metadata (TenantID, SLOClass, etc.), MaxOutputLen (client output budget for enqueue guard)
+│   ├── kv_store.go            # KVStore interface (11 methods: +SetClock, +ConsumePendingTransferLatency), NewKVStoreFromConfig registration variable, MustNewKVCacheState/MustNewKVStoreFromConfig nil-guarded wrappers
+│   ├── batch.go               # Batch struct
+│   ├── batch_formation.go     # BatchFormation interface, BatchContext/BatchResult types, VLLMBatchFormation (FCFS + chunked-prefill + preemption), NewBatchFormation() factory
+│   ├── queue.go               # FIFO wait queue
+│   ├── metrics.go             # TTFT, TPOT, E2E collection and SaveResults()
+│   ├── metrics_utils.go       # Percentile/mean calculation, MetricsOutput JSON struct, NewRequestMetrics canonical constructor
+│   ├── rng.go                 # PartitionedRNG for deterministic multi-subsystem simulation
+│   ├── model_hardware_config.go # ModelConfig, HardwareCalib structs (config types stay in sim/); HardwareCalib includes MemoryGiB (used by KV capacity auto-calculation in roofline/crossmodel modes). Note: MaxModelLen is int64 (aligned with ProgressIndex, TotalKVBlocks, BlockSizeTokens).
+│   └── internal/              # Shared internal packages
+│       ├── hash/              # Block-level hashing for prefix cache
+│       ├── testutil/          # Shared test infrastructure (golden dataset loading)
+│       └── util/              # General utility functions
+├── sim/kv/                    # KV cache implementations (PKG-1)
+│   ├── cache.go               # KVCacheState (single-tier GPU)
+│   ├── tiered.go              # TieredKVCache (GPU+CPU offload/reload)
+│   └── register.go            # NewKVStore factory + init()-based registration into sim/
+├── sim/latency/               # Latency model implementations (PKG-2)
+│   ├── latency.go             # BlackboxLatencyModel (alpha/beta regression), RooflineLatencyModel (analytical FLOPs/bandwidth), CrossModelLatencyModel (physics-informed cross-model), NewLatencyModel(LatencyCoeffs, ModelHardwareConfig) factory
+│   ├── trained_roofline.go    # TrainedRooflineLatencyModel: roofline basis functions × learned corrections (7β + 3α from training pipeline)
+│   ├── crossmodel.go          # CrossModelLatencyModel: physics-informed step time from architecture features (MoE-aware)
+│   ├── roofline.go            # rooflineStepTime(), calculateTransformerFlops(), calculateMemoryAccessBytes(), StepConfig/PrefillRequestConfig/DecodeRequestConfig types
+│   ├── kv_capacity.go         # CalculateKVBlocks: auto-derive total KV cache blocks from model architecture + GPU memory; KVCapacityParams, ExtractKVCapacityParams, computeModelWeightBytes
+│   ├── config.go              # HFConfig, GetHWConfig(), GetModelConfig(), ValidateRooflineConfig(), parseHWConfig(), ParseHFConfig()
+│   └── register.go            # init()-based registration of NewLatencyModelFunc into sim/
+├── sim/cluster/               # Multi-replica cluster simulation
+│   ├── instance.go            # InstanceSimulator wraps sim.Simulator via NewInstanceSimulator(id, SimConfig) with run-once guard; delegates to Simulator observation methods (QueueDepth(), BatchSize(), etc.)
+│   ├── cluster.go             # ClusterSimulator orchestrates N instances with shared-clock event loop, online routing pipeline, and metrics aggregation; Run() returns error; accessors: ParentRequests() (sorted slice), PerInstanceMetricsByID() (map copy)
+│   ├── cluster_event.go       # ClusterArrivalEvent, AdmissionDecisionEvent, RoutingDecisionEvent, DisaggregationDecisionEvent (PD disaggregation pipeline with bifurcation)
+│   ├── pd_events.go           # PrefillRoutingEvent, KVTransferStartedEvent, KVTransferCompletedEvent, DecodeRoutingEvent (PR2 disaggregated request flow)
+│   ├── parent_request.go      # ParentRequest type for tracking disaggregated request lifecycle across prefill and decode sub-requests
+│   ├── counterfactual.go      # computeCounterfactual() for top-k candidate ranking and regret computation
+│   ├── snapshot.go            # CachedSnapshotProvider (returns sim.RoutingSnapshot), ObservabilityConfig
+│   ├── metrics.go             # RawMetrics (includes PD *PDMetrics, nil when disaggregation inactive), Distribution, FitnessResult, CollectRawMetrics (accepts priorityPolicy), ComputeFitness (returns (FitnessResult, error)), anomaly detection, ParseFitnessWeights with NaN/Inf validation, per-SLO-class metrics, JainFairnessIndex
+│   ├── deployment.go          # DeploymentConfig embeds sim.SimConfig + cluster-only fields (PrefillInstances, DecodeInstances, PDDecider, PDPrefixThreshold, PDDirectDecodeThreshold, PDTransferContention, PDInterferencePrefill, PDInterferenceDecode, PrefillOverrides, DecodeOverrides for per-pool hardware config); ToSimConfig(), resolveConfigForRole()
+│   ├── interference.go        # InterferenceLatencyModel: tier-composition wrapper applying co-location slowdown to StepTime (INV-P2-3)
+│   ├── resolve.go             # PoolOverrides type, ResolvePoolConfig pure function for per-pool hardware config resolution
+│   ├── pd_metrics.go          # PDMetrics struct (DisaggregatedCount, ParentTTFT, TransferDuration, PrefillThroughput, DecodeThroughput, LoadImbalanceRatio, PeakConcurrentTransfers, MeanTransferQueueDepth), CollectPDMetrics (pure function, post-simulation), collectPoolThroughput (R2, R11)
+│   ├── pool.go                # PoolRole type, ValidatePoolTopology(), BuildPoolMembership(), BuildPoolMembershipFromIndices() for PD disaggregation pool topology
+│   └── evaluation.go          # EvaluationResult wrapper (RawMetrics + FitnessResult + trace + summary)
+├── sim/workload/              # ServeGen-informed workload generation (PR10)
+│   ├── spec.go                # WorkloadSpec v2, ClientSpec (with Model field), ArrivalSpec, DistSpec, YAML loading, v1→v2 auto-upgrade (UpgradeV1ToV2), IsValidSLOClass accessor
+│   ├── arrival.go             # ArrivalSampler: Poisson, Gamma (Marsaglia-Tsang), Weibull (bisection), Constant (fixed-interval)
+│   ├── distribution.go        # LengthSampler: Gaussian, Exponential, ParetoLogNormal, EmpiricalPDF, Constant
+│   ├── client.go              # Rate normalization, prefix group management
+│   ├── generator.go           # GenerateRequests pipeline with client decomposition
+│   ├── servegen.go            # Native ServeGen data file loading (chunk-*-trace.csv + dataset.json)
+│   ├── tracev2.go             # Trace v2 format (YAML header + CSV data)
+│   ├── replay.go              # Trace v2 → sim.Request with synthetic token IDs
+│   ├── calibrate.go           # CalibrationReport, PrepareCalibrationPairs, MAPE/Pearson r
+│   ├── multimodal.go          # Multimodal token generation (text+image+audio+video)
+│   ├── reasoning.go           # Reasoning multi-turn with context accumulation
+│   ├── network.go             # Client-perspective latency (RTT + bandwidth)
+│   ├── inference_perf.go      # inference-perf format: InferencePerfSpec, expansion, validation
+│   ├── scenarios.go           # Built-in presets (bursty, unfair, prefix-heavy, mixed-slo)
+│   ├── convert.go             # Format converters: ConvertServeGen, ConvertCSVTrace, ConvertPreset, ComposeSpecs
+│   ├── cohort.go              # CohortSpec expansion: diurnal, spike, drain patterns → lifecycle windows
+│   └── synthesis.go           # Flag-to-spec synthesis: SynthesizeFromDistribution, SynthesizeFromPreset
+├── sim/trace/                 # Decision trace recording (PR13, extended in PR4)
+│   ├── trace.go               # TraceLevel, TraceConfig, SimulationTrace, NewSimulationTrace, recording methods (RecordAdmission, RecordRouting, RecordDisaggregation, RecordPrefillRouting, RecordDecodeRouting, RecordKVTransfer)
+│   ├── record.go              # AdmissionRecord, RoutingRecord, CandidateScore, DisaggregationRecord, PrefillRoutingRecord, DecodeRoutingRecord, KVTransferRecord (pure data types, no sim/ dependency)
+│   └── summary.go             # TraceSummary, Summarize()
+├── model_configs/             # Auto-fetched HuggingFace config.json files (gitignored)
+├── defaults.yaml              # Pre-trained coefficients, default GPU/TP/vLLM mappings, workload presets
+├── hardware_config.json       # GPU specifications
+├── examples/                  # Example configuration files
+├── hypotheses/                # Hypothesis experiment artifacts (run.sh, analyze.py, FINDINGS.md)
+├── testdata/goldendataset.json # Golden dataset for regression tests
+├── docs/
+│   ├── getting-started/       # New user onboarding
+│   │   ├── index.md           # What is BLIS?
+│   │   ├── installation.md    # Build from source
+│   │   ├── quickstart.md      # First simulation
+│   │   └── tutorial.md        # Capacity planning walkthrough
+│   ├── guide/                 # Task-oriented user guides
+│   │   ├── index.md           # Guide overview
+│   │   ├── routing.md         # Routing policies
+│   │   ├── admission.md       # Admission control
+│   │   ├── scheduling.md      # Scheduling & priority
+│   │   ├── latency-models.md  # Latency models (blackbox + roofline)
+│   │   ├── kv-cache.md        # KV cache & memory management
+│   │   ├── workloads.md       # Workload specifications
+│   │   ├── cluster.md         # Cluster simulation
+│   │   ├── results.md         # Metrics & results
+│   │   ├── experimentation.md # Hypothesis-driven experimentation
+│   │   └── skills-and-plugins.md # Claude Code skills & plugins
+│   ├── concepts/              # Architecture and design documentation
+│   │   ├── index.md           # Concepts overview
+│   │   ├── glossary.md        # Concepts glossary
+│   │   ├── architecture.md    # Cluster architecture
+│   │   ├── core-engine.md     # Core DES engine
+│   │   └── roofline.md        # Roofline step time estimation
+│   ├── reference/             # Configuration and model reference
+│   │   ├── index.md           # Reference overview
+│   │   ├── configuration.md   # Configuration reference
+│   │   ├── models.md          # Supported models catalog
+│   │   └── workload-spec.md   # Workload spec YAML schema
+│   ├── methodology/           # Research methodology documentation
+│   │   ├── index.md           # Methodology overview
+│   │   ├── strategy-evolution.md # Strategy Evolution methodology guide
+│   │   ├── hypothesis-bundles.md # Hypothesis bundle examples and writing guide
+│   │   └── principles.md     # Discovered principles catalog (30 principles)
+│   ├── contributing/          # Contributor documentation
+│   │   ├── index.md           # Contributing landing page
+│   │   ├── extension-recipes.md # Step-by-step extension guides
+│   │   ├── pr-workflow.md     # PR development workflow
+│   │   ├── design-process.md  # Design document process
+│   │   ├── macro-planning.md  # Macro-level planning process
+│   │   ├── hypothesis.md      # Hypothesis experiment process
+│   │   ├── convergence.md     # Universal Convergence Protocol
+│   │   ├── standards/         # Canonical rules, invariants, principles, experiment standards
+│   │   └── templates/         # Artifact templates + agent prompts
+│   │       ├── design-guidelines.md  # DES foundations, module architecture
+│   │       ├── macro-plan.md         # Multi-PR template (human-readable)
+│   │       ├── macro-plan-prompt.md  # Agent preamble for macro planning
+│   │       ├── micro-plan.md         # Single-PR template (human-readable)
+│   │       ├── micro-plan-prompt.md  # Agent preamble for writing-plans skill
+│   │       └── hypothesis.md         # Experiment FINDINGS.md template
+│   └── plans/                 # Active implementation plans (excluded from MkDocs)
+│       └── archive/           # Completed design docs (architectural reference)
+├── CONTRIBUTING.md            # Contributor guide (references docs/contributing/standards/)
+└── mkdocs.yml                 # MkDocs Material site configuration
+```
+
+### Latency Estimation
+
+Four modes, selected by `latency.NewLatencyModel()` factory (in `sim/latency/`) based on `--latency-model` flag:
+
+1. **Blackbox mode** (default): Uses trained alpha/beta coefficients from `defaults.yaml`
+   - Alpha coefficients: queueing time estimation
+   - Beta coefficients: step time estimation based on batch features
+
+2. **Roofline mode**: Analytical FLOPs/bandwidth estimation via `sim/latency/roofline.go`
+   - Requires HuggingFace `config.json` in `model_configs/`
+   - Requires `hardware_config.json` with GPU specs (including `MemoryGiB` for KV capacity auto-calculation)
+   - **KV capacity auto-calculation**: When an analytical backend (`roofline` or `crossmodel`) is active and `--total-kv-blocks` is not explicitly set, `CalculateKVBlocks()` (in `sim/latency/kv_capacity.go`) derives the block count from model architecture + GPU memory, matching the llm-d-benchmark `capacity_planner.py` reference formula. Supports dense and MoE models.
+   - **`--latency-model roofline`**: Auto-resolves both configs — checks `model_configs/` first, fetches from HuggingFace on miss (creating `model_configs/` and writing into it), and uses bundled `hardware_config.json`. Simplifies usage to: `./blis run --model <name> --latency-model roofline --hardware <GPU> --tp <N>`
+
+3. **Cross-model mode**: Physics-informed estimation via `sim/latency/crossmodel.go`
+   - Uses 7 globally-fitted coefficients — 4 beta (per-layer overhead, KV bandwidth, MoE dispatch, TP sync) + 3 alpha (pre-scheduling, per-token preprocessing, output processing) — from `crossmodel_defaults` in `defaults.yaml`
+   - Derives architecture features from HuggingFace `config.json` (layer count, KV heads, head dimension, MoE expert count, TP degree)
+   - MoE-aware: correctly models sparse activation patterns (unlike roofline which overestimates ~4x for MoE)
+   - **`--latency-model crossmodel`**: Same auto-fetch chain as roofline. Usage: `./blis run --model <name> --latency-model crossmodel --hardware <GPU> --tp <N>`
+
+4. **Trained-roofline mode**: Roofline basis functions × learned correction coefficients via `sim/latency/trained_roofline.go`
+   - Uses 10 globally-fitted coefficients — 7 beta (prefill/decode roofline corrections, weight loading, TP communication, per-layer overhead, per-request scheduling, per-step overhead) + 3 alpha (API processing, post-decode fixed, per-output-token) — from `trained_roofline_defaults` in `defaults.yaml`
+   - Computes 6 analytical basis functions from HuggingFace `config.json` and hardware specs, applies learned β corrections
+   - Achieves 7% MAPE on GPU combined step time (test split) across 4 architectures (137K real vLLM requests)
+   - Key difference from pure roofline: no MFU scaling (β₁/β₂ ARE the corrections); 3-matrix SwiGLU (not roofline's 2-matrix)
+   - **`--latency-model trained-roofline`**: Same auto-fetch chain as roofline/crossmodel. Usage: `./blis run --model <name> --latency-model trained-roofline --hardware <GPU> --tp <N>`
+
+### Key Data Flow
+
+```
+Request Arrival → Admission → Routing → WaitQueue → Batch Formation → Step Execution → Completion
+                                            ↓              ↓
+                                      KV Allocation   Latency Estimation (alpha/beta, roofline, cross-model, or trained-roofline)
+```
+Note: Admission and Routing steps apply in cluster mode (multi-instance). Single-instance mode skips directly to WaitQueue.
+
+### Disaggregated Data Flow (PD mode)
+
+When `--prefill-instances` and `--decode-instances` are configured:
+```
+Request Arrival → Admission → Disaggregation Decision
+  → [disaggregate] → Prefill Routing (pool-filtered) → Prefill Instance → Prefill Complete
+    → KV Transfer Started → KV Transfer Completed
+    → Decode Routing (pool-filtered) → KV Pre-Allocation → Decode Instance → Completion
+  → [local] → Decode Pool Routing (pool-filtered, INV-P2-4) → Decode Instance → Completion
+```
+CLI flags: `--pd-decider` (never/always/prefix-threshold/direct-to-decode), `--pd-prefix-threshold` (512, non-cached token threshold for prefix-threshold decider), `--pd-direct-decode-threshold` (256, input token threshold for direct-to-decode decider), `--pd-transfer-bandwidth` (25 GB/s), `--pd-transfer-base-latency` (0.05 ms), `--pd-kv-bytes-per-token` (512), `--pd-transfer-contention` (bool, default false — fair-share bandwidth contention model, INV-P2-2), `--prefill-routing-scorers`, `--decode-routing-scorers`, `--pd-interference-prefill` (float64, default 0 — prefill-dominant batch slowdown), `--pd-interference-decode` (float64, default 0 — decode-dominant batch slowdown)
+Per-pool hardware flags: `--prefill-tp`, `--decode-tp`, `--prefill-hardware`, `--decode-hardware`, `--prefill-latency-model`, `--decode-latency-model`, `--prefill-max-model-len`, `--decode-max-model-len` (all default to global config when unset)
+
+## Project Governance Documents
+
+### Standards (what rules apply)
+
+- `docs/contributing/standards/rules.md`: **23 antipattern rules** (R1-R23) — each with evidence, checks, enforcement locations
+- `docs/contributing/standards/invariants.md`: **9 system invariants** (INV-1 through INV-9) — with verification strategies
+- `docs/contributing/standards/principles.md`: **Engineering principles** — separation of concerns, interface design, BDD/TDD
+- `docs/contributing/standards/experiments.md`: **Experiment standards** — hypothesis families (6 families × type classification), rigor requirements, root cause verification (RCV-1 through RCV-6), iterative review protocol (summary; see `docs/contributing/convergence.md`), findings classification
+
+### Process (how to do each activity)
+
+- `docs/contributing/pr-workflow.md`: End-to-end PR workflow (worktree → plan → review → implement → audit → commit)
+- `docs/contributing/design-process.md`: Design document creation process
+- `docs/contributing/macro-planning.md`: Macro-level (multi-PR) planning process
+- `docs/contributing/hypothesis.md`: End-to-end hypothesis experiment process (Steps 0-10, three review gates)
+- `docs/contributing/convergence.md`: Universal Convergence Protocol (used by all review gates across PR, hypothesis, design, and macro-plan workflows)
+
+### Templates (what to produce)
+
+- `docs/contributing/templates/design-guidelines.md`: **BLIS Design Guidelines** — DES foundations, module architecture, extension framework. **Start here when designing anything new.**
+- `docs/contributing/templates/macro-plan.md`: Human-readable template for macro-level planning (multi-PR features). **Agent prompt:** `macro-plan-prompt.md`
+- `docs/contributing/templates/micro-plan.md`: Human-readable template for micro-level (per-PR) planning with TDD tasks and behavioral contracts. **Agent prompt:** `micro-plan-prompt.md`
+- `docs/contributing/templates/hypothesis.md`: Template for hypothesis experiment artifacts
+
+### Per-Feature Plans
+
+- **Active plans:** `docs/plans/` (implementation plans for in-progress work)
+- **Archived design docs:** `docs/plans/archive/` (completed design docs for architectural reference)
+- **PR history:** Use `git log --oneline main` for the definitive commit history

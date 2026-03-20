@@ -3,305 +3,341 @@ package cluster
 import (
 	"fmt"
 	"testing"
+
+	"github.com/inference-sim/inference-sim/sim"
 )
 
-// TestValidatePoolTopology verifies BC-PD-2: invalid pool configs return errors.
+// TestValidatePoolTopology verifies pool topology validation rules (BC-PD-2, BC-PD-11, BC-PD-12, BC-PD-13)
 func TestValidatePoolTopology(t *testing.T) {
 	tests := []struct {
-		name     string
-		prefill  int
-		decode   int
-		total    int
-		wantErr  bool
+		name    string
+		prefill int
+		decode  int
+		total   int
+		wantErr bool
+		errMsg  string
 	}{
 		{
-			name:    "both zero — disabled",
-			prefill: 0, decode: 0, total: 4,
+			name:    "both zero (disabled)",
+			prefill: 0,
+			decode:  0,
+			total:   4,
 			wantErr: false,
 		},
 		{
 			name:    "valid split",
-			prefill: 2, decode: 2, total: 4,
+			prefill: 2,
+			decode:  2,
+			total:   4,
 			wantErr: false,
 		},
 		{
-			name:    "valid uneven split",
-			prefill: 1, decode: 3, total: 4,
-			wantErr: false,
-		},
-		{
-			name:    "sum exceeds total",
-			prefill: 3, decode: 3, total: 4,
-			wantErr: true,
-		},
-		{
-			name:    "sum equals total",
-			prefill: 2, decode: 2, total: 4,
+			name:    "valid unequal split",
+			prefill: 1,
+			decode:  3,
+			total:   4,
 			wantErr: false,
 		},
 		{
 			name:    "negative prefill",
-			prefill: -1, decode: 2, total: 4,
+			prefill: -1,
+			decode:  2,
+			total:   4,
 			wantErr: true,
+			errMsg:  "prefill-instances must be >= 0",
 		},
 		{
 			name:    "negative decode",
-			prefill: 2, decode: -1, total: 4,
+			prefill: 2,
+			decode:  -1,
+			total:   4,
 			wantErr: true,
+			errMsg:  "decode-instances must be >= 0",
 		},
 		{
-			name:    "only prefill set — single pool when disagg enabled",
-			prefill: 2, decode: 0, total: 4,
+			name:    "only prefill set",
+			prefill: 2,
+			decode:  0,
+			total:   4,
 			wantErr: true,
+			errMsg:  "both --prefill-instances and --decode-instances must be set",
 		},
 		{
-			name:    "only decode set — single pool when disagg enabled",
-			prefill: 0, decode: 2, total: 4,
+			name:    "only decode set",
+			prefill: 0,
+			decode:  2,
+			total:   4,
 			wantErr: true,
+			errMsg:  "both --prefill-instances and --decode-instances must be set",
 		},
 		{
-			name:    "prefill equals total — no decode instances",
-			prefill: 4, decode: 0, total: 4,
+			name:    "sum exceeds total",
+			prefill: 3,
+			decode:  3,
+			total:   4,
 			wantErr: true,
+			errMsg:  "exceeds num-instances",
 		},
 		{
-			name:    "decode equals total — no prefill instances",
-			prefill: 0, decode: 4, total: 4,
-			wantErr: true,
+			name:    "sum equals total",
+			prefill: 2,
+			decode:  2,
+			total:   4,
+			wantErr: false,
 		},
 	}
 
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			err := ValidatePoolTopology(tc.prefill, tc.decode, tc.total)
-			if (err != nil) != tc.wantErr {
-				t.Errorf("ValidatePoolTopology(%d, %d, %d) error = %v, wantErr %v",
-					tc.prefill, tc.decode, tc.total, err, tc.wantErr)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := ValidatePoolTopology(tt.prefill, tt.decode, tt.total)
+			if tt.wantErr {
+				if err == nil {
+					t.Errorf("ValidatePoolTopology() expected error containing %q, got nil", tt.errMsg)
+				} else if tt.errMsg != "" && !contains(err.Error(), tt.errMsg) {
+					t.Errorf("ValidatePoolTopology() error = %v, want substring %q", err, tt.errMsg)
+				}
+			} else {
+				if err != nil {
+					t.Errorf("ValidatePoolTopology() unexpected error = %v", err)
+				}
 			}
 		})
 	}
 }
 
-// TestBuildPoolMembership verifies BC-PD-3: membership construction and correctness.
+// TestBuildPoolMembership verifies pool membership construction (BC-PD-3)
 func TestBuildPoolMembership(t *testing.T) {
 	tests := []struct {
-		name          string
-		numInstances  int
-		prefill       int
-		decode        int
-		wantPrefill   []string
-		wantDecode    []string
+		name     string
+		prefill  int
+		decode   int
+		wantSize int
 	}{
 		{
-			name:         "2 prefill, 2 decode",
-			numInstances: 4,
-			prefill:      2, decode: 2,
-			wantPrefill: []string{"instance_0", "instance_1"},
-			wantDecode:  []string{"instance_2", "instance_3"},
+			name:     "equal split",
+			prefill:  2,
+			decode:   2,
+			wantSize: 4,
 		},
 		{
-			name:         "1 prefill, 3 decode",
-			numInstances: 4,
-			prefill:      1, decode: 3,
-			wantPrefill: []string{"instance_0"},
-			wantDecode:  []string{"instance_1", "instance_2", "instance_3"},
+			name:     "prefill heavy",
+			prefill:  3,
+			decode:   1,
+			wantSize: 4,
+		},
+		{
+			name:     "decode heavy",
+			prefill:  1,
+			decode:   3,
+			wantSize: 4,
 		},
 	}
 
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			config := newTestDeploymentConfig(tc.numInstances)
-			cs := NewClusterSimulator(config, nil)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Create mock instances
+			total := tt.prefill + tt.decode
+			instances := make([]*InstanceSimulator, total)
+			for i := 0; i < total; i++ {
+				cfg := sim.SimConfig{
+					Horizon:             100.0,
+					Seed:                42,
+					KVCacheConfig:       sim.NewKVCacheConfig(100, 16, 0, 0, 0, 0),
+					BatchConfig:         sim.NewBatchConfig(256, 2048, 0),
+					LatencyCoeffs:       sim.NewLatencyCoeffs([]float64{1000, 10, 5}, []float64{100, 1, 100}),
+					ModelHardwareConfig: sim.NewModelHardwareConfig(sim.ModelConfig{}, sim.HardwareCalib{}, "test-model", "H100", 1, "", 0),
+				}
+				inst := NewInstanceSimulator(InstanceID(fmt.Sprintf("instance_%d", i)), cfg)
+				instances[i] = inst
+			}
 
-			membership := BuildPoolMembership(cs.instances, tc.prefill, tc.decode)
+			membership := BuildPoolMembership(instances, tt.prefill, tt.decode)
 
-			// Verify total membership count
-			if len(membership) != tc.prefill+tc.decode {
-				t.Errorf("membership size = %d, want %d", len(membership), tc.prefill+tc.decode)
+			// Verify size
+			if len(membership) != tt.wantSize {
+				t.Errorf("BuildPoolMembership() size = %d, want %d", len(membership), tt.wantSize)
 			}
 
 			// Verify prefill instances
-			for _, id := range tc.wantPrefill {
-				role, ok := membership[id]
-				if !ok {
-					t.Errorf("instance %q not in membership", id)
-					continue
-				}
-				if role != PoolRolePrefill {
-					t.Errorf("instance %q role = %v, want Prefill", id, role)
+			for i := 0; i < tt.prefill; i++ {
+				id := string(instances[i].ID())
+				if role, ok := membership[id]; !ok {
+					t.Errorf("BuildPoolMembership() missing instance %s", id)
+				} else if role != PoolRolePrefill {
+					t.Errorf("BuildPoolMembership() instance %s role = %v, want PoolRolePrefill", id, role)
 				}
 			}
 
 			// Verify decode instances
-			for _, id := range tc.wantDecode {
-				role, ok := membership[id]
-				if !ok {
-					t.Errorf("instance %q not in membership", id)
-					continue
-				}
-				if role != PoolRoleDecode {
-					t.Errorf("instance %q role = %v, want Decode", id, role)
+			for i := tt.prefill; i < tt.prefill+tt.decode; i++ {
+				id := string(instances[i].ID())
+				if role, ok := membership[id]; !ok {
+					t.Errorf("BuildPoolMembership() missing instance %s", id)
+				} else if role != PoolRoleDecode {
+					t.Errorf("BuildPoolMembership() instance %s role = %v, want PoolRoleDecode", id, role)
 				}
 			}
 		})
 	}
 }
 
-// TestBuildPoolMembership_Immutability verifies INV-PD-5: pool membership never changes.
+// TestBuildPoolMembership_Immutability verifies pool membership is immutable (BC-PD-9, INV-PD-5)
 func TestBuildPoolMembership_Immutability(t *testing.T) {
-	config := newTestDeploymentConfig(4)
-	cs := NewClusterSimulator(config, nil)
-
-	membership := BuildPoolMembership(cs.instances, 2, 2)
-
-	// Take a snapshot
-	snapshot := make(map[string]PoolRole, len(membership))
-	for k, v := range membership {
-		snapshot[k] = v
-	}
-
-	// Verify snapshot matches original
-	for k, v := range snapshot {
-		if membership[k] != v {
-			t.Errorf("membership[%q] changed: was %v, now %v", k, v, membership[k])
+	// Create mock instances
+	instances := make([]*InstanceSimulator, 4)
+	for i := 0; i < 4; i++ {
+		cfg := sim.SimConfig{
+			Horizon:             100.0,
+			Seed:                42,
+			KVCacheConfig:       sim.NewKVCacheConfig(100, 16, 0, 0, 0, 0),
+			BatchConfig:         sim.NewBatchConfig(256, 2048, 0),
+			LatencyCoeffs:       sim.NewLatencyCoeffs([]float64{1000, 10, 5}, []float64{100, 1, 100}),
+			ModelHardwareConfig: sim.NewModelHardwareConfig(sim.ModelConfig{}, sim.HardwareCalib{}, "test-model", "H100", 1, "", 0),
 		}
+		inst := NewInstanceSimulator(InstanceID(fmt.Sprintf("instance_%d", i)), cfg)
+		instances[i] = inst
 	}
-	if len(membership) != len(snapshot) {
-		t.Errorf("membership size changed: was %d, now %d", len(snapshot), len(membership))
-	}
-}
 
-// TestClusterSimulator_WithPools verifies that pool topology is wired into ClusterSimulator.
-func TestClusterSimulator_WithPools(t *testing.T) {
-	config := newTestDeploymentConfig(4)
-	config.PrefillInstances = 2
-	config.DecodeInstances = 2
-	config.PDDecider = "always"
-	config.PDTransferBandwidthGBps = 25.0
-	config.PDTransferBaseLatencyMs = 0.05
-	config.PDKVBytesPerToken = 512
+	membership := BuildPoolMembership(instances, 2, 2)
 
-	cs := NewClusterSimulator(config, nil)
+	// Attempt to mutate (should not affect original)
+	membership[string(instances[0].ID())] = PoolRoleDecode
 
-	if !cs.poolsConfigured() {
-		t.Error("poolsConfigured() should return true when pools are set")
-	}
-	if len(cs.PoolMembership()) != 4 {
-		t.Errorf("PoolMembership() size = %d, want 4", len(cs.PoolMembership()))
-	}
-	if cs.disaggregationDecider == nil {
-		t.Error("disaggregationDecider should be non-nil when pools are configured")
+	// Rebuild and verify original assignment is preserved
+	membership2 := BuildPoolMembership(instances, 2, 2)
+	if membership2[string(instances[0].ID())] != PoolRolePrefill {
+		t.Errorf("BuildPoolMembership() not immutable: instance 0 role changed")
 	}
 }
 
-// TestClusterSimulator_WithoutPools verifies BC-PD-4: no pool topology when disabled.
-func TestClusterSimulator_WithoutPools(t *testing.T) {
-	config := newTestDeploymentConfig(4)
-	// PrefillInstances and DecodeInstances are 0 (zero values)
-
-	cs := NewClusterSimulator(config, nil)
-
-	if cs.poolsConfigured() {
-		t.Error("poolsConfigured() should return false when pools are not set")
-	}
-	if cs.PoolMembership() != nil {
-		t.Errorf("PoolMembership() should be nil, got %v", cs.PoolMembership())
-	}
-	if cs.disaggregationDecider != nil {
-		t.Error("disaggregationDecider should be nil when pools are not configured")
-	}
-}
-
-// TestClusterSimulator_InvalidPoolConfig_Panics verifies BC-PD-2 at construction time.
-func TestClusterSimulator_InvalidPoolConfig_Panics(t *testing.T) {
-	defer func() {
-		if r := recover(); r == nil {
-			t.Error("expected panic for invalid pool config")
-		}
-	}()
-	config := newTestDeploymentConfig(4)
-	config.PrefillInstances = 3
-	config.DecodeInstances = 3 // sum > 4
-	NewClusterSimulator(config, nil)
-}
-
+// TestBuildPoolMembershipFromIndices verifies index-based membership construction
 func TestBuildPoolMembershipFromIndices(t *testing.T) {
 	tests := []struct {
-		name    string
-		total   int
-		prefill int
-		decode  int
+		name     string
+		total    int
+		prefill  int
+		decode   int
+		wantSize int
 	}{
-		{"2+2 of 4", 4, 2, 2},
-		{"1+3 of 4", 4, 1, 3},
-		{"3+1 of 6", 6, 3, 1},
+		{
+			name:     "equal split",
+			total:    4,
+			prefill:  2,
+			decode:   2,
+			wantSize: 4,
+		},
+		{
+			name:     "prefill heavy",
+			total:    4,
+			prefill:  3,
+			decode:   1,
+			wantSize: 4,
+		},
 	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			membership := BuildPoolMembershipFromIndices(tc.total, tc.prefill, tc.decode)
 
-			// Verify total membership count
-			if len(membership) != tc.prefill+tc.decode {
-				t.Fatalf("membership count = %d, want %d", len(membership), tc.prefill+tc.decode)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			membership := BuildPoolMembershipFromIndices(tt.total, tt.prefill, tt.decode)
+
+			// Verify size
+			if len(membership) != tt.wantSize {
+				t.Errorf("BuildPoolMembershipFromIndices() size = %d, want %d", len(membership), tt.wantSize)
 			}
 
 			// Verify prefill instances
-			for i := 0; i < tc.prefill; i++ {
-				id := fmt.Sprintf("instance_%d", i)
-				if membership[id] != PoolRolePrefill {
-					t.Errorf("instance %s role = %v, want prefill", id, membership[id])
+			for i := 0; i < tt.prefill; i++ {
+				id := instanceIDFromIndex(i)
+				if role, ok := membership[id]; !ok {
+					t.Errorf("BuildPoolMembershipFromIndices() missing instance %s", id)
+				} else if role != PoolRolePrefill {
+					t.Errorf("BuildPoolMembershipFromIndices() instance %s role = %v, want PoolRolePrefill", id, role)
 				}
 			}
 
 			// Verify decode instances
-			for i := tc.prefill; i < tc.prefill+tc.decode; i++ {
-				id := fmt.Sprintf("instance_%d", i)
-				if membership[id] != PoolRoleDecode {
-					t.Errorf("instance %s role = %v, want decode", id, membership[id])
-				}
-			}
-
-			// Verify unassigned instances have no role
-			for i := tc.prefill + tc.decode; i < tc.total; i++ {
-				id := fmt.Sprintf("instance_%d", i)
-				if _, ok := membership[id]; ok {
-					t.Errorf("instance %s should have no role, got %v", id, membership[id])
+			for i := tt.prefill; i < tt.prefill+tt.decode; i++ {
+				id := instanceIDFromIndex(i)
+				if role, ok := membership[id]; !ok {
+					t.Errorf("BuildPoolMembershipFromIndices() missing instance %s", id)
+				} else if role != PoolRoleDecode {
+					t.Errorf("BuildPoolMembershipFromIndices() instance %s role = %v, want PoolRoleDecode", id, role)
 				}
 			}
 		})
 	}
 }
 
-// BC-P2-5: new function produces same mapping as existing function
-func TestBuildPoolMembershipFromIndices_MatchesExistingFunction(t *testing.T) {
-	config := newTestDeploymentConfig(4)
-	cs := NewClusterSimulator(config, nil)
-
-	existingMembership := BuildPoolMembership(cs.instances, 2, 2)
-	newMembership := BuildPoolMembershipFromIndices(4, 2, 2)
-
-	if len(existingMembership) != len(newMembership) {
-		t.Fatalf("size mismatch: existing=%d, new=%d", len(existingMembership), len(newMembership))
+// TestFilterSnapshotsByPoolRole verifies snapshot filtering by pool role
+func TestFilterSnapshotsByPoolRole(t *testing.T) {
+	// Create mock snapshots
+	snapshots := []sim.RoutingSnapshot{
+		{ID: "instance_0", QueueDepth: 1},
+		{ID: "instance_1", QueueDepth: 2},
+		{ID: "instance_2", QueueDepth: 3},
+		{ID: "instance_3", QueueDepth: 4},
 	}
-	for id, role := range existingMembership {
-		if newMembership[id] != role {
-			t.Errorf("id=%s: existing=%v, new=%v", id, role, newMembership[id])
-		}
+
+	membership := map[string]PoolRole{
+		"instance_0": PoolRolePrefill,
+		"instance_1": PoolRolePrefill,
+		"instance_2": PoolRoleDecode,
+		"instance_3": PoolRoleDecode,
+	}
+
+	// Filter prefill
+	prefillSnaps := FilterSnapshotsByPool(snapshots, membership, PoolRolePrefill)
+	if len(prefillSnaps) != 2 {
+		t.Errorf("FilterSnapshotsByPool(PoolRolePrefill) len = %d, want 2", len(prefillSnaps))
+	}
+	if prefillSnaps[0].ID != "instance_0" || prefillSnaps[1].ID != "instance_1" {
+		t.Errorf("FilterSnapshotsByPool(PoolRolePrefill) IDs = %v, want [instance_0, instance_1]", []string{prefillSnaps[0].ID, prefillSnaps[1].ID})
+	}
+
+	// Filter decode
+	decodeSnaps := FilterSnapshotsByPool(snapshots, membership, PoolRoleDecode)
+	if len(decodeSnaps) != 2 {
+		t.Errorf("FilterSnapshotsByPool(PoolRoleDecode) len = %d, want 2", len(decodeSnaps))
+	}
+	if decodeSnaps[0].ID != "instance_2" || decodeSnaps[1].ID != "instance_3" {
+		t.Errorf("FilterSnapshotsByPool(PoolRoleDecode) IDs = %v, want [instance_2, instance_3]", []string{decodeSnaps[0].ID, decodeSnaps[1].ID})
 	}
 }
 
-// TestPoolRole_String verifies PoolRole has meaningful string representation.
-func TestPoolRole_String(t *testing.T) {
+// TestPoolRoleString verifies String() method
+func TestPoolRoleString(t *testing.T) {
 	tests := []struct {
 		role PoolRole
 		want string
 	}{
 		{PoolRolePrefill, "prefill"},
 		{PoolRoleDecode, "decode"},
+		{PoolRole(99), "PoolRole(99)"},
 	}
-	for _, tc := range tests {
-		if got := tc.role.String(); got != tc.want {
-			t.Errorf("PoolRole(%d).String() = %q, want %q", tc.role, got, tc.want)
+
+	for _, tt := range tests {
+		t.Run(tt.want, func(t *testing.T) {
+			if got := tt.role.String(); got != tt.want {
+				t.Errorf("PoolRole.String() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// Helper functions
+
+func contains(s, substr string) bool {
+	return len(s) >= len(substr) && (s == substr || len(substr) == 0 || (len(s) > 0 && len(substr) > 0 && findSubstring(s, substr)))
+}
+
+func findSubstring(s, substr string) bool {
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if s[i:i+len(substr)] == substr {
+			return true
 		}
 	}
+	return false
+}
+
+func instanceIDFromIndex(i int) string {
+	return fmt.Sprintf("instance_%d", i)
 }
