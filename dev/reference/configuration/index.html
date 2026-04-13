@@ -51,6 +51,8 @@
       
     
     
+      <link rel="stylesheet" href="../../stylesheets/extra.css">
+    
     <script>__md_scope=new URL("../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
     
       
@@ -2955,6 +2957,10 @@
       
         
       
+        
+      
+        
+      
     
     
     
@@ -3011,6 +3017,36 @@
   
   
     <li class="md-nav__item">
+      <a href="../../blog/category/architecture/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Architecture
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+    
+  
+  
+    <li class="md-nav__item">
       <a href="../../blog/category/capacity-planning/" class="md-nav__link">
         
   
@@ -3019,6 +3055,36 @@
     
   
     Capacity Planning
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+    
+  
+  
+    <li class="md-nav__item">
+      <a href="../../blog/category/deep-dives/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Deep Dives
   
 
     
@@ -4035,7 +4101,7 @@
 <td><code>--admission-policy</code></td>
 <td>string</td>
 <td>"always-admit"</td>
-<td>Policy name: <code>always-admit</code>, <code>token-bucket</code>, <code>reject-all</code>, <code>tier-shed</code>.</td>
+<td>Policy name: <code>always-admit</code>, <code>token-bucket</code>, <code>reject-all</code>, <code>tier-shed</code>, <code>gaie-legacy</code>.</td>
 </tr>
 <tr>
 <td><code>--admission-latency</code></td>
@@ -4085,6 +4151,41 @@
 <td>map[string]int</td>
 <td>nil</td>
 <td>Custom SLO class priority overrides. Merges on top of GAIE defaults. See <a href="#slo-tier-priorities">SLO Tier Priorities</a> below.</td>
+</tr>
+</tbody>
+</table>
+<p><strong>GAIE-legacy admission</strong> (<code>--admission-policy gaie-legacy</code>): Saturation-based shedding matching production llm-d/GAIE. Non-sheddable requests always pass; sheddable requests rejected when pool-average saturation &gt;= 1.0. Saturation = <code>avg(max(qd/qdThreshold, kvUtil/kvThreshold))</code> across instances. Configured via <code>--policy-config</code> YAML only:</p>
+<table>
+<thead>
+<tr>
+<th>YAML field</th>
+<th>Type</th>
+<th>Default</th>
+<th>Source</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>admission.gaie_qd_threshold</code></td>
+<td>float64</td>
+<td>5</td>
+<td>GAIE <code>DefaultQueueDepthThreshold</code> (<code>config.go:31</code>)</td>
+<td>Per-instance queue depth threshold. Must be &gt; 0.</td>
+</tr>
+<tr>
+<td><code>admission.gaie_kv_threshold</code></td>
+<td>float64</td>
+<td>0.8</td>
+<td>GAIE <code>DefaultKVCacheUtilThreshold</code> (<code>config.go:33</code>)</td>
+<td>Per-instance KV cache utilization threshold. Must be in (0, 1.0].</td>
+</tr>
+<tr>
+<td><code>admission.slo_priorities</code></td>
+<td>map[string]int</td>
+<td>nil</td>
+<td>—</td>
+<td>Custom SLO class priority overrides (shared with tier-shed).</td>
 </tr>
 </tbody>
 </table>
@@ -4664,7 +4765,7 @@
 <li><strong>Profiling</strong>: Execute training workloads on a live vLLM instance to collect ground-truth mean and P90 metrics for TTFT, ITL, and E2E</li>
 <li><strong>Optimization</strong>: Run BLIS iteratively using Blackbox Bayesian Optimization to minimize the multi-objective loss:</li>
 </ol>
-<p>$$\text{Loss} = \sum_{m \in {\text{TTFT, ITL, E2E}}} \left( |GT_{\text{mean},m} - Sim_{\text{mean},m}| + |GT_{\text{p90},m} - Sim_{\text{p90},m}| \right)$$</p>
+<p>$<span class="arithmatex">\(\text{Loss} = \sum_{m \in \{\text{TTFT, ITL, E2E}\}} \left( |GT_{\text{mean},m} - Sim_{\text{mean},m}| + |GT_{\text{p90},m} - Sim_{\text{p90},m}| \right)\)</span>$</p>
 <ol>
 <li><strong>Artifact generation</strong>: Optimal alpha/beta coefficients are stored in <code>defaults.yaml</code> for production use</li>
 </ol>
@@ -5216,6 +5317,12 @@
     
     
       <script src="../../assets/javascripts/bundle.79ae519e.min.js"></script>
+      
+        <script src="../../javascripts/mermaid-text-fix.js"></script>
+      
+        <script src="../../javascripts/mathjax.js"></script>
+      
+        <script src="https://unpkg.com/mathjax@3/es5/tex-mml-chtml.js"></script>
       
     
   </body>
