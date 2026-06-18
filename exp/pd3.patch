@@ -1,0 +1,2841 @@
+diff --git a/cmd/replay.go b/cmd/replay.go
+index 4e21c6be..1fe13060 100644
+--- a/cmd/replay.go
++++ b/cmd/replay.go
+@@ -250,8 +250,63 @@ Example:
+ 		if pdDecider == "prefix-threshold" && pdPrefixThreshold < 0 {
+ 			logrus.Fatalf("--pd-prefix-threshold must be >= 0, got %d", pdPrefixThreshold)
+ 		}
+-		if pdDecider != "prefix-threshold" && cmd.Flags().Changed("pd-prefix-threshold") {
+-			logrus.Fatalf("--pd-prefix-threshold=%d has no effect when --pd-decider=%q (only applies to the prefix-threshold decider); remove the flag or set --pd-decider=prefix-threshold", pdPrefixThreshold, pdDecider)
++		if pdDecider != "prefix-threshold" && pdDecider != "load-kv-gated-prefix" && pdDecider != "cache-aware-kv-gated-prefix" && pdDecider != "cache-bypassed-kv-gated-prefix" && pdDecider != "cluster-kv-gated-prefix" && pdDecider != "cluster-transient-kv-gated-prefix" && pdDecider != "cluster-ifr-gated-prefix" && pdDecider != "cluster-ifr-and-gated-prefix" && pdDecider != "long-prefill-aware-prefix" && cmd.Flags().Changed("pd-prefix-threshold") {
++			logrus.Fatalf("--pd-prefix-threshold=%d has no effect when --pd-decider=%q (only applies to the prefix-threshold and load-kv-gated-prefix deciders); remove the flag or set --pd-decider=prefix-threshold", pdPrefixThreshold, pdDecider)
++		}
++		if pdDecider == "load-kv-gated-prefix" || pdDecider == "cache-aware-kv-gated-prefix" || pdDecider == "cache-bypassed-kv-gated-prefix" || pdDecider == "cluster-kv-gated-prefix" || pdDecider == "cluster-transient-kv-gated-prefix" || pdDecider == "cluster-ifr-gated-prefix" || pdDecider == "cluster-ifr-and-gated-prefix" || pdDecider == "long-prefill-aware-prefix" || pdDecider == "kv-admission-gated-prefix" {
++			if pdPrefixThreshold < 0 {
++				logrus.Fatalf("--pd-prefix-threshold must be >= 0, got %d", pdPrefixThreshold)
++			}
++			if pdLoadGateValue < 0 {
++				logrus.Fatalf("--pd-load-gate-value must be >= 0, got %d", pdLoadGateValue)
++			}
++			if pdKvGateValue < 0 || pdKvGateValue > 2.0 {
++				logrus.Fatalf("--pd-kv-gate-value must be in [0, 2.0], got %f", pdKvGateValue)
++			}
++			if pdLoadGateMode != "selected" {
++				logrus.Fatalf("--pd-load-gate-mode must be \"selected\" for %s decider, got %q", pdDecider, pdLoadGateMode)
++			}
++		}
++		if pdDecider == "cluster-kv-gated-prefix" || pdDecider == "cluster-transient-kv-gated-prefix" {
++			if pdClusterKvGateValue < 0 || pdClusterKvGateValue > 2.0 {
++				logrus.Fatalf("--pd-cluster-kv-gate-value must be in [0, 2.0], got %f", pdClusterKvGateValue)
++			}
++		}
++		if (pdDecider == "cluster-ifr-gated-prefix" || pdDecider == "cluster-ifr-and-gated-prefix") && pdClusterIfrGateValue < 0 {
++			logrus.Fatalf("--pd-cluster-ifr-gate-value must be >= 0, got %d", pdClusterIfrGateValue)
++		}
++		if pdDecider != "load-kv-gated-prefix" && pdDecider != "cache-aware-kv-gated-prefix" && pdDecider != "cache-bypassed-kv-gated-prefix" && pdDecider != "cluster-kv-gated-prefix" && pdDecider != "cluster-transient-kv-gated-prefix" && pdDecider != "cluster-ifr-gated-prefix" && pdDecider != "cluster-ifr-and-gated-prefix" && pdDecider != "long-prefill-aware-prefix" && pdDecider != "kv-admission-gated-prefix" && cmd.Flags().Changed("pd-load-gate-value") {
++			logrus.Fatalf("--pd-load-gate-value=%d has no effect when --pd-decider=%q (only applies to the load-kv-gated-prefix and cache-aware-kv-gated-prefix deciders); remove the flag or set --pd-decider=load-kv-gated-prefix", pdLoadGateValue, pdDecider)
++		}
++		if pdDecider != "load-kv-gated-prefix" && pdDecider != "cache-aware-kv-gated-prefix" && pdDecider != "cache-bypassed-kv-gated-prefix" && pdDecider != "cluster-kv-gated-prefix" && pdDecider != "cluster-transient-kv-gated-prefix" && pdDecider != "cluster-ifr-gated-prefix" && pdDecider != "cluster-ifr-and-gated-prefix" && pdDecider != "long-prefill-aware-prefix" && pdDecider != "kv-admission-gated-prefix" && cmd.Flags().Changed("pd-load-gate-mode") {
++			logrus.Fatalf("--pd-load-gate-mode=%q has no effect when --pd-decider=%q (only applies to the load-kv-gated-prefix and cache-aware-kv-gated-prefix deciders); remove the flag or set --pd-decider=load-kv-gated-prefix", pdLoadGateMode, pdDecider)
++		}
++		if pdDecider != "load-kv-gated-prefix" && pdDecider != "cache-aware-kv-gated-prefix" && pdDecider != "cache-bypassed-kv-gated-prefix" && pdDecider != "cluster-kv-gated-prefix" && pdDecider != "cluster-transient-kv-gated-prefix" && pdDecider != "cluster-ifr-gated-prefix" && pdDecider != "cluster-ifr-and-gated-prefix" && pdDecider != "long-prefill-aware-prefix" && pdDecider != "kv-admission-gated-prefix" && cmd.Flags().Changed("pd-kv-gate-value") {
++			logrus.Fatalf("--pd-kv-gate-value=%f has no effect when --pd-decider=%q (only applies to the load-kv-gated-prefix and cache-aware-kv-gated-prefix deciders); remove the flag or set --pd-decider=load-kv-gated-prefix", pdKvGateValue, pdDecider)
++		}
++		if pdDecider != "long-prefill-aware-prefix" && cmd.Flags().Changed("pd-long-prefill-threshold") {
++			logrus.Fatalf("--pd-long-prefill-threshold=%d has no effect when --pd-decider=%q (only valid with --pd-decider=long-prefill-aware-prefix); remove the flag or set --pd-decider=long-prefill-aware-prefix", pdLongPrefillThreshold, pdDecider)
++		}
++		if pdDecider == "long-prefill-aware-prefix" && pdLongPrefillThreshold < 0 {
++			logrus.Fatalf("--pd-long-prefill-threshold must be >= 0, got %d", pdLongPrefillThreshold)
++		}
++		if pdDecider != "kv-admission-gated-prefix" && cmd.Flags().Changed("pd-admit-threshold") {
++			logrus.Fatalf("--pd-admit-threshold=%f has no effect when --pd-decider=%q (only valid with --pd-decider=kv-admission-gated-prefix); remove the flag or set --pd-decider=kv-admission-gated-prefix", pdAdmitThreshold, pdDecider)
++		}
++		if pdDecider == "kv-admission-gated-prefix" && (pdAdmitThreshold < 0 || pdAdmitThreshold > 2.0) {
++			logrus.Fatalf("--pd-admit-threshold must be in [0, 2.0], got %f", pdAdmitThreshold)
++		}
++		if pdDecider != "cluster-kv-gated-prefix" && pdDecider != "cluster-transient-kv-gated-prefix" && cmd.Flags().Changed("pd-cluster-kv-gate-value") {
++			logrus.Fatalf("--pd-cluster-kv-gate-value=%f has no effect when --pd-decider=%q (only applies to the cluster-kv-gated-prefix and cluster-transient-kv-gated-prefix deciders); remove the flag or set --pd-decider=cluster-kv-gated-prefix", pdClusterKvGateValue, pdDecider)
++		}
++		if pdDecider != "cluster-ifr-gated-prefix" && pdDecider != "cluster-ifr-and-gated-prefix" && cmd.Flags().Changed("pd-cluster-ifr-gate-value") {
++			logrus.Fatalf("--pd-cluster-ifr-gate-value=%d has no effect when --pd-decider=%q (only applies to cluster-ifr-gated-prefix and cluster-ifr-and-gated-prefix); remove the flag or set --pd-decider=cluster-ifr-gated-prefix", pdClusterIfrGateValue, pdDecider)
++		}
++		if pdDecider != "cache-bypassed-kv-gated-prefix" && cmd.Flags().Changed("pd-cache-cap-tokens") {
++			logrus.Fatalf("--pd-cache-cap-tokens=%d has no effect when --pd-decider=%q (only applies to the cache-bypassed-kv-gated-prefix decider); remove the flag or set --pd-decider=cache-bypassed-kv-gated-prefix", pdCacheCapTokens, pdDecider)
++		}
++		if pdDecider == "cache-bypassed-kv-gated-prefix" && pdCacheCapTokens < 0 {
++			logrus.Fatalf("--pd-cache-cap-tokens must be >= 0, got %d", pdCacheCapTokens)
+ 		}
+ 		if pdDecider != "" && pdDecider != "never" && prefillInstances == 0 {
+ 			logrus.Fatalf("--pd-decider=%q has no effect because --prefill-instances=0 (disaggregation is disabled); set --prefill-instances > 0 and --decode-instances > 0, or omit --pd-decider", pdDecider)
+@@ -485,6 +540,14 @@ Example:
+ 			EncodeDecider:                   encodeDecider,
+ 			PDDecider:                       pdDecider,
+ 			PDPrefixThreshold:               pdPrefixThreshold,
++			PDLoadGateValue:                 pdLoadGateValue,
++			PDLoadGateMode:                  pdLoadGateMode,
++			PDKvGateValue:                   pdKvGateValue,
++			PDClusterKvGateValue:            pdClusterKvGateValue,
++			PDClusterIfrGateValue:           pdClusterIfrGateValue,
++			PDCacheCapTokens:                pdCacheCapTokens,
++			PDLongPrefillThreshold:          pdLongPrefillThreshold,
++			PDAdmitThreshold:                pdAdmitThreshold,
+ 			PDTransferBandwidthGBps:         pdTransferBandwidth,
+ 			PDTransferBaseLatencyMs:         pdTransferBaseLatency,
+ 			PDTransferContention:            pdTransferContention,
+diff --git a/cmd/root.go b/cmd/root.go
+index c8e0d30d..351a365a 100644
+--- a/cmd/root.go
++++ b/cmd/root.go
+@@ -144,6 +144,24 @@ var (
+ 	pdTransferBaseLatency  float64 // Inter-instance KV transfer base latency in ms
+ 	pdTransferContention   bool    // Enable fair-share bandwidth contention model
+ 	pdPrefixThreshold      int     // Non-cached token threshold for prefix-threshold decider
++	pdLoadGateValue        int     // QueueDepth threshold for load-kv-gated-prefix decider
++	pdLoadGateMode         string  // Aggregation mode for load-kv-gated-prefix decider
++	pdKvGateValue          float64 // KVUtilization threshold for load-kv-gated-prefix decider
++	pdClusterKvGateValue   float64 // Cluster-aggregate KVUtilization threshold for cluster-kv-gated-prefix decider
++	pdClusterIfrGateValue  int     // Cluster-aggregate InFlightRequests threshold for cluster-ifr-gated-prefix decider
++	pdCacheCapTokens       int     // cachedTokens cap for cache-bypassed-kv-gated-prefix decider
++	pdLongPrefillThreshold int     // force-disaggregate threshold for long-prefill-aware-prefix decider
++	pdAdmitThreshold       float64 // predicted-KV-utilization threshold for kv-admission-gated-prefix decider
++	pdAdmitMinTokens       int     // minimum nonCachedTokens for the admit clause to fire
++	pdKvMinTokens          int     // minimum nonCachedTokens for the kvFires clause to fire
++	pdKvCeiling            float64 // transientKvUtil upper bound for the kvFires clause (0 = vacuous)
++	pdAdmitCeiling         float64 // predictedUtil upper bound for the admit clause (0 = vacuous)
++	pdQdCircuitBreaker     int     // selected-pod QueueDepth threshold that overrides disagg decision to false (0 = vacuous)
++	pdQdLowCircuitBreaker  int     // selected-pod QueueDepth lower threshold — suppresses disagg when QD < threshold (inverse direction, 0 = vacuous)
++	pdIfrGate              int     // per-pod selected-decode InFlightRequests threshold for fourth OR-clause (iter-52, 0 = vacuous)
++	pdIfrCeiling           int     // per-pod selected-decode InFlightRequests upper bound for ifrFires clause (0 = vacuous)
++	pdIfrMinTokens         int     // minimum nonCachedTokens for ifrFires clause (iter-57, 0 = vacuous)
++	pdRoundIndexCap        int     // session round-index cap for OR-combinator warm-round suppression (iter-59, RP-13/RP-45, 0 = vacuous)
+ 	prefillRoutingScorers  string  // Scorer weights for prefill pool routing
+ 	decodeRoutingScorers   string  // Scorer weights for decode pool routing
+ 
+@@ -1019,11 +1037,29 @@ func registerSimConfigFlags(cmd *cobra.Command) {
+ 	cmd.Flags().IntVar(&prefillInstances, "prefill-instances", 0, "Number of instances dedicated to prefill (0 = disabled)")
+ 	cmd.Flags().IntVar(&decodeInstances, "decode-instances", 0, "Number of instances dedicated to decode (0 = disabled)")
+ 	cmd.Flags().IntVar(&prefillDecodeInstances, "prefill-decode-instances", 0, "Number of shared-role instances serving both prefill and decode (llm-d 'prefill-decode'/'both' parity; 0 = disabled). Must satisfy --prefill-instances + --decode-instances + --prefill-decode-instances <= --num-instances.")
+-	cmd.Flags().StringVar(&pdDecider, "pd-decider", "never", "PD disaggregation decider: never (default), always, prefix-threshold")
++	cmd.Flags().StringVar(&pdDecider, "pd-decider", "never", "PD disaggregation decider: never (default), always, prefix-threshold, load-kv-gated-prefix, cache-aware-kv-gated-prefix, cache-bypassed-kv-gated-prefix, cluster-kv-gated-prefix, cluster-transient-kv-gated-prefix, cluster-ifr-gated-prefix, cluster-ifr-and-gated-prefix, long-prefill-aware-prefix, kv-admission-gated-prefix, admission-and-long-prefill-aware-prefix")
+ 	cmd.Flags().Float64Var(&pdTransferBandwidth, "pd-transfer-bandwidth", 25.0, "PD KV transfer bandwidth in GB/s (NIXL RDMA default)")
+ 	cmd.Flags().Float64Var(&pdTransferBaseLatency, "pd-transfer-base-latency", 0.05, "PD KV transfer base latency in ms")
+ 	cmd.Flags().BoolVar(&pdTransferContention, "pd-transfer-contention", false, "Enable fair-share bandwidth contention model for concurrent KV transfers (INV-P2-2)")
+ 	cmd.Flags().IntVar(&pdPrefixThreshold, "pd-prefix-threshold", 16, "Non-cached token threshold for prefix-threshold decider (>= 0); disaggregate when non-cached tokens exceed this value. Default 16 matches llm-d's shipped P/D configs (deploy/config/pd-epp-config.yaml).")
++	cmd.Flags().IntVar(&pdLoadGateValue, "pd-load-gate-value", 1, "QueueDepth threshold for load-kv-gated-prefix decider (>= 0); colocation preferred when selected decode pod QD < this value.")
++	cmd.Flags().StringVar(&pdLoadGateMode, "pd-load-gate-mode", "selected", "Aggregation mode for load-kv-gated-prefix decider: selected (only valid mode).")
++	cmd.Flags().Float64Var(&pdKvGateValue, "pd-kv-gate-value", 0.05, "Maximum selected_decode.KVUtilization below which colocation is preferred for the load-kv-gated-prefix decider. Default 0.05 sits in the active band [0, 0.12] observed at chat-r100 (RP-6). Range [0, 2.0]; >1.0 makes the kv-side vacuous (ablation).")
++	cmd.Flags().Float64Var(&pdClusterKvGateValue, "pd-cluster-kv-gate-value", 0.05, "Cluster-aggregate KVUtilization threshold (sum of decode pool KvTokensInUse / sum of TotalKvCapacityTokens) for cluster-kv-gated-prefix decider. Range [0, 2.0]; >1.0 degenerates to cache-aware-kv-gated-prefix (cluster ablation).")
++	cmd.Flags().IntVar(&pdClusterIfrGateValue, "pd-cluster-ifr-gate-value", 12, "Cluster-aggregate InFlightRequests threshold (sum_p p.InFlightRequests over decode pool) for cluster-ifr-gated-prefix and cluster-ifr-and-gated-prefix deciders. Range >= 0; for AND variant, 0 makes the AND-clause vacuous-true (identical to cache-aware-kv-gated-prefix).")
++	cmd.Flags().IntVar(&pdCacheCapTokens, "pd-cache-cap-tokens", 1<<30, "cachedTokens cap for cache-bypassed-kv-gated-prefix decider. When cachedTokens >= cap, the kvGate term is bypassed and the decider falls back to QD-only on that request. Default 1<<30 (sentinel 'never bypass'). Set to 0 to always bypass (degenerates to LoadGatedPrefix).")
++	cmd.Flags().IntVar(&pdLongPrefillThreshold, "pd-long-prefill-threshold", 1<<30, "Force-disaggregate threshold for long-prefill-aware-prefix decider. When nonCachedTokens > threshold, the request is always disaggregated regardless of per-pod gate state. Default 1<<30 (vacuous, identical to cache-aware-kv-gated-prefix). Only valid with --pd-decider=long-prefill-aware-prefix.")
++	cmd.Flags().Float64Var(&pdAdmitThreshold, "pd-admit-threshold", 2.0, "Predicted-KV-utilization threshold for the kv-admission-gated-prefix decider. Gate fires when (KvTokensInUse + nonCachedTokens) / TotalKvCapacityTokens >= threshold. Default 2.0 (vacuous, identical to cache-aware-kv-gated-prefix). Only valid with --pd-decider=kv-admission-gated-prefix.")
++	cmd.Flags().IntVar(&pdAdmitMinTokens, "pd-admit-min-tokens", 0, "Minimum nonCachedTokens for the admit clause of admission-and-long-prefill-aware-prefix and kv-admission-gated-prefix to fire. Admit fires only when nonCachedTokens >= this value. Default 0 (vacuous — admit fires on all eligible requests). Range >= 0.")
++	cmd.Flags().IntVar(&pdKvMinTokens, "pd-kv-min-tokens", 0, "Minimum nonCachedTokens for the kvFires clause of admission-and-long-prefill-aware-prefix to fire. kvFires fires only when nonCachedTokens >= this value AND transientKvUtil >= kvGate. Default 0 (vacuous — kvFires fires on all eligible requests). Range >= 0. Only valid with --pd-decider=admission-and-long-prefill-aware-prefix.")
++	cmd.Flags().Float64Var(&pdKvCeiling, "pd-kv-ceiling", 0.0, "transientKvUtil upper bound for the kvFires clause of admission-and-long-prefill-aware-prefix. kvFires fires only when kvGate <= transientKvUtil < kvCeiling. Default 0.0 (vacuous — no ceiling applied, identical to iter-48 A2 behavior). Only valid with --pd-decider=admission-and-long-prefill-aware-prefix. When > 0, must exceed --pd-kv-gate-value.")
++	cmd.Flags().Float64Var(&pdAdmitCeiling, "pd-admit-ceiling", 0.0, "predictedUtil upper bound for the admit clause of admission-and-long-prefill-aware-prefix. Admit fires only when admitThreshold <= predictedUtil < admitCeiling. Default 0.0 (vacuous — no ceiling applied, identical to iter-43/iter-44 behavior). Only valid with --pd-decider=admission-and-long-prefill-aware-prefix. When > 0, must exceed --pd-admit-threshold.")
++	cmd.Flags().IntVar(&pdQdCircuitBreaker, "pd-qd-circuit-breaker", 0, "Selected-pod QueueDepth threshold above which the OR-combinator of admission-and-long-prefill-aware-prefix is overridden to Disaggregate=false (per-pod circuit breaker, iter-50). Long-prefill force-disagg is preserved unconditionally (RP-35/RP-63). Default 0 (vacuous, no breaker; identical to iter-48 A2 behavior). Range >= 0. Only valid with --pd-decider=admission-and-long-prefill-aware-prefix.")
++	cmd.Flags().IntVar(&pdQdLowCircuitBreaker, "pd-qd-low-circuit-breaker", 0, "Selected-pod QueueDepth lower threshold below which the OR-combinator of admission-and-long-prefill-aware-prefix is overridden to Disaggregate=false (inverse direction: suppresses disagg when decode pod is idle/near-idle, iter-51). Long-prefill force-disagg is preserved unconditionally (RP-35/RP-63). Default 0 (vacuous, no breaker). Range >= 0. Only valid with --pd-decider=admission-and-long-prefill-aware-prefix.")
++	cmd.Flags().IntVar(&pdIfrGate, "pd-ifr-gate", 0, "Per-pod selected-decode InFlightRequests threshold for a fourth OR-clause in admission-and-long-prefill-aware-prefix. Fires when selectedSnap.InFlightRequests >= ifrGate (iter-52). Default 0 (vacuous — clause disabled, byte-identical to iter-48 A2 / iter-51 A3). Range >= 0. Only valid with --pd-decider=admission-and-long-prefill-aware-prefix.")
++	cmd.Flags().IntVar(&pdIfrCeiling, "pd-ifr-ceiling", 0, "Per-pod selected-decode InFlightRequests upper bound for the fourth OR-clause of admission-and-long-prefill-aware-prefix. ifrFires fires only when ifrGate <= InFlightRequests < ifrCeiling. Default 0 (vacuous — no ceiling applied, byte-identical to iter-55 A3 behavior). Range >= 0; when > 0, must exceed --pd-ifr-gate. Only valid with --pd-decider=admission-and-long-prefill-aware-prefix.")
++	cmd.Flags().IntVar(&pdIfrMinTokens, "pd-ifr-min-tokens", 0, "Minimum nonCachedTokens for the ifrFires clause of admission-and-long-prefill-aware-prefix to fire. ifrFires fires only when nonCachedTokens >= this value AND selectedSnap.InFlightRequests >= ifrGate (and any ifrCeiling band). Default 0 (vacuous — ifrFires fires on all eligible requests, byte-identical to iter-56 A3 behavior). Range >= 0. Only valid with --pd-decider=admission-and-long-prefill-aware-prefix.")
++	cmd.Flags().IntVar(&pdRoundIndexCap, "pd-round-index-cap", 0, "Session round-index cap for OR-combinator warm-round suppression in admission-and-long-prefill-aware-prefix (iter-59, RP-13/RP-45). When > 0 and req.RoundIndex >= cap, the OR-combinator decision is overridden to Disaggregate=false. The long-prefill force-disagg early return (RP-35/RP-63) is unaffected. Default 0 (vacuous — byte-identical to iter-58 behavior). Range >= 0. Only valid with --pd-decider=admission-and-long-prefill-aware-prefix.")
+ 	cmd.Flags().StringVar(&prefillRoutingScorers, "prefill-routing-scorers", "", "Scorer weights for prefill pool routing (e.g., queue-depth:2,kv-utilization:2)")
+ 	cmd.Flags().StringVar(&decodeRoutingScorers, "decode-routing-scorers", "", "Scorer weights for decode pool routing (e.g., queue-depth:2,kv-utilization:2)")
+ 
+@@ -1495,8 +1531,132 @@ var runCmd = &cobra.Command{
+ 		if pdDecider == "prefix-threshold" && pdPrefixThreshold < 0 {
+ 			logrus.Fatalf("--pd-prefix-threshold must be >= 0, got %d", pdPrefixThreshold)
+ 		}
+-		if pdDecider != "prefix-threshold" && cmd.Flags().Changed("pd-prefix-threshold") {
+-			logrus.Warnf("--pd-prefix-threshold=%d is ignored when --pd-decider=%q (only applies to the prefix-threshold decider)", pdPrefixThreshold, pdDecider)
++		if pdDecider != "prefix-threshold" && pdDecider != "load-kv-gated-prefix" && pdDecider != "cache-aware-kv-gated-prefix" && pdDecider != "cache-bypassed-kv-gated-prefix" && pdDecider != "cluster-kv-gated-prefix" && pdDecider != "cluster-transient-kv-gated-prefix" && pdDecider != "cluster-ifr-gated-prefix" && pdDecider != "cluster-ifr-and-gated-prefix" && pdDecider != "long-prefill-aware-prefix" && pdDecider != "kv-admission-gated-prefix" && pdDecider != "admission-and-long-prefill-aware-prefix" && cmd.Flags().Changed("pd-prefix-threshold") {
++			logrus.Warnf("--pd-prefix-threshold=%d is ignored when --pd-decider=%q (only applies to the prefix-threshold and load-kv-gated-prefix deciders)", pdPrefixThreshold, pdDecider)
++		}
++		if pdDecider == "load-kv-gated-prefix" || pdDecider == "cache-aware-kv-gated-prefix" || pdDecider == "cache-bypassed-kv-gated-prefix" || pdDecider == "cluster-kv-gated-prefix" || pdDecider == "cluster-transient-kv-gated-prefix" || pdDecider == "cluster-ifr-gated-prefix" || pdDecider == "cluster-ifr-and-gated-prefix" || pdDecider == "long-prefill-aware-prefix" || pdDecider == "kv-admission-gated-prefix" || pdDecider == "admission-and-long-prefill-aware-prefix" {
++			if pdPrefixThreshold < 0 {
++				logrus.Fatalf("--pd-prefix-threshold must be >= 0, got %d", pdPrefixThreshold)
++			}
++			if pdLoadGateValue < 0 {
++				logrus.Fatalf("--pd-load-gate-value must be >= 0, got %d", pdLoadGateValue)
++			}
++			if pdKvGateValue < 0 || pdKvGateValue > 2.0 {
++				logrus.Fatalf("--pd-kv-gate-value must be in [0, 2.0], got %f", pdKvGateValue)
++			}
++			if pdLoadGateMode != "selected" {
++				logrus.Fatalf("--pd-load-gate-mode must be \"selected\" for %s decider, got %q", pdDecider, pdLoadGateMode)
++			}
++		}
++		if pdDecider == "cluster-kv-gated-prefix" || pdDecider == "cluster-transient-kv-gated-prefix" {
++			if pdClusterKvGateValue < 0 || pdClusterKvGateValue > 2.0 {
++				logrus.Fatalf("--pd-cluster-kv-gate-value must be in [0, 2.0], got %f", pdClusterKvGateValue)
++			}
++		}
++		if (pdDecider == "cluster-ifr-gated-prefix" || pdDecider == "cluster-ifr-and-gated-prefix") && pdClusterIfrGateValue < 0 {
++			logrus.Fatalf("--pd-cluster-ifr-gate-value must be >= 0, got %d", pdClusterIfrGateValue)
++		}
++		if pdDecider != "load-kv-gated-prefix" && pdDecider != "cache-aware-kv-gated-prefix" && pdDecider != "cache-bypassed-kv-gated-prefix" && pdDecider != "cluster-kv-gated-prefix" && pdDecider != "cluster-transient-kv-gated-prefix" && pdDecider != "cluster-ifr-gated-prefix" && pdDecider != "cluster-ifr-and-gated-prefix" && pdDecider != "long-prefill-aware-prefix" && pdDecider != "kv-admission-gated-prefix" && pdDecider != "admission-and-long-prefill-aware-prefix" && cmd.Flags().Changed("pd-load-gate-value") {
++			logrus.Warnf("--pd-load-gate-value=%d is ignored when --pd-decider=%q (only applies to the load-kv-gated-prefix and cache-aware-kv-gated-prefix deciders)", pdLoadGateValue, pdDecider)
++		}
++		if pdDecider != "load-kv-gated-prefix" && pdDecider != "cache-aware-kv-gated-prefix" && pdDecider != "cache-bypassed-kv-gated-prefix" && pdDecider != "cluster-kv-gated-prefix" && pdDecider != "cluster-transient-kv-gated-prefix" && pdDecider != "cluster-ifr-gated-prefix" && pdDecider != "cluster-ifr-and-gated-prefix" && pdDecider != "long-prefill-aware-prefix" && pdDecider != "kv-admission-gated-prefix" && pdDecider != "admission-and-long-prefill-aware-prefix" && cmd.Flags().Changed("pd-load-gate-mode") {
++			logrus.Warnf("--pd-load-gate-mode=%q is ignored when --pd-decider=%q (only applies to the load-kv-gated-prefix and cache-aware-kv-gated-prefix deciders)", pdLoadGateMode, pdDecider)
++		}
++		if pdDecider != "load-kv-gated-prefix" && pdDecider != "cache-aware-kv-gated-prefix" && pdDecider != "cache-bypassed-kv-gated-prefix" && pdDecider != "cluster-kv-gated-prefix" && pdDecider != "cluster-transient-kv-gated-prefix" && pdDecider != "cluster-ifr-gated-prefix" && pdDecider != "cluster-ifr-and-gated-prefix" && pdDecider != "long-prefill-aware-prefix" && pdDecider != "kv-admission-gated-prefix" && pdDecider != "admission-and-long-prefill-aware-prefix" && cmd.Flags().Changed("pd-kv-gate-value") {
++			logrus.Fatalf("--pd-kv-gate-value=%f is set but --pd-decider=%q (only applies to the load-kv-gated-prefix and cache-aware-kv-gated-prefix deciders); remove the flag or set --pd-decider=load-kv-gated-prefix", pdKvGateValue, pdDecider)
++		}
++		if pdDecider != "long-prefill-aware-prefix" && pdDecider != "admission-and-long-prefill-aware-prefix" && cmd.Flags().Changed("pd-long-prefill-threshold") {
++			logrus.Fatalf("--pd-long-prefill-threshold=%d is set but --pd-decider=%q (only valid with --pd-decider=long-prefill-aware-prefix or admission-and-long-prefill-aware-prefix); remove the flag or set the appropriate decider", pdLongPrefillThreshold, pdDecider)
++		}
++		if (pdDecider == "long-prefill-aware-prefix" || pdDecider == "admission-and-long-prefill-aware-prefix") && pdLongPrefillThreshold < 0 {
++			logrus.Fatalf("--pd-long-prefill-threshold must be >= 0, got %d", pdLongPrefillThreshold)
++		}
++		if pdDecider != "kv-admission-gated-prefix" && pdDecider != "admission-and-long-prefill-aware-prefix" && cmd.Flags().Changed("pd-admit-threshold") {
++			logrus.Fatalf("--pd-admit-threshold=%f is set but --pd-decider=%q (only valid with --pd-decider=kv-admission-gated-prefix or admission-and-long-prefill-aware-prefix); remove the flag or set the appropriate decider", pdAdmitThreshold, pdDecider)
++		}
++		if (pdDecider == "kv-admission-gated-prefix" || pdDecider == "admission-and-long-prefill-aware-prefix") && (pdAdmitThreshold < 0 || pdAdmitThreshold > 2.0) {
++			logrus.Fatalf("--pd-admit-threshold must be in [0, 2.0], got %f", pdAdmitThreshold)
++		}
++		if pdDecider != "kv-admission-gated-prefix" && pdDecider != "admission-and-long-prefill-aware-prefix" && cmd.Flags().Changed("pd-admit-min-tokens") {
++			logrus.Fatalf("--pd-admit-min-tokens=%d is set but --pd-decider=%q (only valid with --pd-decider=kv-admission-gated-prefix or admission-and-long-prefill-aware-prefix); remove the flag or set the appropriate decider", pdAdmitMinTokens, pdDecider)
++		}
++		if pdAdmitMinTokens < 0 {
++			logrus.Fatalf("--pd-admit-min-tokens must be >= 0, got %d", pdAdmitMinTokens)
++		}
++		if pdDecider != "admission-and-long-prefill-aware-prefix" && cmd.Flags().Changed("pd-admit-ceiling") {
++			logrus.Fatalf("--pd-admit-ceiling=%f is set but --pd-decider=%q (only valid with --pd-decider=admission-and-long-prefill-aware-prefix); remove the flag or set the appropriate decider", pdAdmitCeiling, pdDecider)
++		}
++		if pdAdmitCeiling < 0 {
++			logrus.Fatalf("--pd-admit-ceiling must be >= 0, got %f", pdAdmitCeiling)
++		}
++		if pdAdmitCeiling > 0 && pdAdmitCeiling <= pdAdmitThreshold {
++			logrus.Fatalf("--pd-admit-ceiling (%f) must exceed --pd-admit-threshold (%f) when non-zero; a ceiling at or below the threshold collapses the admit band to empty (use --pd-admit-ceiling=0 to disable the ceiling)", pdAdmitCeiling, pdAdmitThreshold)
++		}
++		if pdDecider != "admission-and-long-prefill-aware-prefix" && cmd.Flags().Changed("pd-kv-min-tokens") {
++			logrus.Fatalf("--pd-kv-min-tokens=%d is set but --pd-decider=%q (only valid with --pd-decider=admission-and-long-prefill-aware-prefix); remove the flag or set the appropriate decider", pdKvMinTokens, pdDecider)
++		}
++		if pdKvMinTokens < 0 {
++			logrus.Fatalf("--pd-kv-min-tokens must be >= 0, got %d", pdKvMinTokens)
++		}
++		if pdDecider != "admission-and-long-prefill-aware-prefix" && cmd.Flags().Changed("pd-kv-ceiling") {
++			logrus.Fatalf("--pd-kv-ceiling=%f is set but --pd-decider=%q (only valid with --pd-decider=admission-and-long-prefill-aware-prefix); remove the flag or set the appropriate decider", pdKvCeiling, pdDecider)
++		}
++		if pdKvCeiling < 0 {
++			logrus.Fatalf("--pd-kv-ceiling must be >= 0, got %f", pdKvCeiling)
++		}
++		if pdKvCeiling > 0 && pdKvCeiling <= pdKvGateValue {
++			logrus.Fatalf("--pd-kv-ceiling (%f) must exceed --pd-kv-gate-value (%f) when non-zero; a ceiling at or below the gate collapses the kvFires band to empty (use --pd-kv-ceiling=0 to disable the ceiling)", pdKvCeiling, pdKvGateValue)
++		}
++		if pdDecider != "admission-and-long-prefill-aware-prefix" && cmd.Flags().Changed("pd-qd-circuit-breaker") {
++			logrus.Fatalf("--pd-qd-circuit-breaker=%d is set but --pd-decider=%q (only valid with --pd-decider=admission-and-long-prefill-aware-prefix); remove the flag or set the appropriate decider", pdQdCircuitBreaker, pdDecider)
++		}
++		if pdQdCircuitBreaker < 0 {
++			logrus.Fatalf("--pd-qd-circuit-breaker must be >= 0, got %d", pdQdCircuitBreaker)
++		}
++		if pdDecider != "admission-and-long-prefill-aware-prefix" && cmd.Flags().Changed("pd-qd-low-circuit-breaker") {
++			logrus.Fatalf("--pd-qd-low-circuit-breaker=%d is set but --pd-decider=%q (only valid with --pd-decider=admission-and-long-prefill-aware-prefix); remove the flag or set the appropriate decider", pdQdLowCircuitBreaker, pdDecider)
++		}
++		if pdQdLowCircuitBreaker < 0 {
++			logrus.Fatalf("--pd-qd-low-circuit-breaker must be >= 0, got %d", pdQdLowCircuitBreaker)
++		}
++		if pdDecider != "admission-and-long-prefill-aware-prefix" && cmd.Flags().Changed("pd-ifr-gate") {
++			logrus.Fatalf("--pd-ifr-gate=%d is set but --pd-decider=%q (only valid with --pd-decider=admission-and-long-prefill-aware-prefix); remove the flag or set the appropriate decider", pdIfrGate, pdDecider)
++		}
++		if pdIfrGate < 0 {
++			logrus.Fatalf("--pd-ifr-gate must be >= 0, got %d", pdIfrGate)
++		}
++		if pdDecider != "admission-and-long-prefill-aware-prefix" && cmd.Flags().Changed("pd-ifr-ceiling") {
++			logrus.Fatalf("--pd-ifr-ceiling=%d is set but --pd-decider=%q (only valid with --pd-decider=admission-and-long-prefill-aware-prefix); remove the flag or set the appropriate decider", pdIfrCeiling, pdDecider)
++		}
++		if pdIfrCeiling < 0 {
++			logrus.Fatalf("--pd-ifr-ceiling must be >= 0, got %d", pdIfrCeiling)
++		}
++		if pdIfrCeiling > 0 && pdIfrCeiling <= pdIfrGate {
++			logrus.Fatalf("--pd-ifr-ceiling (%d) must exceed --pd-ifr-gate (%d) when non-zero; a ceiling at or below the gate collapses the ifrFires band to empty (use --pd-ifr-ceiling=0 to disable the ceiling)", pdIfrCeiling, pdIfrGate)
++		}
++		if pdDecider != "admission-and-long-prefill-aware-prefix" && cmd.Flags().Changed("pd-ifr-min-tokens") {
++			logrus.Fatalf("--pd-ifr-min-tokens=%d is set but --pd-decider=%q (only valid with --pd-decider=admission-and-long-prefill-aware-prefix); remove the flag or set the appropriate decider", pdIfrMinTokens, pdDecider)
++		}
++		if pdIfrMinTokens < 0 {
++			logrus.Fatalf("--pd-ifr-min-tokens must be >= 0, got %d", pdIfrMinTokens)
++		}
++		if pdDecider != "admission-and-long-prefill-aware-prefix" && cmd.Flags().Changed("pd-round-index-cap") {
++			logrus.Fatalf("--pd-round-index-cap=%d is set but --pd-decider=%q (only valid with --pd-decider=admission-and-long-prefill-aware-prefix); remove the flag or set the appropriate decider", pdRoundIndexCap, pdDecider)
++		}
++		if pdRoundIndexCap < 0 {
++			logrus.Fatalf("--pd-round-index-cap must be >= 0, got %d", pdRoundIndexCap)
++		}
++		if pdDecider != "cluster-kv-gated-prefix" && pdDecider != "cluster-transient-kv-gated-prefix" && cmd.Flags().Changed("pd-cluster-kv-gate-value") {
++			logrus.Fatalf("--pd-cluster-kv-gate-value=%f is set but --pd-decider=%q (only applies to the cluster-kv-gated-prefix and cluster-transient-kv-gated-prefix deciders); remove the flag or set --pd-decider=cluster-kv-gated-prefix", pdClusterKvGateValue, pdDecider)
++		}
++		if pdDecider != "cluster-ifr-gated-prefix" && pdDecider != "cluster-ifr-and-gated-prefix" && cmd.Flags().Changed("pd-cluster-ifr-gate-value") {
++			logrus.Fatalf("--pd-cluster-ifr-gate-value=%d is set but --pd-decider=%q (only applies to cluster-ifr-gated-prefix and cluster-ifr-and-gated-prefix); remove the flag or set --pd-decider=cluster-ifr-gated-prefix", pdClusterIfrGateValue, pdDecider)
++		}
++		if pdDecider != "cache-bypassed-kv-gated-prefix" && cmd.Flags().Changed("pd-cache-cap-tokens") {
++			logrus.Fatalf("--pd-cache-cap-tokens=%d is set but --pd-decider=%q (only applies to the cache-bypassed-kv-gated-prefix decider); remove the flag or set --pd-decider=cache-bypassed-kv-gated-prefix", pdCacheCapTokens, pdDecider)
++		}
++		if pdDecider == "cache-bypassed-kv-gated-prefix" && pdCacheCapTokens < 0 {
++			logrus.Fatalf("--pd-cache-cap-tokens must be >= 0, got %d", pdCacheCapTokens)
+ 		}
+ 		if pdDecider != "" && pdDecider != "never" && prefillInstances == 0 {
+ 			logrus.Warnf("--pd-decider=%q has no effect because --prefill-instances=0 (disaggregation is disabled); set --prefill-instances and --decode-instances to enable", pdDecider)
+@@ -1635,6 +1795,24 @@ var runCmd = &cobra.Command{
+ 			EncodeDecider:                   encodeDecider,
+ 			PDDecider:                       pdDecider,
+ 			PDPrefixThreshold:               pdPrefixThreshold,
++			PDLoadGateValue:                 pdLoadGateValue,
++			PDLoadGateMode:                  pdLoadGateMode,
++			PDKvGateValue:                   pdKvGateValue,
++			PDClusterKvGateValue:            pdClusterKvGateValue,
++			PDClusterIfrGateValue:           pdClusterIfrGateValue,
++			PDCacheCapTokens:                pdCacheCapTokens,
++			PDLongPrefillThreshold:          pdLongPrefillThreshold,
++			PDAdmitThreshold:                pdAdmitThreshold,
++			PDAdmitMinTokens:                pdAdmitMinTokens,
++			PDKvMinTokens:                   pdKvMinTokens,
++			PDKvCeiling:                     pdKvCeiling,
++			PDAdmitCeiling:                  pdAdmitCeiling,
++			PDQdCircuitBreaker:              pdQdCircuitBreaker,
++			PDQdLowCircuitBreaker:           pdQdLowCircuitBreaker,
++			PDIfrGate:                       pdIfrGate,
++			PDIfrCeiling:                    pdIfrCeiling,
++			PDIfrMinTokens:                  pdIfrMinTokens,
++			PDRoundIndexCap:                 pdRoundIndexCap,
+ 			PDTransferBandwidthGBps:         pdTransferBandwidth,
+ 			PDTransferBaseLatencyMs:         pdTransferBaseLatency,
+ 			PDTransferContention:            pdTransferContention,
+diff --git a/sim/bundle.go b/sim/bundle.go
+index b0c47faf..d488967f 100644
+--- a/sim/bundle.go
++++ b/sim/bundle.go
+@@ -132,7 +132,7 @@ var (
+ 	validSchedulers        = map[string]bool{"": true, "fcfs": true, "priority-fcfs": true, "sjf": true, "reverse-priority": true}
+ 	validPreemptionPolicies  = map[string]bool{"": true, "fcfs": true, "priority": true}
+ 	validLatencyBackends          = map[string]bool{"": true, "roofline": true, "trained-physics": true}
+-	validDisaggregationDeciders   = map[string]bool{"": true, "never": true, "always": true, "prefix-threshold": true}
++	validDisaggregationDeciders   = map[string]bool{"": true, "never": true, "always": true, "prefix-threshold": true, "load-kv-gated-prefix": true, "cache-aware-kv-gated-prefix": true, "cache-bypassed-kv-gated-prefix": true, "cluster-kv-gated-prefix": true, "cluster-transient-kv-gated-prefix": true, "cluster-ifr-gated-prefix": true, "cluster-ifr-and-gated-prefix": true, "long-prefill-aware-prefix": true, "kv-admission-gated-prefix": true, "admission-and-long-prefill-aware-prefix": true}
+ 	validEncodeDeciders           = map[string]bool{"": true, "never": true, "always": true, "multimodal": true}
+ 	validSaturationDetectors      = map[string]bool{"": true, "never": true, "utilization": true, "concurrency": true}
+ )
+diff --git a/sim/cluster/cluster.go b/sim/cluster/cluster.go
+index 65ab7a21..c35ea377 100644
+--- a/sim/cluster/cluster.go
++++ b/sim/cluster/cluster.go
+@@ -394,6 +394,26 @@ func NewClusterSimulator(config DeploymentConfig, requests []*sim.Request, onReq
+ 		switch config.PDDecider {
+ 		case "prefix-threshold":
+ 			cs.disaggregationDecider = sim.NewPrefixThresholdDecider(config.PDPrefixThreshold, int(config.BlockSizeTokens), cs.cacheQueryFn)
++		case "load-kv-gated-prefix":
++			cs.disaggregationDecider = sim.NewLoadKvGatedPrefixDecider(config.PDPrefixThreshold, int(config.BlockSizeTokens), config.PDLoadGateValue, config.PDKvGateValue, config.PDLoadGateMode, cs.cacheQueryFn)
++		case "cache-aware-kv-gated-prefix":
++			cs.disaggregationDecider = sim.NewCacheAwareKvGatedPrefixDecider(config.PDPrefixThreshold, int(config.BlockSizeTokens), config.PDLoadGateValue, config.PDKvGateValue, config.PDLoadGateMode, cs.cacheQueryFn)
++		case "cache-bypassed-kv-gated-prefix":
++			cs.disaggregationDecider = sim.NewCacheBypassedKvGatedPrefixDecider(config.PDPrefixThreshold, int(config.BlockSizeTokens), config.PDLoadGateValue, config.PDKvGateValue, config.PDCacheCapTokens, config.PDLoadGateMode, cs.cacheQueryFn)
++		case "cluster-kv-gated-prefix":
++			cs.disaggregationDecider = sim.NewClusterKvGatedPrefixDecider(config.PDPrefixThreshold, int(config.BlockSizeTokens), config.PDLoadGateValue, config.PDKvGateValue, config.PDClusterKvGateValue, config.PDLoadGateMode, cs.cacheQueryFn)
++		case "cluster-transient-kv-gated-prefix":
++			cs.disaggregationDecider = sim.NewClusterTransientKvGatedPrefixDecider(config.PDPrefixThreshold, int(config.BlockSizeTokens), config.PDLoadGateValue, config.PDKvGateValue, config.PDClusterKvGateValue, config.PDLoadGateMode, cs.cacheQueryFn)
++		case "cluster-ifr-gated-prefix":
++			cs.disaggregationDecider = sim.NewClusterIfrGatedPrefixDecider(config.PDPrefixThreshold, int(config.BlockSizeTokens), config.PDLoadGateValue, config.PDKvGateValue, config.PDClusterIfrGateValue, config.PDLoadGateMode, cs.cacheQueryFn)
++		case "cluster-ifr-and-gated-prefix":
++			cs.disaggregationDecider = sim.NewClusterIfrAndGatedPrefixDecider(config.PDPrefixThreshold, int(config.BlockSizeTokens), config.PDLoadGateValue, config.PDKvGateValue, config.PDClusterIfrGateValue, config.PDLoadGateMode, cs.cacheQueryFn)
++		case "long-prefill-aware-prefix":
++			cs.disaggregationDecider = sim.NewLongPrefillAwarePrefixDecider(config.PDPrefixThreshold, int(config.BlockSizeTokens), config.PDLoadGateValue, config.PDKvGateValue, config.PDLongPrefillThreshold, config.PDLoadGateMode, cs.cacheQueryFn)
++		case "kv-admission-gated-prefix":
++			cs.disaggregationDecider = sim.NewKvAdmissionGatedPrefixDecider(config.PDPrefixThreshold, int(config.BlockSizeTokens), config.PDLoadGateValue, config.PDKvGateValue, config.PDAdmitThreshold, config.PDLoadGateMode, cs.cacheQueryFn)
++		case "admission-and-long-prefill-aware-prefix":
++			cs.disaggregationDecider = sim.NewAdmissionAndLongPrefillAwarePrefixDecider(config.PDPrefixThreshold, int(config.BlockSizeTokens), config.PDLoadGateValue, config.PDKvGateValue, config.PDAdmitThreshold, config.PDLongPrefillThreshold, config.PDAdmitMinTokens, config.PDKvMinTokens, config.PDQdCircuitBreaker, config.PDQdLowCircuitBreaker, config.PDIfrGate, config.PDIfrCeiling, config.PDIfrMinTokens, config.PDKvCeiling, config.PDAdmitCeiling, config.PDLoadGateMode, cs.cacheQueryFn, config.PDRoundIndexCap)
+ 		default:
+ 			cs.disaggregationDecider = sim.NewDisaggregationDecider(config.PDDecider)
+ 		}
+diff --git a/sim/cluster/deployment.go b/sim/cluster/deployment.go
+index cfe49d47..9bebfd2c 100644
+--- a/sim/cluster/deployment.go
++++ b/sim/cluster/deployment.go
+@@ -67,8 +67,86 @@ type DeploymentConfig struct {
+ 	// assigns PoolRolePrefillDecode to the last `shared` indices after
+ 	// the prefill-only and decode-only ranges.
+ 	SharedInstances   int
+-	PDDecider         string // Disaggregation decider: "" or "never" (default), "always", "prefix-threshold"
+-	PDPrefixThreshold int    // Non-cached token threshold for prefix-threshold decider (PR6)
++	PDDecider         string  // Disaggregation decider: "" or "never" (default), "always", "prefix-threshold", "load-kv-gated-prefix", "cache-aware-kv-gated-prefix", "cache-bypassed-kv-gated-prefix"
++	PDPrefixThreshold int     // Non-cached token threshold for prefix-threshold / load-kv-gated-prefix decider
++	PDLoadGateValue   int     // QueueDepth threshold for load-gated deciders (queueGate)
++	PDLoadGateMode    string  // Aggregation mode for load-gated deciders: "selected" only for load-kv-gated-prefix
++	PDKvGateValue         float64 // Maximum selected_decode.KVUtilization below which colocation is preferred for load-kv-gated-prefix. Range [0, 2.0]; >1.0 makes the kv-side vacuous (ablation).
++	PDClusterKvGateValue  float64 // Cluster-aggregate KVUtilization threshold for cluster-kv-gated-prefix decider; range [0, 2.0]; >1.0 makes the cluster-side vacuous (ablation).
++	PDClusterIfrGateValue int     // Cluster-aggregate InFlightRequests threshold for cluster-ifr-gated-prefix decider; >= 0; 10000+ makes the IFR clause vacuous (degenerates to cache-aware-kv-gated-prefix).
++	// PDCacheCapTokens is the cachedTokens cap for the cache-bypassed-kv-gated-prefix decider.
++	// When cachedTokens >= cap, the kvGate term is bypassed (QD-only gate). Default 1<<30
++	// (sentinel for "never bypass") yields CacheAwareKvGatedPrefix behavior when the flag is unset.
++	PDCacheCapTokens int
++	// PDLongPrefillThreshold is the force-disaggregate threshold for the long-prefill-aware-prefix
++	// decider. When nonCachedTokens > threshold, the request is always disaggregated regardless
++	// of per-pod gate state. Default 1<<30 (vacuous) yields CacheAwareKvGatedPrefix behavior.
++	PDLongPrefillThreshold int
++	// PDAdmitThreshold is the predicted-KV-utilization threshold for the kv-admission-gated-prefix
++	// decider. Gate fires when (KvTokensInUse + nonCachedTokens) / TotalKvCapacityTokens >= threshold.
++	// Default 2.0 (vacuous) yields CacheAwareKvGatedPrefix behavior.
++	PDAdmitThreshold float64
++	// PDAdmitMinTokens is the minimum nonCachedTokens for the admit clause to fire in
++	// kv-admission-gated-prefix and admission-and-long-prefill-aware-prefix deciders.
++	// 0 (default) means vacuous — admit fires on all requests (iter-38/iter-42 behavior).
++	PDAdmitMinTokens int
++	// PDKvMinTokens is the minimum nonCachedTokens for the kvFires clause of
++	// admission-and-long-prefill-aware-prefix to fire. kvFires fires only when
++	// nonCachedTokens >= this value AND transientKvUtil >= kvGate.
++	// Default 0 (vacuous — kvFires fires on all eligible requests).
++	PDKvMinTokens int
++	// PDKvCeiling is the transientKvUtil upper bound for the kvFires clause of
++	// admission-and-long-prefill-aware-prefix. kvFires fires only when
++	// kvGate <= transientKvUtil < kvCeiling. 0 (default) means vacuous —
++	// no ceiling applied (identical to iter-48 A2 behavior). Only valid with
++	// --pd-decider=admission-and-long-prefill-aware-prefix.
++	PDKvCeiling float64
++	// PDAdmitCeiling is the predictedUtil upper bound for the admit clause of
++	// admission-and-long-prefill-aware-prefix. Admit fires only when
++	// admitThreshold <= predictedUtil < admitCeiling. 0 (default) means vacuous —
++	// no ceiling applied (identical to iter-43/iter-44 behavior). Only valid with
++	// --pd-decider=admission-and-long-prefill-aware-prefix.
++	PDAdmitCeiling float64
++	// PDQdCircuitBreaker is the selected-pod QueueDepth threshold above which the
++	// OR-combinator of admission-and-long-prefill-aware-prefix is overridden to
++	// Disaggregate=false. The long-prefill force-disagg branch is preserved
++	// unconditionally (RP-35/RP-63). Default 0 means vacuous (no breaker; identical
++	// to iter-48 A2 behavior). Only valid with
++	// --pd-decider=admission-and-long-prefill-aware-prefix.
++	PDQdCircuitBreaker int
++	// PDQdLowCircuitBreaker is the selected-pod QueueDepth threshold below which the
++	// OR-combinator of admission-and-long-prefill-aware-prefix is overridden to
++	// Disaggregate=false (inverse direction vs PDQdCircuitBreaker). When the decode pod is
++	// idle or near-idle (QueueDepth < threshold), disaggregation adds KV-transfer overhead
++	// without proportional queue-dwell savings; suppressing disagg colocates the request on
++	// the decode pod instead. The long-prefill force-disagg branch is preserved
++	// unconditionally (RP-35/RP-63). Default 0 means vacuous (no breaker). Only valid with
++	// --pd-decider=admission-and-long-prefill-aware-prefix.
++	PDQdLowCircuitBreaker int
++	// PDIfrGate is the per-pod selected-decode InFlightRequests threshold above which the
++	// OR-combinator of admission-and-long-prefill-aware-prefix gains a fourth firing clause
++	// (iter-52). 0 = vacuous (clause disabled, byte-identical to iter-48 A2 / iter-51 A3).
++	// Range >= 0. Only valid with --pd-decider=admission-and-long-prefill-aware-prefix.
++	PDIfrGate int
++	// PDIfrCeiling is the per-pod selected-decode InFlightRequests upper bound for the fourth
++	// OR-clause of admission-and-long-prefill-aware-prefix. ifrFires fires only when
++	// ifrGate <= InFlightRequests < ifrCeiling. 0 (default) = vacuous (no ceiling,
++	// byte-identical to iter-55 A3 behavior). Range >= 0; when > 0 must exceed PDIfrGate.
++	// Only valid with --pd-decider=admission-and-long-prefill-aware-prefix.
++	PDIfrCeiling int
++	// PDIfrMinTokens is the minimum nonCachedTokens for the ifrFires clause of
++	// admission-and-long-prefill-aware-prefix to fire. ifrFires fires only when
++	// nonCachedTokens >= this value AND the rest of the IFR clause conditions hold.
++	// Default 0 (vacuous — ifrFires fires on all eligible requests; byte-identical to iter-56 behavior).
++	// Range >= 0. Only valid with --pd-decider=admission-and-long-prefill-aware-prefix.
++	PDIfrMinTokens int
++	// PDRoundIndexCap is the session round-index cap for the OR-combinator of
++	// admission-and-long-prefill-aware-prefix (iter-59, RP-13/RP-45). When > 0 and
++	// req.RoundIndex >= cap, the OR-combinator decision is overridden to Disaggregate=false.
++	// The long-prefill force-disagg early return (RP-35/RP-63) is preserved unconditionally
++	// and executes before this override. Default 0 = vacuous (byte-identical to iter-58 behavior).
++	// Range >= 0. Only valid with --pd-decider=admission-and-long-prefill-aware-prefix.
++	PDRoundIndexCap int
+ 
+ 	// E/P/D disaggregation configuration (GAP-4, issue #1264).
+ 	// When EncodeInstances == 0 (default), the encode stage is disabled and the
+diff --git a/sim/disaggregation.go b/sim/disaggregation.go
+index 153bb75c..28705a8f 100644
+--- a/sim/disaggregation.go
++++ b/sim/disaggregation.go
+@@ -73,6 +73,20 @@ func NewDisaggregationDecider(name string) DisaggregationDecider {
+ 		return &AlwaysDisaggregate{}
+ 	case "prefix-threshold":
+ 		panic("use NewPrefixThresholdDecider(threshold, blockSize, cacheQuery) to construct prefix-threshold decider")
++	case "load-kv-gated-prefix":
++		panic("use NewLoadKvGatedPrefixDecider(threshold, blockSize, queueGate, kvGate, mode, cacheQuery) to construct load-kv-gated-prefix decider")
++	case "cache-aware-kv-gated-prefix":
++		panic("use NewCacheAwareKvGatedPrefixDecider(threshold, blockSize, queueGate, kvGate, mode, cacheQuery) to construct cache-aware-kv-gated-prefix decider")
++	case "cache-bypassed-kv-gated-prefix":
++		panic("use NewCacheBypassedKvGatedPrefixDecider(threshold, blockSize, queueGate, kvGate, cacheCapTokens, mode, cacheQuery) to construct cache-bypassed-kv-gated-prefix decider")
++	case "cluster-kv-gated-prefix":
++		panic("use NewClusterKvGatedPrefixDecider(threshold, blockSize, queueGate, kvGate, clusterKvGate, mode, cacheQuery) to construct cluster-kv-gated-prefix decider")
++	case "cluster-transient-kv-gated-prefix":
++		panic("use NewClusterTransientKvGatedPrefixDecider(threshold, blockSize, queueGate, kvGate, clusterKvGate, mode, cacheQuery) to construct cluster-transient-kv-gated-prefix decider")
++	case "long-prefill-aware-prefix":
++		panic("use NewLongPrefillAwarePrefixDecider(threshold, blockSize, queueGate, kvGate, longPrefillThreshold, mode, cacheQuery) to construct long-prefill-aware-prefix decider")
++	case "admission-and-long-prefill-aware-prefix":
++		panic("use NewAdmissionAndLongPrefillAwarePrefixDecider(threshold, blockSize, queueGate, kvGate, admitThreshold, longPrefillThreshold, mode, cacheQuery) to construct admission-and-long-prefill-aware-prefix decider")
+ 	default:
+ 		panic(fmt.Sprintf(
+ 			"disaggregation decider %q is registered in validDisaggregationDeciders (bundle.go) "+
+@@ -154,8 +168,1383 @@ var (
+ 	_ DisaggregationDecider = (*NeverDisaggregate)(nil)
+ 	_ DisaggregationDecider = (*AlwaysDisaggregate)(nil)
+ 	_ DisaggregationDecider = (*PrefixThresholdDecider)(nil)
++	_ DisaggregationDecider = (*LoadKvGatedPrefixDecider)(nil)
++	_ DisaggregationDecider = (*CacheAwareKvGatedPrefixDecider)(nil)
++	_ DisaggregationDecider = (*CacheBypassedKvGatedPrefixDecider)(nil)
++	_ DisaggregationDecider = (*ClusterKvGatedPrefixDecider)(nil)
++	_ DisaggregationDecider = (*ClusterTransientKvGatedPrefixDecider)(nil)
++	_ DisaggregationDecider = (*LongPrefillAwarePrefixDecider)(nil)
+ )
+ 
++// LoadKvGatedPrefixDecider disaggregates a request when the non-cached prefix
++// exceeds a threshold AND (selected decode pod has QueueDepth >= queueGate OR
++// selected decode pod has KVUtilization >= kvGate). The OR-combinator extends
++// LoadGatedPrefix by also triggering disaggregation when a pod is actively
++// decoding (KV held, QD=0) — exactly the regime where the QD-only gate
++// would colocate a new prefill onto an in-progress decode pod.
++//
++// Formula:
++//
++//	nonCachedTokens = len(req.InputTokens) − cachedBlocks × blockSize
++//	gateFires       = (selected.QueueDepth >= queueGate) || (selected.KVUtilization >= kvGate)
++//	Disaggregate    = (nonCachedTokens > threshold) && gateFires
++//
++// Degenerate cases:
++//   - queueGate=0: QD>=0 always true → gate ≡ OR-true → degenerates to PrefixThreshold
++//   - kvGate>1.0 (e.g. 2.0): KVUtil ∈ [0,1] never fires → gate ≡ QD>=queueGate →
++//     degenerates to LoadGatedPrefix(selected, queueGate)
++//
++// mode must be "selected" (pod chosen by upstream decode routing). pool-sum and
++// max aggregation modes are excluded per RP-16/RP-19.
++type LoadKvGatedPrefixDecider struct {
++	threshold  int
++	blockSize  int
++	queueGate  int
++	kvGate     float64
++	cacheQuery map[string]func([]int) int
++}
++
++// NewLoadKvGatedPrefixDecider creates a LoadKvGatedPrefixDecider.
++// Invariants (R3 fail-loud): threshold >= 0, blockSize > 0, queueGate >= 0,
++// kvGate in [0, 2.0], mode == "selected".
++func NewLoadKvGatedPrefixDecider(threshold, blockSize, queueGate int, kvGate float64, mode string, cacheQuery map[string]func([]int) int) *LoadKvGatedPrefixDecider {
++	if threshold < 0 {
++		panic(fmt.Sprintf("NewLoadKvGatedPrefixDecider: threshold must be >= 0, got %d", threshold))
++	}
++	if blockSize <= 0 {
++		panic(fmt.Sprintf("NewLoadKvGatedPrefixDecider: blockSize must be > 0, got %d", blockSize))
++	}
++	if queueGate < 0 {
++		panic(fmt.Sprintf("NewLoadKvGatedPrefixDecider: queueGate must be >= 0, got %d", queueGate))
++	}
++	if kvGate < 0 {
++		panic(fmt.Sprintf("NewLoadKvGatedPrefixDecider: kvGate must be >= 0, got %f", kvGate))
++	}
++	if kvGate > 2.0 {
++		panic(fmt.Sprintf("NewLoadKvGatedPrefixDecider: kvGate must be <= 2.0, got %f", kvGate))
++	}
++	if mode != "selected" {
++		panic(fmt.Sprintf("NewLoadKvGatedPrefixDecider: mode must be \"selected\", got %q (pool-sum and max aggregation modes are not supported; see RP-16/RP-19)", mode))
++	}
++	return &LoadKvGatedPrefixDecider{
++		threshold:  threshold,
++		blockSize:  blockSize,
++		queueGate:  queueGate,
++		kvGate:     kvGate,
++		cacheQuery: cacheQuery,
++	}
++}
++
++// Decide returns Disaggregate=true when nonCachedTokens > threshold AND
++// (selected.QueueDepth >= queueGate OR selected.KVUtilization >= kvGate).
++//
++// Early returns (all yielding Disaggregate=false):
++//   - len(req.InputTokens) == 0
++//   - state == nil
++//   - state.SelectedInstance == "" (no upstream selection)
++//   - cacheQuery is nil, or the selected instance is missing from the map,
++//     or its closure is nil
++//   - no snapshot in state.Snapshots matches state.SelectedInstance
++func (d *LoadKvGatedPrefixDecider) Decide(req *Request, state *RouterState) DisaggregationDecision {
++	if len(req.InputTokens) == 0 {
++		return DisaggregationDecision{Disaggregate: false}
++	}
++	if state == nil || state.SelectedInstance == "" || d.cacheQuery == nil {
++		return DisaggregationDecision{Disaggregate: false}
++	}
++	fn, ok := d.cacheQuery[state.SelectedInstance]
++	if !ok || fn == nil {
++		return DisaggregationDecision{Disaggregate: false}
++	}
++	cachedBlocks := fn(req.InputTokens)
++	nonCachedTokens := len(req.InputTokens) - cachedBlocks*d.blockSize
++	if nonCachedTokens <= d.threshold {
++		return DisaggregationDecision{Disaggregate: false}
++	}
++	// Find the selected snapshot by ID (read-only linear scan).
++	var selectedSnap *RoutingSnapshot
++	for i := range state.Snapshots {
++		if state.Snapshots[i].ID == state.SelectedInstance {
++			selectedSnap = &state.Snapshots[i]
++			break
++		}
++	}
++	if selectedSnap == nil {
++		// Defensive fallback: no matching snapshot found.
++		return DisaggregationDecision{Disaggregate: false}
++	}
++	gateFires := (selectedSnap.QueueDepth >= d.queueGate) || (selectedSnap.KVUtilization >= d.kvGate)
++	return DisaggregationDecision{Disaggregate: gateFires}
++}
++
++// CacheAwareKvGatedPrefixDecider extends LoadKvGatedPrefixDecider by subtracting
++// the request's own prefix-cache contribution from KvTokensInUse before normalizing
++// to a "transient KV utilization". This isolates KV held by current active decode
++// work from KV held by passively cached prefix — fixing the RP-33 failure mode where
++// LRU-pinned shared prefixes elevate raw KVUtilization on otherwise-idle pods.
++//
++// Formula:
++//
++//	nonCachedTokens    = len(req.InputTokens) − cachedBlocks × blockSize
++//	cachedTokens       = cachedBlocks × blockSize
++//	transientKvTokens  = max(0, KvTokensInUse − cachedTokens)
++//	transientKvUtil    = transientKvTokens / TotalKvCapacityTokens  (0 if capacity ≤ 0)
++//	gateFires          = (selected.QueueDepth >= queueGate) || (transientKvUtil >= kvGate)
++//	Disaggregate       = (nonCachedTokens > threshold) && gateFires
++//
++// Degenerate cases:
++//   - kvGate=2.0: transientKvUtil ∈ [0,1] never fires → gate ≡ QD>=queueGate →
++//     byte-equivalent to LoadGatedPrefix(selected, queueGate)
++//
++// mode must be "selected". pool-sum and max modes are excluded per RP-16/RP-19.
++type CacheAwareKvGatedPrefixDecider struct {
++	threshold  int
++	blockSize  int
++	queueGate  int
++	kvGate     float64
++	cacheQuery map[string]func([]int) int
++}
++
++// NewCacheAwareKvGatedPrefixDecider creates a CacheAwareKvGatedPrefixDecider.
++// Invariants (R3 fail-loud): threshold >= 0, blockSize > 0, queueGate >= 0,
++// kvGate in [0, 2.0], mode == "selected".
++func NewCacheAwareKvGatedPrefixDecider(threshold, blockSize, queueGate int, kvGate float64, mode string, cacheQuery map[string]func([]int) int) *CacheAwareKvGatedPrefixDecider {
++	if threshold < 0 {
++		panic(fmt.Sprintf("NewCacheAwareKvGatedPrefixDecider: threshold must be >= 0, got %d", threshold))
++	}
++	if blockSize <= 0 {
++		panic(fmt.Sprintf("NewCacheAwareKvGatedPrefixDecider: blockSize must be > 0, got %d", blockSize))
++	}
++	if queueGate < 0 {
++		panic(fmt.Sprintf("NewCacheAwareKvGatedPrefixDecider: queueGate must be >= 0, got %d", queueGate))
++	}
++	if kvGate < 0 {
++		panic(fmt.Sprintf("NewCacheAwareKvGatedPrefixDecider: kvGate must be >= 0, got %f", kvGate))
++	}
++	if kvGate > 2.0 {
++		panic(fmt.Sprintf("NewCacheAwareKvGatedPrefixDecider: kvGate must be <= 2.0, got %f", kvGate))
++	}
++	if mode != "selected" {
++		panic(fmt.Sprintf("NewCacheAwareKvGatedPrefixDecider: mode must be \"selected\", got %q (pool-sum and max aggregation modes are not supported; see RP-16/RP-19)", mode))
++	}
++	return &CacheAwareKvGatedPrefixDecider{
++		threshold:  threshold,
++		blockSize:  blockSize,
++		queueGate:  queueGate,
++		kvGate:     kvGate,
++		cacheQuery: cacheQuery,
++	}
++}
++
++// Decide returns Disaggregate=true when nonCachedTokens > threshold AND
++// (selected.QueueDepth >= queueGate OR transientKvUtil >= kvGate).
++// transientKvUtil = max(0, KvTokensInUse - cachedBlocks*blockSize) / TotalKvCapacityTokens,
++// isolating active-decode KV pressure from passively cached prefix blocks.
++//
++// Early returns (all yielding Disaggregate=false):
++//   - len(req.InputTokens) == 0
++//   - state == nil
++//   - state.SelectedInstance == "" (no upstream selection)
++//   - cacheQuery is nil, or the selected instance is missing from the map,
++//     or its closure is nil
++//   - no snapshot in state.Snapshots matches state.SelectedInstance
++func (d *CacheAwareKvGatedPrefixDecider) Decide(req *Request, state *RouterState) DisaggregationDecision {
++	if len(req.InputTokens) == 0 {
++		return DisaggregationDecision{Disaggregate: false}
++	}
++	if state == nil || state.SelectedInstance == "" || d.cacheQuery == nil {
++		return DisaggregationDecision{Disaggregate: false}
++	}
++	fn, ok := d.cacheQuery[state.SelectedInstance]
++	if !ok || fn == nil {
++		return DisaggregationDecision{Disaggregate: false}
++	}
++	cachedBlocks := fn(req.InputTokens)
++	nonCachedTokens := len(req.InputTokens) - cachedBlocks*d.blockSize
++	if nonCachedTokens <= d.threshold {
++		return DisaggregationDecision{Disaggregate: false}
++	}
++	// Find the selected snapshot by ID (read-only linear scan).
++	var selectedSnap *RoutingSnapshot
++	for i := range state.Snapshots {
++		if state.Snapshots[i].ID == state.SelectedInstance {
++			selectedSnap = &state.Snapshots[i]
++			break
++		}
++	}
++	if selectedSnap == nil {
++		return DisaggregationDecision{Disaggregate: false}
++	}
++	cachedTokens := int64(cachedBlocks * d.blockSize)
++	transientKvTokens := selectedSnap.KvTokensInUse - cachedTokens
++	if transientKvTokens < 0 {
++		transientKvTokens = 0
++	}
++	var transientKvUtil float64
++	if selectedSnap.TotalKvCapacityTokens > 0 {
++		transientKvUtil = float64(transientKvTokens) / float64(selectedSnap.TotalKvCapacityTokens)
++	}
++	gateFires := (selectedSnap.QueueDepth >= d.queueGate) || (transientKvUtil >= d.kvGate)
++	return DisaggregationDecision{Disaggregate: gateFires}
++}
++
++// CacheBypassedKvGatedPrefixDecider extends CacheAwareKvGatedPrefixDecider with a
++// per-request "cache-magnitude switch": when the request's cached-prefix size on the
++// selected decode pod is >= cacheCapTokens, the transient-KV gate is bypassed entirely
++// and the decision reduces to QD-only (LoadGatedPrefix behavior). When cachedTokens <
++// cacheCapTokens, the full OR-combined (QD ∨ transientKvUtil) gate from
++// CacheAwareKvGatedPrefixDecider is evaluated.
++//
++// Formula:
++//
++//	nonCachedTokens = len(req.InputTokens) − cachedBlocks × blockSize
++//	cachedTokens    = cachedBlocks × blockSize
++//	qdFires         = (selected.QueueDepth >= queueGate)
++//	kvFires         = false
++//	if cachedTokens < cacheCapTokens:
++//	    transientKvTokens = max(0, KvTokensInUse − cachedTokens)
++//	    transientKvUtil   = transientKvTokens / TotalKvCapacityTokens  (0 if capacity ≤ 0)
++//	    kvFires           = (transientKvUtil >= kvGate)
++//	Disaggregate = (nonCachedTokens > threshold) && (qdFires || kvFires)
++//
++// Degenerate cases:
++//   - cacheCapTokens=0: cachedTokens >= 0 always → kvFires always false → degenerates
++//     to LoadGatedPrefix(selected, queueGate) — byte-identical to iter-1 winner.
++//   - cacheCapTokens=large sentinel (e.g. 1<<30): cachedTokens always < cap → kvFires
++//     always evaluated → byte-identical to CacheAwareKvGatedPrefixDecider.
++//
++// mode must be "selected". pool-sum and max modes are excluded per RP-16/RP-19.
++type CacheBypassedKvGatedPrefixDecider struct {
++	threshold      int
++	blockSize      int
++	queueGate      int
++	kvGate         float64
++	cacheCapTokens int
++	cacheQuery     map[string]func([]int) int
++}
++
++// NewCacheBypassedKvGatedPrefixDecider creates a CacheBypassedKvGatedPrefixDecider.
++// Invariants (R3 fail-loud): threshold >= 0, blockSize > 0, queueGate >= 0,
++// kvGate in [0, 2.0], cacheCapTokens >= 0, mode == "selected".
++func NewCacheBypassedKvGatedPrefixDecider(threshold, blockSize, queueGate int, kvGate float64, cacheCapTokens int, mode string, cacheQuery map[string]func([]int) int) *CacheBypassedKvGatedPrefixDecider {
++	if threshold < 0 {
++		panic(fmt.Sprintf("NewCacheBypassedKvGatedPrefixDecider: threshold must be >= 0, got %d", threshold))
++	}
++	if blockSize <= 0 {
++		panic(fmt.Sprintf("NewCacheBypassedKvGatedPrefixDecider: blockSize must be > 0, got %d", blockSize))
++	}
++	if queueGate < 0 {
++		panic(fmt.Sprintf("NewCacheBypassedKvGatedPrefixDecider: queueGate must be >= 0, got %d", queueGate))
++	}
++	if kvGate < 0 {
++		panic(fmt.Sprintf("NewCacheBypassedKvGatedPrefixDecider: kvGate must be >= 0, got %f", kvGate))
++	}
++	if kvGate > 2.0 {
++		panic(fmt.Sprintf("NewCacheBypassedKvGatedPrefixDecider: kvGate must be <= 2.0, got %f", kvGate))
++	}
++	if cacheCapTokens < 0 {
++		panic(fmt.Sprintf("NewCacheBypassedKvGatedPrefixDecider: cacheCapTokens must be >= 0, got %d", cacheCapTokens))
++	}
++	if mode != "selected" {
++		panic(fmt.Sprintf("NewCacheBypassedKvGatedPrefixDecider: mode must be \"selected\", got %q (pool-sum and max aggregation modes are not supported; see RP-16/RP-19)", mode))
++	}
++	return &CacheBypassedKvGatedPrefixDecider{
++		threshold:      threshold,
++		blockSize:      blockSize,
++		queueGate:      queueGate,
++		kvGate:         kvGate,
++		cacheCapTokens: cacheCapTokens,
++		cacheQuery:     cacheQuery,
++	}
++}
++
++// Decide returns Disaggregate=true when nonCachedTokens > threshold AND
++// (qdFires || kvFires), where kvFires is evaluated only when cachedTokens < cacheCapTokens.
++//
++// Early returns (all yielding Disaggregate=false):
++//   - len(req.InputTokens) == 0
++//   - state == nil
++//   - state.SelectedInstance == "" (no upstream selection)
++//   - cacheQuery is nil, or the selected instance is missing from the map,
++//     or its closure is nil
++//   - no snapshot in state.Snapshots matches state.SelectedInstance
++func (d *CacheBypassedKvGatedPrefixDecider) Decide(req *Request, state *RouterState) DisaggregationDecision {
++	if len(req.InputTokens) == 0 {
++		return DisaggregationDecision{Disaggregate: false}
++	}
++	if state == nil || state.SelectedInstance == "" || d.cacheQuery == nil {
++		return DisaggregationDecision{Disaggregate: false}
++	}
++	fn, ok := d.cacheQuery[state.SelectedInstance]
++	if !ok || fn == nil {
++		return DisaggregationDecision{Disaggregate: false}
++	}
++	cachedBlocks := fn(req.InputTokens)
++	nonCachedTokens := len(req.InputTokens) - cachedBlocks*d.blockSize
++	if nonCachedTokens <= d.threshold {
++		return DisaggregationDecision{Disaggregate: false}
++	}
++	// Find the selected snapshot by ID (read-only linear scan).
++	var selectedSnap *RoutingSnapshot
++	for i := range state.Snapshots {
++		if state.Snapshots[i].ID == state.SelectedInstance {
++			selectedSnap = &state.Snapshots[i]
++			break
++		}
++	}
++	if selectedSnap == nil {
++		return DisaggregationDecision{Disaggregate: false}
++	}
++	cachedTokens := int64(cachedBlocks * d.blockSize)
++	qdFires := selectedSnap.QueueDepth >= d.queueGate
++	kvFires := false
++	if cachedTokens < int64(d.cacheCapTokens) {
++		transientKvTokens := selectedSnap.KvTokensInUse - cachedTokens
++		if transientKvTokens < 0 {
++			transientKvTokens = 0
++		}
++		var transientKvUtil float64
++		if selectedSnap.TotalKvCapacityTokens > 0 {
++			transientKvUtil = float64(transientKvTokens) / float64(selectedSnap.TotalKvCapacityTokens)
++		}
++		kvFires = transientKvUtil >= d.kvGate
++	}
++	return DisaggregationDecision{Disaggregate: qdFires || kvFires}
++}
++
++// ClusterKvGatedPrefixDecider extends CacheAwareKvGatedPrefixDecider with a
++// third OR-clause based on the decode-pool aggregate KV utilization:
++//
++//	clusterKvTokens = Σ snap.KvTokensInUse for snap in state.Snapshots
++//	clusterKvCap    = Σ snap.TotalKvCapacityTokens for snap in state.Snapshots
++//	clusterKvUtil   = clusterKvTokens / clusterKvCap  (0 if cap ≤ 0)
++//	gateFires       = (selected.QueueDepth >= queueGate)
++//	              || (selected.transientKvUtil >= kvGate)
++//	              || (clusterKvUtil >= clusterKvGate)
++//	Disaggregate    = (nonCachedTokens > threshold) && gateFires
++//
++// transientKvUtil is computed identically to CacheAwareKvGatedPrefixDecider:
++// max(0, KvTokensInUse - cachedBlocks*blockSize) / TotalKvCapacityTokens.
++// The cluster-aggregate term uses raw (not cache-subtracted) KV tokens because
++// it aggregates across all pods — only the selected pod's cache state is queryable.
++//
++// Degenerate cases:
++//   - clusterKvGate=2.0: clusterKvUtil ∈ [0,1] never fires → byte-identical to
++//     CacheAwareKvGatedPrefixDecider (ablation).
++//   - clusterKvGate=0.0: cluster-clause always fires → degenerate to
++//     prefix-threshold (always disaggregate when threshold exceeded).
++//
++// mode must be "selected". pool-sum and max modes are excluded per RP-16/RP-19.
++type ClusterKvGatedPrefixDecider struct {
++	threshold      int
++	blockSize      int
++	queueGate      int
++	kvGate         float64
++	clusterKvGate  float64
++	cacheQuery     map[string]func([]int) int
++}
++
++// NewClusterKvGatedPrefixDecider creates a ClusterKvGatedPrefixDecider.
++// Invariants (R3 fail-loud): threshold >= 0, blockSize > 0, queueGate >= 0,
++// kvGate in [0, 2.0], clusterKvGate in [0, 2.0], mode == "selected".
++func NewClusterKvGatedPrefixDecider(threshold, blockSize, queueGate int, kvGate, clusterKvGate float64, mode string, cacheQuery map[string]func([]int) int) *ClusterKvGatedPrefixDecider {
++	if threshold < 0 {
++		panic(fmt.Sprintf("NewClusterKvGatedPrefixDecider: threshold must be >= 0, got %d", threshold))
++	}
++	if blockSize <= 0 {
++		panic(fmt.Sprintf("NewClusterKvGatedPrefixDecider: blockSize must be > 0, got %d", blockSize))
++	}
++	if queueGate < 0 {
++		panic(fmt.Sprintf("NewClusterKvGatedPrefixDecider: queueGate must be >= 0, got %d", queueGate))
++	}
++	if kvGate < 0 || kvGate > 2.0 {
++		panic(fmt.Sprintf("NewClusterKvGatedPrefixDecider: kvGate must be in [0, 2.0], got %f", kvGate))
++	}
++	if clusterKvGate < 0 || clusterKvGate > 2.0 {
++		panic(fmt.Sprintf("NewClusterKvGatedPrefixDecider: clusterKvGate must be in [0, 2.0], got %f", clusterKvGate))
++	}
++	if mode != "selected" {
++		panic(fmt.Sprintf("NewClusterKvGatedPrefixDecider: mode must be \"selected\", got %q (pool-sum and max aggregation modes are not supported; see RP-16/RP-19)", mode))
++	}
++	return &ClusterKvGatedPrefixDecider{
++		threshold:     threshold,
++		blockSize:     blockSize,
++		queueGate:     queueGate,
++		kvGate:        kvGate,
++		clusterKvGate: clusterKvGate,
++		cacheQuery:    cacheQuery,
++	}
++}
++
++// Decide returns Disaggregate=true when nonCachedTokens > threshold AND
++// (selected.QueueDepth >= queueGate OR selected.transientKvUtil >= kvGate
++// OR clusterKvUtil >= clusterKvGate).
++//
++// Early returns (all yielding Disaggregate=false):
++//   - len(req.InputTokens) == 0
++//   - state == nil
++//   - state.SelectedInstance == "" (no upstream selection)
++//   - cacheQuery is nil, or the selected instance is missing from the map,
++//     or its closure is nil
++//   - no snapshot in state.Snapshots matches state.SelectedInstance
++func (d *ClusterKvGatedPrefixDecider) Decide(req *Request, state *RouterState) DisaggregationDecision {
++	if len(req.InputTokens) == 0 {
++		return DisaggregationDecision{Disaggregate: false}
++	}
++	if state == nil || state.SelectedInstance == "" || d.cacheQuery == nil {
++		return DisaggregationDecision{Disaggregate: false}
++	}
++	fn, ok := d.cacheQuery[state.SelectedInstance]
++	if !ok || fn == nil {
++		return DisaggregationDecision{Disaggregate: false}
++	}
++	cachedBlocks := fn(req.InputTokens)
++	nonCachedTokens := len(req.InputTokens) - cachedBlocks*d.blockSize
++	if nonCachedTokens <= d.threshold {
++		return DisaggregationDecision{Disaggregate: false}
++	}
++	// Find the selected snapshot and compute cluster-aggregate KV.
++	var selectedSnap *RoutingSnapshot
++	var clusterKvTokens, clusterKvCap int64
++	for i := range state.Snapshots {
++		snap := &state.Snapshots[i]
++		clusterKvTokens += snap.KvTokensInUse
++		clusterKvCap += snap.TotalKvCapacityTokens
++		if snap.ID == state.SelectedInstance {
++			selectedSnap = snap
++		}
++	}
++	if selectedSnap == nil {
++		return DisaggregationDecision{Disaggregate: false}
++	}
++	// Per-pod cache-subtracted transient KV (same as CacheAwareKvGatedPrefixDecider).
++	cachedTokens := int64(cachedBlocks * d.blockSize)
++	transientKvTokens := selectedSnap.KvTokensInUse - cachedTokens
++	if transientKvTokens < 0 {
++		transientKvTokens = 0
++	}
++	var transientKvUtil float64
++	if selectedSnap.TotalKvCapacityTokens > 0 {
++		transientKvUtil = float64(transientKvTokens) / float64(selectedSnap.TotalKvCapacityTokens)
++	}
++	// Cluster-aggregate raw KV utilization.
++	var clusterKvUtil float64
++	if clusterKvCap > 0 {
++		clusterKvUtil = float64(clusterKvTokens) / float64(clusterKvCap)
++	}
++	gateFires := (selectedSnap.QueueDepth >= d.queueGate) ||
++		(transientKvUtil >= d.kvGate) ||
++		(clusterKvUtil >= d.clusterKvGate)
++	return DisaggregationDecision{Disaggregate: gateFires}
++}
++
++// ClusterTransientKvGatedPrefixDecider extends ClusterKvGatedPrefixDecider by
++// subtracting each pod's per-request cache-hit contribution from the cluster
++// numerator before aggregating. This produces a topology-undiluted AND
++// cache-aware cluster signal: "what is the residual non-cache load across all
++// decode pods if I were routed to any of them?"
++//
++// Decide logic:
++//
++//	nonCachedTokens > threshold
++//	&& (selected.QueueDepth >= queueGate
++//	    || selected.transientKvUtil >= kvGate
++//	    || clusterTransientKvUtil >= clusterKvGate)
++//
++// where:
++//   - selected.transientKvUtil = max(0, KvTokensInUse - cachedBlocks(req)*blockSize) / cap
++//     (same as CacheAwareKvGatedPrefixDecider)
++//   - clusterTransientKvUtil = sum_p(max(0, p.KvTokensInUse - cacheQueryFn[p](req.InputTokens)*blockSize))
++//     / sum_p(p.TotalKvCapacityTokens)
++//
++// Degenerate cases:
++//   - clusterKvGate=2.0: clusterTransientKvUtil ∈ [0,1] never fires → byte-identical to
++//     CacheAwareKvGatedPrefixDecider (ablation).
++//   - clusterKvGate=0.0: cluster-clause always fires → degenerate to
++//     prefix-threshold (always disaggregate when threshold exceeded).
++//
++// mode must be "selected". pool-sum and max modes are excluded per RP-16/RP-19.
++// RP-13: cacheQuery is used as a per-pod LOAD discount, not a session-warmth proxy.
++type ClusterTransientKvGatedPrefixDecider struct {
++	threshold     int
++	blockSize     int
++	queueGate     int
++	kvGate        float64
++	clusterKvGate float64
++	cacheQuery    map[string]func([]int) int
++}
++
++// NewClusterTransientKvGatedPrefixDecider creates a ClusterTransientKvGatedPrefixDecider.
++// Invariants (R3 fail-loud): threshold >= 0, blockSize > 0, queueGate >= 0,
++// kvGate in [0, 2.0], clusterKvGate in [0, 2.0], mode == "selected".
++func NewClusterTransientKvGatedPrefixDecider(threshold, blockSize, queueGate int, kvGate, clusterKvGate float64, mode string, cacheQuery map[string]func([]int) int) *ClusterTransientKvGatedPrefixDecider {
++	if threshold < 0 {
++		panic(fmt.Sprintf("NewClusterTransientKvGatedPrefixDecider: threshold must be >= 0, got %d", threshold))
++	}
++	if blockSize <= 0 {
++		panic(fmt.Sprintf("NewClusterTransientKvGatedPrefixDecider: blockSize must be > 0, got %d", blockSize))
++	}
++	if queueGate < 0 {
++		panic(fmt.Sprintf("NewClusterTransientKvGatedPrefixDecider: queueGate must be >= 0, got %d", queueGate))
++	}
++	if kvGate < 0 || kvGate > 2.0 {
++		panic(fmt.Sprintf("NewClusterTransientKvGatedPrefixDecider: kvGate must be in [0, 2.0], got %f", kvGate))
++	}
++	if clusterKvGate < 0 || clusterKvGate > 2.0 {
++		panic(fmt.Sprintf("NewClusterTransientKvGatedPrefixDecider: clusterKvGate must be in [0, 2.0], got %f", clusterKvGate))
++	}
++	if mode != "selected" {
++		panic(fmt.Sprintf("NewClusterTransientKvGatedPrefixDecider: mode must be \"selected\", got %q (pool-sum and max aggregation modes are not supported; see RP-16/RP-19)", mode))
++	}
++	return &ClusterTransientKvGatedPrefixDecider{
++		threshold:     threshold,
++		blockSize:     blockSize,
++		queueGate:     queueGate,
++		kvGate:        kvGate,
++		clusterKvGate: clusterKvGate,
++		cacheQuery:    cacheQuery,
++	}
++}
++
++// Decide returns Disaggregate=true when nonCachedTokens > threshold AND
++// (selected.QueueDepth >= queueGate OR selected.transientKvUtil >= kvGate
++// OR clusterTransientKvUtil >= clusterKvGate).
++//
++// clusterTransientKvUtil subtracts each pod's per-request cache-hit contribution
++// from its KvTokensInUse before summing, producing a cache-aware cluster signal.
++//
++// Early returns (all yielding Disaggregate=false):
++//   - len(req.InputTokens) == 0
++//   - state == nil
++//   - state.SelectedInstance == "" (no upstream selection)
++//   - cacheQuery is nil, or the selected instance is missing from the map,
++//     or its closure is nil
++//   - no snapshot in state.Snapshots matches state.SelectedInstance
++func (d *ClusterTransientKvGatedPrefixDecider) Decide(req *Request, state *RouterState) DisaggregationDecision {
++	if len(req.InputTokens) == 0 {
++		return DisaggregationDecision{Disaggregate: false}
++	}
++	if state == nil || state.SelectedInstance == "" || d.cacheQuery == nil {
++		return DisaggregationDecision{Disaggregate: false}
++	}
++	fn, ok := d.cacheQuery[state.SelectedInstance]
++	if !ok || fn == nil {
++		return DisaggregationDecision{Disaggregate: false}
++	}
++	cachedBlocks := fn(req.InputTokens)
++	nonCachedTokens := len(req.InputTokens) - cachedBlocks*d.blockSize
++	if nonCachedTokens <= d.threshold {
++		return DisaggregationDecision{Disaggregate: false}
++	}
++	// Find the selected snapshot and compute cache-subtracted cluster-aggregate transient KV.
++	var selectedSnap *RoutingSnapshot
++	var clusterTransientKvTokens, clusterKvCap int64
++	for i := range state.Snapshots {
++		snap := &state.Snapshots[i]
++		// Query each pod's cache for this request's tokens (RP-13: load discount, not warmth proxy).
++		var podCachedTokens int64
++		if podFn, exists := d.cacheQuery[snap.ID]; exists && podFn != nil {
++			podCachedBlocks := podFn(req.InputTokens)
++			podCachedTokens = int64(podCachedBlocks * d.blockSize)
++		}
++		podTransient := snap.KvTokensInUse - podCachedTokens
++		if podTransient < 0 {
++			podTransient = 0
++		}
++		clusterTransientKvTokens += podTransient
++		clusterKvCap += snap.TotalKvCapacityTokens
++		if snap.ID == state.SelectedInstance {
++			selectedSnap = snap
++		}
++	}
++	if selectedSnap == nil {
++		return DisaggregationDecision{Disaggregate: false}
++	}
++	// Per-pod cache-subtracted transient KV for selected pod (same as CacheAwareKvGatedPrefixDecider).
++	cachedTokens := int64(cachedBlocks * d.blockSize)
++	transientKvTokens := selectedSnap.KvTokensInUse - cachedTokens
++	if transientKvTokens < 0 {
++		transientKvTokens = 0
++	}
++	var transientKvUtil float64
++	if selectedSnap.TotalKvCapacityTokens > 0 {
++		transientKvUtil = float64(transientKvTokens) / float64(selectedSnap.TotalKvCapacityTokens)
++	}
++	// Cluster-aggregate transient KV utilization (cache-subtracted across all pods).
++	var clusterTransientKvUtil float64
++	if clusterKvCap > 0 {
++		clusterTransientKvUtil = float64(clusterTransientKvTokens) / float64(clusterKvCap)
++	}
++	gateFires := (selectedSnap.QueueDepth >= d.queueGate) ||
++		(transientKvUtil >= d.kvGate) ||
++		(clusterTransientKvUtil >= d.clusterKvGate)
++	return DisaggregationDecision{Disaggregate: gateFires}
++}
++
++// ClusterIfrGatedPrefixDecider extends CacheAwareKvGatedPrefixDecider by adding
++// a cluster-aggregate InFlightRequests OR-clause. This produces a cache-independent
++// load signal: "how many requests are concurrently executing across all decode pods?"
++//
++// Decide logic:
++//
++//	nonCachedTokens > threshold
++//	&& (selected.QueueDepth >= queueGate
++//	    || selected.transientKvUtil >= kvGate
++//	    || sum_p(p.InFlightRequests) >= clusterIfrGate)
++//
++// where:
++//   - selected.transientKvUtil = max(0, KvTokensInUse - cachedBlocks(req)*blockSize) / cap
++//     (same as CacheAwareKvGatedPrefixDecider)
++//   - sum_p(p.InFlightRequests) is the sum of InFlightRequests across all snapshots
++//
++// Degenerate cases:
++//   - clusterIfrGate=10000+: sum rarely/never reaches this value → IFR clause vacuous,
++//     behavior identical to CacheAwareKvGatedPrefixDecider (ablation).
++//   - clusterIfrGate=0: cluster-clause always fires → degenerate to
++//     prefix-threshold (always disaggregate when threshold exceeded).
++//
++// mode must be "selected". pool-sum and max modes are excluded per RP-16/RP-19.
++// InFlightRequests is a synchronous signal (INV-7) — no freshness concern.
++type ClusterIfrGatedPrefixDecider struct {
++	threshold       int
++	blockSize       int
++	queueGate       int
++	kvGate          float64
++	clusterIfrGate  int
++	cacheQuery      map[string]func([]int) int
++}
++
++// NewClusterIfrGatedPrefixDecider creates a ClusterIfrGatedPrefixDecider.
++// Invariants (R3 fail-loud): threshold >= 0, blockSize > 0, queueGate >= 0,
++// kvGate in [0, 2.0], clusterIfrGate >= 0, mode == "selected".
++func NewClusterIfrGatedPrefixDecider(threshold, blockSize, queueGate int, kvGate float64, clusterIfrGate int, mode string, cacheQuery map[string]func([]int) int) *ClusterIfrGatedPrefixDecider {
++	if threshold < 0 {
++		panic(fmt.Sprintf("NewClusterIfrGatedPrefixDecider: threshold must be >= 0, got %d", threshold))
++	}
++	if blockSize <= 0 {
++		panic(fmt.Sprintf("NewClusterIfrGatedPrefixDecider: blockSize must be > 0, got %d", blockSize))
++	}
++	if queueGate < 0 {
++		panic(fmt.Sprintf("NewClusterIfrGatedPrefixDecider: queueGate must be >= 0, got %d", queueGate))
++	}
++	if kvGate < 0 || kvGate > 2.0 {
++		panic(fmt.Sprintf("NewClusterIfrGatedPrefixDecider: kvGate must be in [0, 2.0], got %f", kvGate))
++	}
++	if clusterIfrGate < 0 {
++		panic(fmt.Sprintf("NewClusterIfrGatedPrefixDecider: clusterIfrGate must be >= 0, got %d", clusterIfrGate))
++	}
++	if mode != "selected" {
++		panic(fmt.Sprintf("NewClusterIfrGatedPrefixDecider: mode must be \"selected\", got %q (pool-sum and max aggregation modes are not supported; see RP-16/RP-19)", mode))
++	}
++	return &ClusterIfrGatedPrefixDecider{
++		threshold:      threshold,
++		blockSize:      blockSize,
++		queueGate:      queueGate,
++		kvGate:         kvGate,
++		clusterIfrGate: clusterIfrGate,
++		cacheQuery:     cacheQuery,
++	}
++}
++
++// Decide returns Disaggregate=true when nonCachedTokens > threshold AND
++// (selected.QueueDepth >= queueGate OR selected.transientKvUtil >= kvGate
++// OR sum_p(p.InFlightRequests) >= clusterIfrGate).
++//
++// sum_p(p.InFlightRequests) aggregates InFlightRequests across all snapshots.
++// InFlightRequests is a cache-independent synchronous load signal (INV-7).
++//
++// Early returns (all yielding Disaggregate=false):
++//   - len(req.InputTokens) == 0
++//   - state == nil
++//   - state.SelectedInstance == "" (no upstream selection)
++//   - cacheQuery is nil, or the selected instance is missing from the map,
++//     or its closure is nil
++//   - no snapshot in state.Snapshots matches state.SelectedInstance
++func (d *ClusterIfrGatedPrefixDecider) Decide(req *Request, state *RouterState) DisaggregationDecision {
++	if len(req.InputTokens) == 0 {
++		return DisaggregationDecision{Disaggregate: false}
++	}
++	if state == nil || state.SelectedInstance == "" || d.cacheQuery == nil {
++		return DisaggregationDecision{Disaggregate: false}
++	}
++	fn, ok := d.cacheQuery[state.SelectedInstance]
++	if !ok || fn == nil {
++		return DisaggregationDecision{Disaggregate: false}
++	}
++	cachedBlocks := fn(req.InputTokens)
++	nonCachedTokens := len(req.InputTokens) - cachedBlocks*d.blockSize
++	if nonCachedTokens <= d.threshold {
++		return DisaggregationDecision{Disaggregate: false}
++	}
++	// Find the selected snapshot and compute cluster-aggregate InFlightRequests sum.
++	var selectedSnap *RoutingSnapshot
++	var clusterIfrSum int
++	for i := range state.Snapshots {
++		snap := &state.Snapshots[i]
++		clusterIfrSum += snap.InFlightRequests
++		if snap.ID == state.SelectedInstance {
++			selectedSnap = snap
++		}
++	}
++	if selectedSnap == nil {
++		return DisaggregationDecision{Disaggregate: false}
++	}
++	// Per-pod cache-subtracted transient KV (same as CacheAwareKvGatedPrefixDecider).
++	cachedTokens := int64(cachedBlocks * d.blockSize)
++	transientKvTokens := selectedSnap.KvTokensInUse - cachedTokens
++	if transientKvTokens < 0 {
++		transientKvTokens = 0
++	}
++	var transientKvUtil float64
++	if selectedSnap.TotalKvCapacityTokens > 0 {
++		transientKvUtil = float64(transientKvTokens) / float64(selectedSnap.TotalKvCapacityTokens)
++	}
++	gateFires := (selectedSnap.QueueDepth >= d.queueGate) ||
++		(transientKvUtil >= d.kvGate) ||
++		(clusterIfrSum >= d.clusterIfrGate)
++	return DisaggregationDecision{Disaggregate: gateFires}
++}
++
++// compile-time interface compliance check
++var _ DisaggregationDecider = (*ClusterIfrGatedPrefixDecider)(nil)
++
++// ClusterIfrAndGatedPrefixDecider is identical to ClusterIfrGatedPrefixDecider
++// except it uses an AND combinator for the cluster-IFR clause instead of OR:
++//
++//	nonCachedTokens > threshold
++//	&& (selected.QueueDepth >= queueGate || selected.transientKvUtil >= kvGate)
++//	&& sum_p(p.InFlightRequests) >= clusterIfrGate
++//
++// The AND combinator suppresses disaggregation when per-pod gate fires but
++// cluster IFR is below the confirmation threshold — targeting the spurious
++// kvGate firing on warm code rounds driven by chat KV pressure (RP-37).
++//
++// Degenerate cases:
++//   - clusterIfrGate=0: AND-clause always true (IFR >= 0 always) → identical to
++//     CacheAwareKvGatedPrefixDecider (h-ablation expectation).
++//   - clusterIfrGate large: AND-clause rarely satisfied → suppresses most disaggregation.
++//
++// mode must be "selected". pool-sum and max modes are excluded per RP-16/RP-19.
++// InFlightRequests is a synchronous signal (INV-7).
++type ClusterIfrAndGatedPrefixDecider struct {
++	threshold      int
++	blockSize      int
++	queueGate      int
++	kvGate         float64
++	clusterIfrGate int
++	cacheQuery     map[string]func([]int) int
++}
++
++// NewClusterIfrAndGatedPrefixDecider creates a ClusterIfrAndGatedPrefixDecider.
++// Invariants (R3 fail-loud): threshold >= 0, blockSize > 0, queueGate >= 0,
++// kvGate in [0, 2.0], clusterIfrGate >= 0, mode == "selected".
++func NewClusterIfrAndGatedPrefixDecider(threshold, blockSize, queueGate int, kvGate float64, clusterIfrGate int, mode string, cacheQuery map[string]func([]int) int) *ClusterIfrAndGatedPrefixDecider {
++	if mode != "selected" {
++		panic(fmt.Sprintf("NewClusterIfrAndGatedPrefixDecider: loadGateMode must be %q, got %q (pool-sum/max are unsupported for cluster-ifr-and-gated-prefix)", "selected", mode))
++	}
++	if threshold < 0 {
++		panic(fmt.Sprintf("NewClusterIfrAndGatedPrefixDecider: threshold must be >= 0, got %d", threshold))
++	}
++	if blockSize <= 0 {
++		panic(fmt.Sprintf("NewClusterIfrAndGatedPrefixDecider: blockSize must be > 0, got %d", blockSize))
++	}
++	if queueGate < 0 {
++		panic(fmt.Sprintf("NewClusterIfrAndGatedPrefixDecider: queueGate must be >= 0, got %d", queueGate))
++	}
++	if kvGate < 0 {
++		panic(fmt.Sprintf("NewClusterIfrAndGatedPrefixDecider: kvGate must be >= 0, got %f", kvGate))
++	}
++	if kvGate > 2.0 {
++		panic(fmt.Sprintf("NewClusterIfrAndGatedPrefixDecider: kvGate must be <= 2.0, got %f", kvGate))
++	}
++	if clusterIfrGate < 0 {
++		panic(fmt.Sprintf("NewClusterIfrAndGatedPrefixDecider: clusterIfrGate must be >= 0, got %d", clusterIfrGate))
++	}
++	return &ClusterIfrAndGatedPrefixDecider{
++		threshold:      threshold,
++		blockSize:      blockSize,
++		queueGate:      queueGate,
++		kvGate:         kvGate,
++		clusterIfrGate: clusterIfrGate,
++		cacheQuery:     cacheQuery,
++	}
++}
++
++// Decide returns Disaggregate=true when nonCachedTokens > threshold AND
++// (selected.QueueDepth >= queueGate OR selected.transientKvUtil >= kvGate)
++// AND sum_p(p.InFlightRequests) >= clusterIfrGate.
++//
++// The AND combinator: per-pod gate fires AND cluster-IFR confirms system load.
++// When clusterIfrGate=0, the AND-clause is always true (IFR >= 0), giving
++// behavior identical to CacheAwareKvGatedPrefixDecider.
++func (d *ClusterIfrAndGatedPrefixDecider) Decide(req *Request, state *RouterState) DisaggregationDecision {
++	if len(req.InputTokens) == 0 {
++		return DisaggregationDecision{Disaggregate: false}
++	}
++	if state == nil || state.SelectedInstance == "" || d.cacheQuery == nil {
++		return DisaggregationDecision{Disaggregate: false}
++	}
++	fn, ok := d.cacheQuery[state.SelectedInstance]
++	if !ok || fn == nil {
++		return DisaggregationDecision{Disaggregate: false}
++	}
++	cachedBlocks := fn(req.InputTokens)
++	nonCachedTokens := len(req.InputTokens) - cachedBlocks*d.blockSize
++	if nonCachedTokens <= d.threshold {
++		return DisaggregationDecision{Disaggregate: false}
++	}
++	// Find the selected snapshot and compute cluster-aggregate InFlightRequests sum.
++	var selectedSnap *RoutingSnapshot
++	var clusterIfrSum int
++	for i := range state.Snapshots {
++		snap := &state.Snapshots[i]
++		clusterIfrSum += snap.InFlightRequests
++		if snap.ID == state.SelectedInstance {
++			selectedSnap = snap
++		}
++	}
++	if selectedSnap == nil {
++		return DisaggregationDecision{Disaggregate: false}
++	}
++	// Per-pod cache-subtracted transient KV (same as CacheAwareKvGatedPrefixDecider).
++	cachedTokens := int64(cachedBlocks * d.blockSize)
++	transientKvTokens := selectedSnap.KvTokensInUse - cachedTokens
++	if transientKvTokens < 0 {
++		transientKvTokens = 0
++	}
++	var transientKvUtil float64
++	if selectedSnap.TotalKvCapacityTokens > 0 {
++		transientKvUtil = float64(transientKvTokens) / float64(selectedSnap.TotalKvCapacityTokens)
++	}
++	// AND combinator: per-pod OR-gate must fire AND cluster IFR must confirm load.
++	perPodGateFires := (selectedSnap.QueueDepth >= d.queueGate) || (transientKvUtil >= d.kvGate)
++	gateFires := perPodGateFires && (clusterIfrSum >= d.clusterIfrGate)
++	return DisaggregationDecision{Disaggregate: gateFires}
++}
++
++// compile-time interface compliance check
++var _ DisaggregationDecider = (*ClusterIfrAndGatedPrefixDecider)(nil)
++
++// LongPrefillAwarePrefixDecider extends CacheAwareKvGatedPrefixDecider with a
++// force-disaggregate branch for requests whose non-cached prefill exceeds a
++// longPrefillThreshold. When nonCachedTokens > longPrefillThreshold, the
++// request is always disaggregated regardless of per-pod gate state, preventing
++// long code follow-up prefills from being colocated onto momentarily-idle
++// decode pods (which would block ongoing decode steps for hundreds of ms).
++//
++// For requests below the long-prefill threshold, the decider falls through to
++// the cache-aware per-pod gate evaluation (identical to CacheAwareKvGatedPrefixDecider).
++//
++// Degenerate cases:
++//   - longPrefillThreshold=1<<30 (vacuous): force-disaggregate branch never fires;
++//     results are byte-identical to CacheAwareKvGatedPrefixDecider.
++//   - longPrefillThreshold=0: any request with nonCachedTokens > 0 is forced to
++//     disaggregate; the per-pod gate is bypassed entirely.
++//
++// mode must be "selected". pool-sum and max modes are excluded per RP-16/RP-19.
++type LongPrefillAwarePrefixDecider struct {
++	threshold            int
++	blockSize            int
++	queueGate            int
++	kvGate               float64
++	longPrefillThreshold int
++	cacheQuery           map[string]func([]int) int
++}
++
++// NewLongPrefillAwarePrefixDecider creates a LongPrefillAwarePrefixDecider.
++// Invariants (R3 fail-loud): threshold >= 0, blockSize > 0, queueGate >= 0,
++// kvGate in [0, 2.0], longPrefillThreshold >= 0, mode == "selected".
++func NewLongPrefillAwarePrefixDecider(threshold, blockSize, queueGate int, kvGate float64, longPrefillThreshold int, mode string, cacheQuery map[string]func([]int) int) *LongPrefillAwarePrefixDecider {
++	if mode != "selected" {
++		panic(fmt.Sprintf("NewLongPrefillAwarePrefixDecider: mode must be \"selected\", got %q (pool-sum and max aggregation modes are not supported; see RP-16/RP-19)", mode))
++	}
++	if threshold < 0 {
++		panic(fmt.Sprintf("NewLongPrefillAwarePrefixDecider: threshold must be >= 0, got %d", threshold))
++	}
++	if blockSize <= 0 {
++		panic(fmt.Sprintf("NewLongPrefillAwarePrefixDecider: blockSize must be > 0, got %d", blockSize))
++	}
++	if queueGate < 0 {
++		panic(fmt.Sprintf("NewLongPrefillAwarePrefixDecider: queueGate must be >= 0, got %d", queueGate))
++	}
++	if kvGate < 0 {
++		panic(fmt.Sprintf("NewLongPrefillAwarePrefixDecider: kvGate must be >= 0, got %f", kvGate))
++	}
++	if kvGate > 2.0 {
++		panic(fmt.Sprintf("NewLongPrefillAwarePrefixDecider: kvGate must be <= 2.0, got %f", kvGate))
++	}
++	if longPrefillThreshold < 0 {
++		panic(fmt.Sprintf("NewLongPrefillAwarePrefixDecider: longPrefillThreshold must be >= 0, got %d", longPrefillThreshold))
++	}
++	return &LongPrefillAwarePrefixDecider{
++		threshold:            threshold,
++		blockSize:            blockSize,
++		queueGate:            queueGate,
++		kvGate:               kvGate,
++		longPrefillThreshold: longPrefillThreshold,
++		cacheQuery:           cacheQuery,
++	}
++}
++
++// Decide returns Disaggregate=true when nonCachedTokens > longPrefillThreshold
++// (force-disaggregate branch), or when nonCachedTokens > threshold AND
++// (selected.QueueDepth >= queueGate OR transientKvUtil >= kvGate) (cache-aware branch).
++// When longPrefillThreshold=1<<30 (vacuous), only the cache-aware branch is evaluated,
++// producing results identical to CacheAwareKvGatedPrefixDecider.
++func (d *LongPrefillAwarePrefixDecider) Decide(req *Request, state *RouterState) DisaggregationDecision {
++	if len(req.InputTokens) == 0 {
++		return DisaggregationDecision{Disaggregate: false}
++	}
++	if state == nil || state.SelectedInstance == "" || d.cacheQuery == nil {
++		return DisaggregationDecision{Disaggregate: false}
++	}
++	fn, ok := d.cacheQuery[state.SelectedInstance]
++	if !ok || fn == nil {
++		return DisaggregationDecision{Disaggregate: false}
++	}
++	cachedBlocks := fn(req.InputTokens)
++	nonCachedTokens := len(req.InputTokens) - cachedBlocks*d.blockSize
++	// Force-disaggregate branch: long prefills bypass per-pod gate.
++	if nonCachedTokens > d.longPrefillThreshold {
++		return DisaggregationDecision{Disaggregate: true}
++	}
++	if nonCachedTokens <= d.threshold {
++		return DisaggregationDecision{Disaggregate: false}
++	}
++	// Cache-aware per-pod gate (identical to CacheAwareKvGatedPrefixDecider).
++	var selectedSnap *RoutingSnapshot
++	for i := range state.Snapshots {
++		if state.Snapshots[i].ID == state.SelectedInstance {
++			selectedSnap = &state.Snapshots[i]
++			break
++		}
++	}
++	if selectedSnap == nil {
++		return DisaggregationDecision{Disaggregate: false}
++	}
++	cachedTokens := int64(cachedBlocks * d.blockSize)
++	transientKvTokens := selectedSnap.KvTokensInUse - cachedTokens
++	if transientKvTokens < 0 {
++		transientKvTokens = 0
++	}
++	var transientKvUtil float64
++	if selectedSnap.TotalKvCapacityTokens > 0 {
++		transientKvUtil = float64(transientKvTokens) / float64(selectedSnap.TotalKvCapacityTokens)
++	}
++	gateFires := (selectedSnap.QueueDepth >= d.queueGate) || (transientKvUtil >= d.kvGate)
++	return DisaggregationDecision{Disaggregate: gateFires}
++}
++
++// compile-time interface compliance check
++var _ DisaggregationDecider = (*LongPrefillAwarePrefixDecider)(nil)
++
++// ---------------------------------------------------------------------------
++// KvAdmissionGatedPrefixDecider (iter-36)
++// ---------------------------------------------------------------------------
++
++// KvAdmissionGatedPrefixDecider extends CacheAwareKvGatedPrefixDecider with a
++// predictive KV-admission gate: the decider ORs a third clause alongside the
++// existing QueueDepth and transient-KV gates.
++//
++// Gate logic (when nonCachedTokens > threshold):
++//
++//	cachedBlocks    = cacheQuery(req.InputTokens)
++//	nonCachedTokens = len(req.InputTokens) − cachedBlocks × blockSize
++//	qdFires         = (selected.QueueDepth >= queueGate)
++//	transientKv     = max(0, KvTokensInUse − cachedBlocks×blockSize)
++//	kvFires         = (transientKv / TotalKvCapacityTokens >= kvGate)
++//	admitFires      = (KvTokensInUse + nonCachedTokens) / TotalKvCapacityTokens >= admitThreshold
++//	Disaggregate    = qdFires || kvFires || admitFires
++//
++// admitThreshold=2.0 makes admitFires unsatisfiable (predicted util ≤ ~1.05 in
++// any realistic state), degenerating the decider to CacheAwareKvGatedPrefixDecider
++// byte-for-byte (used in h-ablation arm A3).
++//
++// The admit clause uses raw KvTokensInUse (not cache-subtracted) because cached
++// blocks DO occupy admit headroom even when they do not contribute to active
++// decode load (intentional asymmetry with the transient-KV clause).
++//
++// mode must be "selected". pool-sum and max modes are excluded per RP-16/RP-19.
++type KvAdmissionGatedPrefixDecider struct {
++	threshold      int
++	blockSize      int
++	queueGate      int
++	kvGate         float64
++	admitThreshold float64
++	cacheQuery     map[string]func([]int) int
++}
++
++// NewKvAdmissionGatedPrefixDecider creates a KvAdmissionGatedPrefixDecider.
++// Invariants (R3 fail-loud): threshold >= 0, blockSize > 0, queueGate >= 0,
++// kvGate in [0, 2.0], admitThreshold in [0, 2.0], mode == "selected".
++func NewKvAdmissionGatedPrefixDecider(threshold, blockSize, queueGate int, kvGate float64, admitThreshold float64, mode string, cacheQuery map[string]func([]int) int) *KvAdmissionGatedPrefixDecider {
++	if mode != "selected" {
++		panic(fmt.Sprintf("NewKvAdmissionGatedPrefixDecider: mode must be \"selected\", got %q (pool-sum and max aggregation modes are not supported; see RP-16/RP-19)", mode))
++	}
++	if threshold < 0 {
++		panic(fmt.Sprintf("NewKvAdmissionGatedPrefixDecider: threshold must be >= 0, got %d", threshold))
++	}
++	if blockSize <= 0 {
++		panic(fmt.Sprintf("NewKvAdmissionGatedPrefixDecider: blockSize must be > 0, got %d", blockSize))
++	}
++	if queueGate < 0 {
++		panic(fmt.Sprintf("NewKvAdmissionGatedPrefixDecider: queueGate must be >= 0, got %d", queueGate))
++	}
++	if kvGate < 0 {
++		panic(fmt.Sprintf("NewKvAdmissionGatedPrefixDecider: kvGate must be >= 0, got %f", kvGate))
++	}
++	if kvGate > 2.0 {
++		panic(fmt.Sprintf("NewKvAdmissionGatedPrefixDecider: kvGate must be <= 2.0, got %f", kvGate))
++	}
++	if admitThreshold < 0 {
++		panic(fmt.Sprintf("NewKvAdmissionGatedPrefixDecider: admitThreshold must be >= 0, got %f", admitThreshold))
++	}
++	if admitThreshold > 2.0 {
++		panic(fmt.Sprintf("NewKvAdmissionGatedPrefixDecider: admitThreshold must be <= 2.0, got %f", admitThreshold))
++	}
++	return &KvAdmissionGatedPrefixDecider{
++		threshold:      threshold,
++		blockSize:      blockSize,
++		queueGate:      queueGate,
++		kvGate:         kvGate,
++		admitThreshold: admitThreshold,
++		cacheQuery:     cacheQuery,
++	}
++}
++
++// Decide returns Disaggregate=true when nonCachedTokens > threshold AND
++// (QueueDepth >= queueGate OR transientKvUtil >= kvGate OR predictedUtil >= admitThreshold).
++// When admitThreshold=2.0, the admit clause is unsatisfiable and the decider is
++// byte-identical to CacheAwareKvGatedPrefixDecider.
++func (d *KvAdmissionGatedPrefixDecider) Decide(req *Request, state *RouterState) DisaggregationDecision {
++	if len(req.InputTokens) == 0 {
++		return DisaggregationDecision{Disaggregate: false}
++	}
++	if state == nil || state.SelectedInstance == "" || d.cacheQuery == nil {
++		return DisaggregationDecision{Disaggregate: false}
++	}
++	fn, ok := d.cacheQuery[state.SelectedInstance]
++	if !ok || fn == nil {
++		return DisaggregationDecision{Disaggregate: false}
++	}
++	cachedBlocks := fn(req.InputTokens)
++	nonCachedTokens := len(req.InputTokens) - cachedBlocks*d.blockSize
++	if nonCachedTokens <= d.threshold {
++		return DisaggregationDecision{Disaggregate: false}
++	}
++	// Find the selected snapshot by ID (read-only linear scan).
++	var selectedSnap *RoutingSnapshot
++	for i := range state.Snapshots {
++		if state.Snapshots[i].ID == state.SelectedInstance {
++			selectedSnap = &state.Snapshots[i]
++			break
++		}
++	}
++	if selectedSnap == nil {
++		return DisaggregationDecision{Disaggregate: false}
++	}
++	// Clause 1: QueueDepth gate (same as CacheAwareKvGatedPrefixDecider).
++	qdFires := selectedSnap.QueueDepth >= d.queueGate
++	// Clause 2: transient KV utilization gate (cache-subtracted, same as CacheAwareKvGatedPrefixDecider).
++	cachedTokens := int64(cachedBlocks * d.blockSize)
++	transientKvTokens := selectedSnap.KvTokensInUse - cachedTokens
++	if transientKvTokens < 0 {
++		transientKvTokens = 0
++	}
++	var transientKvUtil float64
++	if selectedSnap.TotalKvCapacityTokens > 0 {
++		transientKvUtil = float64(transientKvTokens) / float64(selectedSnap.TotalKvCapacityTokens)
++	}
++	kvFires := transientKvUtil >= d.kvGate
++	// Clause 3: predictive admission gate (raw KvTokensInUse, not cache-subtracted).
++	// Uses raw occupancy because cached blocks DO occupy admit headroom.
++	var admitFires bool
++	if selectedSnap.TotalKvCapacityTokens > 0 {
++		predictedUtil := float64(selectedSnap.KvTokensInUse+int64(nonCachedTokens)) / float64(selectedSnap.TotalKvCapacityTokens)
++		admitFires = predictedUtil >= d.admitThreshold
++	}
++	return DisaggregationDecision{Disaggregate: qdFires || kvFires || admitFires}
++}
++
++// compile-time interface compliance check
++var _ DisaggregationDecider = (*KvAdmissionGatedPrefixDecider)(nil)
++
++// ---------------------------------------------------------------------------
++// AdmissionAndLongPrefillAwarePrefixDecider (iter-38)
++// ---------------------------------------------------------------------------
++
++// AdmissionAndLongPrefillAwarePrefixDecider combines the long-prefill
++// force-disagg branch from LongPrefillAwarePrefixDecider with the predictive
++// KV-admission gate from KvAdmissionGatedPrefixDecider into a single Decide()
++// invocation.
++//
++// Decide() logic (in order):
++//  1. Trivial guards: empty InputTokens / nil state / "" SelectedInstance /
++//     nil cacheQuery → Colocate.
++//  2. cachedBlocks = cacheQuery[selected](req.InputTokens);
++//     nonCachedTokens = len(InputTokens) - cachedBlocks*blockSize.
++//  3. If nonCachedTokens > longPrefillThreshold → Disaggregate (force-disagg
++//     branch, fires before threshold short-circuit per LongPrefillAware order).
++//  4. If nonCachedTokens <= threshold → Colocate (short-circuit).
++//  5. Locate selectedSnap; nil → Colocate.
++//  6. qdFires = (QueueDepth >= queueGate).
++//     transientKvTokens = max(0, KvTokensInUse - cachedBlocks*blockSize).
++//     kvFires = (transientKvTokens / TotalKvCapacityTokens >= kvGate).
++//     admitFires = predictedUtil >= admitThreshold AND
++//                  (admitCeiling == 0 OR predictedUtil < admitCeiling),
++//     where predictedUtil = (KvTokensInUse + nonCachedTokens) / cap
++//     (raw KvTokensInUse, not cache-subtracted — intentional per RP-90).
++//     admitCeiling == 0 means vacuous (no ceiling; identical to prior behavior).
++//     admitCeiling > 0 means banded: admit fires only when
++//     admitThreshold <= predictedUtil < admitCeiling (iter-45).
++//     Disaggregate iff (qdFires || kvFires || admitFires).
++//
++// mode must be "selected". pool-sum and max modes are excluded per RP-16/RP-19.
++type AdmissionAndLongPrefillAwarePrefixDecider struct {
++	threshold            int
++	blockSize            int
++	queueGate            int
++	kvGate               float64
++	kvCeiling            float64
++	admitThreshold       float64
++	admitCeiling         float64
++	longPrefillThreshold int
++	admitMinTokens       int
++	kvMinTokens          int
++	qdCircuitBreaker     int
++	qdLowCircuitBreaker  int
++	ifrGate              int
++	ifrCeiling           int
++	ifrMinTokens         int
++	roundIndexCap        int
++	cacheQuery           map[string]func([]int) int
++}
++
++// NewAdmissionAndLongPrefillAwarePrefixDecider creates an
++// AdmissionAndLongPrefillAwarePrefixDecider.
++// Invariants (R3 fail-loud): threshold >= 0, blockSize > 0, queueGate >= 0,
++// kvGate in [0, 2.0], admitThreshold in [0, 2.0], longPrefillThreshold >= 0,
++// admitMinTokens >= 0, kvMinTokens >= 0, admitCeiling >= 0 and <= 2.0, and
++// when admitCeiling > 0 it must exceed admitThreshold (otherwise the band
++// collapses to empty), kvCeiling >= 0 and <= 2.0, and when kvCeiling > 0 it
++// must exceed kvGate (otherwise the band collapses to empty), mode == "selected".
++// kvMinTokens gates the kvFires clause: kvFires fires only when
++// nonCachedTokens >= kvMinTokens. Default 0 (vacuous — kvFires fires on all
++// eligible requests).
++// kvCeiling bands the kvFires clause to [kvGate, kvCeiling): kvFires fires
++// only when kvGate <= transientKvUtil < kvCeiling. 0 means vacuous (no ceiling,
++// identical to iter-48 A2 behavior).
++// ifrCeiling bands the ifrFires clause to [ifrGate, ifrCeiling): ifrFires fires
++// only when ifrGate <= InFlightRequests < ifrCeiling. 0 means vacuous (no ceiling,
++// byte-identical to iter-55 A3 behavior). When > 0, must exceed ifrGate.
++// ifrMinTokens gates the ifrFires clause: ifrFires fires only when
++// nonCachedTokens >= ifrMinTokens AND the rest of the IFR clause conditions hold.
++// Default 0 (vacuous — ifrFires fires on all eligible requests; byte-identical to iter-56 behavior).
++func NewAdmissionAndLongPrefillAwarePrefixDecider(threshold, blockSize, queueGate int, kvGate float64, admitThreshold float64, longPrefillThreshold, admitMinTokens, kvMinTokens, qdCircuitBreaker, qdLowCircuitBreaker, ifrGate, ifrCeiling, ifrMinTokens int, kvCeiling float64, admitCeiling float64, mode string, cacheQuery map[string]func([]int) int, roundIndexCap int) *AdmissionAndLongPrefillAwarePrefixDecider {
++	if mode != "selected" {
++		panic(fmt.Sprintf("NewAdmissionAndLongPrefillAwarePrefixDecider: mode must be \"selected\", got %q (pool-sum and max aggregation modes are not supported; see RP-16/RP-19)", mode))
++	}
++	if threshold < 0 {
++		panic(fmt.Sprintf("NewAdmissionAndLongPrefillAwarePrefixDecider: threshold must be >= 0, got %d", threshold))
++	}
++	if blockSize <= 0 {
++		panic(fmt.Sprintf("NewAdmissionAndLongPrefillAwarePrefixDecider: blockSize must be > 0, got %d", blockSize))
++	}
++	if queueGate < 0 {
++		panic(fmt.Sprintf("NewAdmissionAndLongPrefillAwarePrefixDecider: queueGate must be >= 0, got %d", queueGate))
++	}
++	if kvGate < 0 {
++		panic(fmt.Sprintf("NewAdmissionAndLongPrefillAwarePrefixDecider: kvGate must be >= 0, got %f", kvGate))
++	}
++	if kvGate > 2.0 {
++		panic(fmt.Sprintf("NewAdmissionAndLongPrefillAwarePrefixDecider: kvGate must be <= 2.0, got %f", kvGate))
++	}
++	if admitThreshold < 0 {
++		panic(fmt.Sprintf("NewAdmissionAndLongPrefillAwarePrefixDecider: admitThreshold must be >= 0, got %f", admitThreshold))
++	}
++	if admitThreshold > 2.0 {
++		panic(fmt.Sprintf("NewAdmissionAndLongPrefillAwarePrefixDecider: admitThreshold must be <= 2.0, got %f", admitThreshold))
++	}
++	if longPrefillThreshold < 0 {
++		panic(fmt.Sprintf("NewAdmissionAndLongPrefillAwarePrefixDecider: longPrefillThreshold must be >= 0, got %d", longPrefillThreshold))
++	}
++	if admitMinTokens < 0 {
++		panic(fmt.Sprintf("NewAdmissionAndLongPrefillAwarePrefixDecider: admitMinTokens must be >= 0, got %d", admitMinTokens))
++	}
++	if kvMinTokens < 0 {
++		panic(fmt.Sprintf("NewAdmissionAndLongPrefillAwarePrefixDecider: kvMinTokens must be >= 0, got %d", kvMinTokens))
++	}
++	if qdCircuitBreaker < 0 {
++		panic(fmt.Sprintf("NewAdmissionAndLongPrefillAwarePrefixDecider: qdCircuitBreaker must be >= 0, got %d", qdCircuitBreaker))
++	}
++	if qdLowCircuitBreaker < 0 {
++		panic(fmt.Sprintf("NewAdmissionAndLongPrefillAwarePrefixDecider: qdLowCircuitBreaker must be >= 0, got %d", qdLowCircuitBreaker))
++	}
++	if ifrGate < 0 {
++		panic(fmt.Sprintf("NewAdmissionAndLongPrefillAwarePrefixDecider: ifrGate must be >= 0, got %d", ifrGate))
++	}
++	if ifrCeiling < 0 {
++		panic(fmt.Sprintf("NewAdmissionAndLongPrefillAwarePrefixDecider: ifrCeiling must be >= 0, got %d", ifrCeiling))
++	}
++	if ifrCeiling > 0 && ifrCeiling <= ifrGate {
++		panic(fmt.Sprintf("NewAdmissionAndLongPrefillAwarePrefixDecider: ifrCeiling (%d) must exceed ifrGate (%d) when non-zero; a ceiling at or below the gate collapses the ifrFires band to empty (use ifrCeiling=0 to disable the ceiling, or set ifrCeiling > ifrGate)", ifrCeiling, ifrGate))
++	}
++	if ifrMinTokens < 0 {
++		panic(fmt.Sprintf("NewAdmissionAndLongPrefillAwarePrefixDecider: ifrMinTokens must be >= 0, got %d", ifrMinTokens))
++	}
++	if kvCeiling < 0 {
++		panic(fmt.Sprintf("NewAdmissionAndLongPrefillAwarePrefixDecider: kvCeiling must be >= 0, got %f", kvCeiling))
++	}
++	if kvCeiling > 2.0 {
++		panic(fmt.Sprintf("NewAdmissionAndLongPrefillAwarePrefixDecider: kvCeiling must be <= 2.0, got %f", kvCeiling))
++	}
++	if kvCeiling > 0 && kvCeiling <= kvGate {
++		panic(fmt.Sprintf("NewAdmissionAndLongPrefillAwarePrefixDecider: kvCeiling (%f) must exceed kvGate (%f) when non-zero; a ceiling at or below the gate collapses the kvFires band to empty (use kvCeiling=0 to disable the ceiling, or set kvCeiling > kvGate)", kvCeiling, kvGate))
++	}
++	if admitCeiling < 0 {
++		panic(fmt.Sprintf("NewAdmissionAndLongPrefillAwarePrefixDecider: admitCeiling must be >= 0, got %f", admitCeiling))
++	}
++	if admitCeiling > 2.0 {
++		panic(fmt.Sprintf("NewAdmissionAndLongPrefillAwarePrefixDecider: admitCeiling must be <= 2.0, got %f", admitCeiling))
++	}
++	if admitCeiling > 0 && admitCeiling <= admitThreshold {
++		panic(fmt.Sprintf("NewAdmissionAndLongPrefillAwarePrefixDecider: admitCeiling (%f) must exceed admitThreshold (%f) when non-zero; a ceiling at or below the threshold collapses the admit band to empty (iter-45 design intent: use admitCeiling=0 to disable the ceiling, or set admitCeiling > admitThreshold)", admitCeiling, admitThreshold))
++	}
++	if roundIndexCap < 0 {
++		panic(fmt.Sprintf("NewAdmissionAndLongPrefillAwarePrefixDecider: roundIndexCap must be >= 0, got %d", roundIndexCap))
++	}
++	return &AdmissionAndLongPrefillAwarePrefixDecider{
++		threshold:            threshold,
++		blockSize:            blockSize,
++		queueGate:            queueGate,
++		kvGate:               kvGate,
++		kvCeiling:            kvCeiling,
++		admitThreshold:       admitThreshold,
++		admitCeiling:         admitCeiling,
++		longPrefillThreshold: longPrefillThreshold,
++		admitMinTokens:       admitMinTokens,
++		kvMinTokens:          kvMinTokens,
++		qdCircuitBreaker:     qdCircuitBreaker,
++		qdLowCircuitBreaker:  qdLowCircuitBreaker,
++		ifrGate:              ifrGate,
++		ifrCeiling:           ifrCeiling,
++		ifrMinTokens:         ifrMinTokens,
++		roundIndexCap:        roundIndexCap,
++		cacheQuery:           cacheQuery,
++	}
++}
++
++// Decide returns Disaggregate=true when:
++//   - nonCachedTokens > longPrefillThreshold (force-disagg, unconditional — NOT subject to either
++//     circuit breaker or the ifrFires clause; long-prefill protection is always active per RP-35/RP-63), OR
++//   - nonCachedTokens > threshold AND
++//     (QueueDepth >= queueGate OR transientKvUtil >= kvGate OR predictedUtil >= admitThreshold
++//      OR (ifrGate > 0 AND selectedSnap.InFlightRequests >= ifrGate))
++//     AND (qdCircuitBreaker == 0 OR selectedSnap.QueueDepth < qdCircuitBreaker)
++//     AND (qdLowCircuitBreaker == 0 OR selectedSnap.QueueDepth >= qdLowCircuitBreaker).
++//
++// ifrFires = (ifrMinTokens == 0 OR nonCachedTokens >= ifrMinTokens) AND ifrGate > 0 AND
++// selectedSnap.InFlightRequests >= ifrGate AND (ifrCeiling == 0 OR
++// selectedSnap.InFlightRequests < ifrCeiling)) is the fourth OR-clause (iter-52/iter-56/iter-57):
++// fires when the selected decode pod InFlightRequests is in [ifrGate, ifrCeiling) AND
++// nonCachedTokens >= ifrMinTokens. ifrGate == 0 short-circuits to false (vacuous; byte-identical
++// to iter-48 A2). ifrCeiling == 0 means no ceiling (vacuous; byte-identical to iter-55 A3).
++// ifrMinTokens == 0 means vacuous token-min (byte-identical to iter-56 A3). ifrMinTokens gates
++// the clause: when > 0, ifrFires fires only if nonCachedTokens >= ifrMinTokens, decoupling
++// cold round-0 (large nonCached) from warm follow-up rounds (small nonCached).
++// qdCircuitBreaker overrides the OR-combinator output to false when the selected decode pod
++// QueueDepth >= qdCircuitBreaker (iter-50, suppress at HIGH QD). The long-prefill force-disagg
++// branch executes before either breaker check and is exempted unconditionally.
++// qdLowCircuitBreaker overrides the OR-combinator output to false when the selected decode pod
++// QueueDepth < qdLowCircuitBreaker (iter-51, suppress at LOW QD; inverse direction). The two
++// breakers fire on disjoint QD bands and are order-independent.
++func (d *AdmissionAndLongPrefillAwarePrefixDecider) Decide(req *Request, state *RouterState) DisaggregationDecision {
++	if len(req.InputTokens) == 0 {
++		return DisaggregationDecision{Disaggregate: false}
++	}
++	if state == nil || state.SelectedInstance == "" || d.cacheQuery == nil {
++		return DisaggregationDecision{Disaggregate: false}
++	}
++	fn, ok := d.cacheQuery[state.SelectedInstance]
++	if !ok || fn == nil {
++		return DisaggregationDecision{Disaggregate: false}
++	}
++	cachedBlocks := fn(req.InputTokens)
++	nonCachedTokens := len(req.InputTokens) - cachedBlocks*d.blockSize
++	// Force-disaggregate branch: long prefills bypass per-pod gate (order preserved
++	// from LongPrefillAwarePrefixDecider — must precede threshold short-circuit).
++	if nonCachedTokens > d.longPrefillThreshold {
++		return DisaggregationDecision{Disaggregate: true}
++	}
++	if nonCachedTokens <= d.threshold {
++		return DisaggregationDecision{Disaggregate: false}
++	}
++	// Find the selected snapshot by ID (read-only linear scan).
++	var selectedSnap *RoutingSnapshot
++	for i := range state.Snapshots {
++		if state.Snapshots[i].ID == state.SelectedInstance {
++			selectedSnap = &state.Snapshots[i]
++			break
++		}
++	}
++	if selectedSnap == nil {
++		return DisaggregationDecision{Disaggregate: false}
++	}
++	// Clause 1: QueueDepth gate.
++	qdFires := selectedSnap.QueueDepth >= d.queueGate
++	// Clause 2: transient KV utilization gate (cache-subtracted).
++	cachedTokens := int64(cachedBlocks * d.blockSize)
++	transientKvTokens := selectedSnap.KvTokensInUse - cachedTokens
++	if transientKvTokens < 0 {
++		transientKvTokens = 0
++	}
++	var transientKvUtil float64
++	if selectedSnap.TotalKvCapacityTokens > 0 {
++		transientKvUtil = float64(transientKvTokens) / float64(selectedSnap.TotalKvCapacityTokens)
++	}
++	// kvMinTokens gate: when > 0, kvFires fires only if nonCachedTokens >= kvMinTokens,
++	// decoupling cold round-0 (large nonCached) from warm follow-up rounds (small nonCached).
++	// kvMinTokens == 0 short-circuits to true (vacuous, byte-identical to prior iterations).
++	kvFires := (d.kvMinTokens == 0 || nonCachedTokens >= d.kvMinTokens) && transientKvUtil >= d.kvGate && (d.kvCeiling == 0 || transientKvUtil < d.kvCeiling)
++	// Clause 3: predictive admission gate (raw KvTokensInUse, not cache-subtracted).
++	// Cached blocks DO occupy admit headroom (intentional asymmetry with transient-KV clause).
++	// admitMinTokens gate: when > 0, admit fires only if nonCachedTokens >= admitMinTokens,
++	// decoupling cold round-0 (large nonCached) from warm follow-up rounds (small nonCached).
++	// admitCeiling gate (iter-45): when > 0, admit fires only when predictedUtil < admitCeiling,
++	// banding the admit clause to [admitThreshold, admitCeiling). admitCeiling == 0 is vacuous.
++	var admitFires bool
++	if selectedSnap.TotalKvCapacityTokens > 0 && (d.admitMinTokens == 0 || nonCachedTokens >= d.admitMinTokens) {
++		predictedUtil := float64(selectedSnap.KvTokensInUse+int64(nonCachedTokens)) / float64(selectedSnap.TotalKvCapacityTokens)
++		admitFires = predictedUtil >= d.admitThreshold &&
++			(d.admitCeiling == 0 || predictedUtil < d.admitCeiling)
++	}
++	// Clause 4: per-pod selected-decode InFlightRequests gate (iter-52/iter-56/iter-57).
++	// ifrGate == 0 short-circuits to false (vacuous; byte-identical to iter-48 A2 / iter-51 A3).
++	// ifrCeiling == 0 means vacuous ceiling (byte-identical to iter-55 A3 when ceiling not set).
++	// ifrMinTokens gate: when > 0, ifrFires fires only if nonCachedTokens >= ifrMinTokens,
++	// decoupling cold round-0 (large nonCached) from warm follow-up rounds (small nonCached).
++	// ifrMinTokens == 0 short-circuits to true (vacuous, byte-identical to iter-56 A3).
++	ifrFires := (d.ifrMinTokens == 0 || nonCachedTokens >= d.ifrMinTokens) && d.ifrGate > 0 && selectedSnap.InFlightRequests >= d.ifrGate && (d.ifrCeiling == 0 || selectedSnap.InFlightRequests < d.ifrCeiling)
++	decision := qdFires || kvFires || admitFires || ifrFires
++	if d.qdCircuitBreaker > 0 && selectedSnap.QueueDepth >= d.qdCircuitBreaker {
++		decision = false
++	}
++	if d.qdLowCircuitBreaker > 0 && selectedSnap.QueueDepth < d.qdLowCircuitBreaker {
++		decision = false
++	}
++	// roundIndexCap override (iter-59, RP-13/RP-45): when cap > 0 and the request is at
++	// a warm round (RoundIndex >= cap), suppress the OR-combinator decision. The long-prefill
++	// force-disagg early return above always runs before this point (RP-35/RP-63 preserved).
++	// cap == 0 is vacuous: this branch never executes, preserving byte-identity with iter-58.
++	if d.roundIndexCap > 0 && req.RoundIndex >= d.roundIndexCap {
++		decision = false
++	}
++	return DisaggregationDecision{Disaggregate: decision}
++}
++
++// compile-time interface compliance check
++var _ DisaggregationDecider = (*AdmissionAndLongPrefillAwarePrefixDecider)(nil)
++
+ // ---------------------------------------------------------------------------
+ // E/P/D disaggregation (GAP-4, issue #1264)
+ // ---------------------------------------------------------------------------
+diff --git a/sim/disaggregation_test.go b/sim/disaggregation_test.go
+index 2b796e4a..21ac3c14 100644
+--- a/sim/disaggregation_test.go
++++ b/sim/disaggregation_test.go
+@@ -36,6 +36,9 @@ func TestDisaggregationDecider_Interface(t *testing.T) {
+ 	var _ DisaggregationDecider = &NeverDisaggregate{}
+ 	var _ DisaggregationDecider = &AlwaysDisaggregate{}
+ 	var _ DisaggregationDecider = &PrefixThresholdDecider{}
++	var _ DisaggregationDecider = &LoadKvGatedPrefixDecider{}
++	var _ DisaggregationDecider = &CacheAwareKvGatedPrefixDecider{}
++	var _ DisaggregationDecider = &CacheBypassedKvGatedPrefixDecider{}
+ }
+ 
+ // TestNewDisaggregationDecider_Factory verifies factory dispatches correctly
+@@ -82,6 +85,8 @@ func TestNewDisaggregationDecider_ParameterizedPanic(t *testing.T) {
+ 		name string
+ 	}{
+ 		{"prefix-threshold"},
++		{"load-kv-gated-prefix"},
++		{"cache-aware-kv-gated-prefix"},
+ 	}
+ 	for _, tc := range tests {
+ 		t.Run(tc.name, func(t *testing.T) {
+@@ -105,6 +110,9 @@ func TestIsValidDisaggregationDecider(t *testing.T) {
+ 		{"never", true},
+ 		{"always", true},
+ 		{"prefix-threshold", true},
++		{"load-kv-gated-prefix", true},
++		{"cache-aware-kv-gated-prefix", true},
++		{"cluster-ifr-gated-prefix", true},
+ 		{"unknown", false},
+ 		{"NEVER", false}, // case-sensitive
+ 	}
+@@ -156,6 +164,9 @@ func TestDisaggregationDecider_INV9_OracleBoundary(t *testing.T) {
+ 		&NeverDisaggregate{},
+ 		&AlwaysDisaggregate{},
+ 		NewPrefixThresholdDecider(512, 16, stubCache),
++		NewLoadKvGatedPrefixDecider(16, 16, 1, 0.05, "selected", stubCache),
++		NewCacheAwareKvGatedPrefixDecider(16, 16, 1, 0.05, "selected", stubCache),
++		NewCacheBypassedKvGatedPrefixDecider(16, 16, 1, 0.05, 10000, "selected", stubCache),
+ 	}
+ 	for _, d := range deciders {
+ 		d1 := d.Decide(req1, state)
+@@ -218,6 +229,9 @@ func TestDisaggregationDecider_BuiltinsReturnNoOverrides(t *testing.T) {
+ 		&NeverDisaggregate{},
+ 		&AlwaysDisaggregate{},
+ 		NewPrefixThresholdDecider(512, 16, stubCache),
++		NewLoadKvGatedPrefixDecider(16, 16, 1, 0.05, "selected", stubCache),
++		NewCacheAwareKvGatedPrefixDecider(16, 16, 1, 0.05, "selected", stubCache),
++		NewCacheBypassedKvGatedPrefixDecider(16, 16, 1, 0.05, 10000, "selected", stubCache),
+ 	}
+ 	for _, d := range deciders {
+ 		got := d.Decide(req, state)
+@@ -630,6 +644,830 @@ func TestMultimodalEncodeDecider_IgnoresOutputTokens(t *testing.T) {
+ 	}
+ }
+ 
++// --- LoadKvGatedPrefixDecider tests ---
++
++// TestNewLoadKvGatedPrefixDecider_Panics verifies R3 constructor validation.
++func TestNewLoadKvGatedPrefixDecider_Panics(t *testing.T) {
++	tests := []struct {
++		name      string
++		threshold int
++		blockSize int
++		queueGate int
++		kvGate    float64
++		mode      string
++	}{
++		{"negative_threshold", -1, 16, 1, 0.05, "selected"},
++		{"zero_blockSize", 0, 0, 1, 0.05, "selected"},
++		{"negative_blockSize", 16, -1, 1, 0.05, "selected"},
++		{"negative_queueGate", 16, 16, -1, 0.05, "selected"},
++		{"negative_kvGate", 16, 16, 1, -0.1, "selected"},
++		{"kvGate_too_large", 16, 16, 1, 2.1, "selected"},
++		{"mode_pool-sum", 16, 16, 1, 0.05, "pool-sum"},
++		{"mode_max", 16, 16, 1, 0.05, "max"},
++		{"mode_invalid", 16, 16, 1, 0.05, "invalid"},
++	}
++	for _, tc := range tests {
++		t.Run(tc.name, func(t *testing.T) {
++			defer func() {
++				if r := recover(); r == nil {
++					t.Errorf("NewLoadKvGatedPrefixDecider(%d, %d, %d, %f, %q): expected panic",
++						tc.threshold, tc.blockSize, tc.queueGate, tc.kvGate, tc.mode)
++				}
++			}()
++			NewLoadKvGatedPrefixDecider(tc.threshold, tc.blockSize, tc.queueGate, tc.kvGate, tc.mode, nil)
++		})
++	}
++}
++
++// TestLoadKvGatedPrefixDecider_BothSignalsQuiet verifies that when QD=0 and KVUtil=0.0,
++// the gate does not fire → colocation even when nonCached > threshold.
++func TestLoadKvGatedPrefixDecider_BothSignalsQuiet(t *testing.T) {
++	cacheQuery := map[string]func([]int) int{
++		"decode_0": func([]int) int { return 0 }, // 0 cached blocks → all tokens non-cached
++	}
++	decider := NewLoadKvGatedPrefixDecider(16, 16, 1, 0.05, "selected", cacheQuery)
++	tokens := make([]int, 1000) // well above threshold=16
++	req := &Request{ID: "req-quiet", InputTokens: tokens}
++	state := &RouterState{
++		Snapshots:        []RoutingSnapshot{{ID: "decode_0", QueueDepth: 0, KVUtilization: 0.0}},
++		SelectedInstance: "decode_0",
++	}
++	got := decider.Decide(req, state)
++	if got.Disaggregate {
++		t.Error("BothSignalsQuiet: QD=0 and KVUtil=0.0 → gate must not fire → Disaggregate=false")
++	}
++}
++
++// TestLoadKvGatedPrefixDecider_ThresholdNotExceeded verifies that when nonCached <= threshold,
++// Disaggregate=false regardless of gate signals.
++func TestLoadKvGatedPrefixDecider_ThresholdNotExceeded(t *testing.T) {
++	const blockSize = 16
++	const threshold = 512
++	// 40 cached blocks = 640 tokens; input = 700 tokens; nonCached = 60 ≤ 512
++	cacheQuery := map[string]func([]int) int{
++		"decode_0": func([]int) int { return 40 },
++	}
++	decider := NewLoadKvGatedPrefixDecider(threshold, blockSize, 1, 0.05, "selected", cacheQuery)
++	tokens := make([]int, 700)
++	req := &Request{ID: "req-warm", InputTokens: tokens}
++	state := &RouterState{
++		Snapshots:        []RoutingSnapshot{{ID: "decode_0", QueueDepth: 5, KVUtilization: 0.9}},
++		SelectedInstance: "decode_0",
++	}
++	got := decider.Decide(req, state)
++	if got.Disaggregate {
++		t.Error("ThresholdNotExceeded: nonCached ≤ threshold → Disaggregate=false even with high gate signals")
++	}
++}
++
++// TestLoadKvGatedPrefixDecider_QueueDepthFires verifies that QD >= queueGate triggers disaggregation
++// when nonCached > threshold (the load-gate path).
++func TestLoadKvGatedPrefixDecider_QueueDepthFires(t *testing.T) {
++	cacheQuery := map[string]func([]int) int{
++		"decode_0": func([]int) int { return 0 },
++	}
++	decider := NewLoadKvGatedPrefixDecider(16, 16, 1, 2.0, "selected", cacheQuery) // kvGate=2.0 → KV side vacuous
++	tokens := make([]int, 1000)
++	req := &Request{ID: "req-qd", InputTokens: tokens}
++	state := &RouterState{
++		Snapshots:        []RoutingSnapshot{{ID: "decode_0", QueueDepth: 1, KVUtilization: 0.0}},
++		SelectedInstance: "decode_0",
++	}
++	got := decider.Decide(req, state)
++	if !got.Disaggregate {
++		t.Error("QueueDepthFires: QD=1 >= queueGate=1 → OR fires → Disaggregate=true")
++	}
++}
++
++// TestLoadKvGatedPrefixDecider_KVUtilFires verifies that KVUtil >= kvGate triggers disaggregation
++// when QD=0 — this is the NEW path that extends the iter-1 winner.
++func TestLoadKvGatedPrefixDecider_KVUtilFires(t *testing.T) {
++	cacheQuery := map[string]func([]int) int{
++		"decode_0": func([]int) int { return 0 },
++	}
++	decider := NewLoadKvGatedPrefixDecider(16, 16, 1, 0.05, "selected", cacheQuery)
++	tokens := make([]int, 1000)
++	req := &Request{ID: "req-kv", InputTokens: tokens}
++	state := &RouterState{
++		Snapshots:        []RoutingSnapshot{{ID: "decode_0", QueueDepth: 0, KVUtilization: 0.08}}, // KV=0.08 >= kvGate=0.05
++		SelectedInstance: "decode_0",
++	}
++	got := decider.Decide(req, state)
++	if !got.Disaggregate {
++		t.Error("KVUtilFires: QD=0 but KVUtil=0.08 >= kvGate=0.05 → OR fires → Disaggregate=true")
++	}
++}
++
++// TestLoadKvGatedPrefixDecider_QueueGate0EqualsPrefixThreshold verifies that queueGate=0
++// makes QD>=0 tautologically true → degenerates to PrefixThreshold semantics (A2 degeneration).
++func TestLoadKvGatedPrefixDecider_QueueGate0EqualsPrefixThreshold(t *testing.T) {
++	const blockSize = 16
++	const threshold = 512
++	cacheQuery := map[string]func([]int) int{
++		"decode_0": func([]int) int { return 0 },
++	}
++	// queueGate=0 → QD>=0 always true; kvGate=2.0 → KV side never fires
++	gatedDecider := NewLoadKvGatedPrefixDecider(threshold, blockSize, 0, 2.0, "selected", cacheQuery)
++	prefixDecider := NewPrefixThresholdDecider(threshold, blockSize, cacheQuery)
++
++	state := &RouterState{
++		Snapshots:        []RoutingSnapshot{{ID: "decode_0", QueueDepth: 0, KVUtilization: 0.0}},
++		SelectedInstance: "decode_0",
++	}
++
++	tests := []struct {
++		name   string
++		tokens int
++	}{
++		{"below_threshold", 100},
++		{"at_threshold", 512},
++		{"above_threshold", 1000},
++	}
++	for _, tc := range tests {
++		t.Run(tc.name, func(t *testing.T) {
++			req := &Request{ID: "req-" + tc.name, InputTokens: make([]int, tc.tokens)}
++			gotGated := gatedDecider.Decide(req, state)
++			gotPrefix := prefixDecider.Decide(req, state)
++			if gotGated != gotPrefix {
++				t.Errorf("tokens=%d: gated(queueGate=0,kvGate=2.0)=%v vs prefix-threshold=%v — must be identical",
++					tc.tokens, gotGated, gotPrefix)
++			}
++		})
++	}
++}
++
++// TestLoadKvGatedPrefixDecider_KvGate2_0EqualsLoadGated verifies that kvGate=2.0 makes
++// the KV disjunct unsatisfiable → degenerates to LoadGatedPrefix(selected/queueGate=1)
++// semantics (A3 degeneration).
++func TestLoadKvGatedPrefixDecider_KvGate2_0EqualsLoadGated(t *testing.T) {
++	const blockSize = 16
++	const threshold = 16
++	cacheQuery := map[string]func([]int) int{
++		"decode_0": func([]int) int { return 0 },
++	}
++	decider := NewLoadKvGatedPrefixDecider(threshold, blockSize, 1, 2.0, "selected", cacheQuery)
++
++	tests := []struct {
++		name        string
++		queueDepth  int
++		kvUtil      float64
++		wantDisagg  bool
++	}{
++		{"qd=0_kv=0.9_cold_tokens", 0, 0.9, false},  // KV=0.9 < kvGate=2.0 → KV side doesn't fire; QD=0 < 1 → QD side doesn't fire
++		{"qd=1_kv=0.0_cold_tokens", 1, 0.0, true},   // QD=1 >= queueGate=1 → fires
++		{"qd=2_kv=0.5_cold_tokens", 2, 0.5, true},   // QD=2 >= 1 → fires
++		{"qd=0_kv=1.0_cold_tokens", 0, 1.0, false},  // KVUtil=1.0 < kvGate=2.0 → KV side doesn't fire
++	}
++	state := &RouterState{
++		Snapshots:        []RoutingSnapshot{{ID: "decode_0"}},
++		SelectedInstance: "decode_0",
++	}
++	tokens := make([]int, 1000) // above threshold=16
++	req := &Request{ID: "req-kv2", InputTokens: tokens}
++
++	for _, tc := range tests {
++		t.Run(tc.name, func(t *testing.T) {
++			state.Snapshots[0].QueueDepth = tc.queueDepth
++			state.Snapshots[0].KVUtilization = tc.kvUtil
++			got := decider.Decide(req, state)
++			if got.Disaggregate != tc.wantDisagg {
++				t.Errorf("QD=%d KVUtil=%f: Disaggregate=%v, want %v",
++					tc.queueDepth, tc.kvUtil, got.Disaggregate, tc.wantDisagg)
++			}
++		})
++	}
++}
++
++// TestLoadKvGatedPrefixDecider_FallbackPaths verifies conservative Disaggregate=false
++// on nil state, empty SelectedInstance, nil cacheQuery, and missing snapshot.
++func TestLoadKvGatedPrefixDecider_FallbackPaths(t *testing.T) {
++	const threshold = 16
++	cacheQuery := map[string]func([]int) int{
++		"decode_0": func([]int) int { return 0 },
++	}
++	tokens := make([]int, 1000)
++	req := &Request{ID: "req-fallback", InputTokens: tokens}
++
++	tests := []struct {
++		name       string
++		decider    *LoadKvGatedPrefixDecider
++		state      *RouterState
++	}{
++		{
++			"nil_state",
++			NewLoadKvGatedPrefixDecider(threshold, 16, 1, 0.05, "selected", cacheQuery),
++			nil,
++		},
++		{
++			"empty_selected_instance",
++			NewLoadKvGatedPrefixDecider(threshold, 16, 1, 0.05, "selected", cacheQuery),
++			&RouterState{
++				Snapshots:        []RoutingSnapshot{{ID: "decode_0", QueueDepth: 5}},
++				SelectedInstance: "",
++			},
++		},
++		{
++			"nil_cacheQuery",
++			NewLoadKvGatedPrefixDecider(threshold, 16, 1, 0.05, "selected", nil),
++			&RouterState{
++				Snapshots:        []RoutingSnapshot{{ID: "decode_0", QueueDepth: 5}},
++				SelectedInstance: "decode_0",
++			},
++		},
++		{
++			"no_snapshot_match",
++			NewLoadKvGatedPrefixDecider(threshold, 16, 1, 0.05, "selected", cacheQuery),
++			&RouterState{
++				Snapshots:        []RoutingSnapshot{{ID: "decode_1", QueueDepth: 5}}, // "decode_0" not in snapshots
++				SelectedInstance: "decode_0",
++			},
++		},
++	}
++	for _, tc := range tests {
++		t.Run(tc.name, func(t *testing.T) {
++			got := tc.decider.Decide(req, tc.state)
++			if got.Disaggregate {
++				t.Errorf("%s: expected Disaggregate=false (conservative fallback), got true", tc.name)
++			}
++		})
++	}
++}
++
++// --- CacheAwareKvGatedPrefixDecider tests ---
++
++// TestNewCacheAwareKvGatedPrefixDecider_Panics verifies R3 constructor validation.
++func TestNewCacheAwareKvGatedPrefixDecider_Panics(t *testing.T) {
++	tests := []struct {
++		name      string
++		threshold int
++		blockSize int
++		queueGate int
++		kvGate    float64
++		mode      string
++	}{
++		{"negative_threshold", -1, 16, 1, 0.05, "selected"},
++		{"zero_blockSize", 0, 0, 1, 0.05, "selected"},
++		{"negative_blockSize", 16, -1, 1, 0.05, "selected"},
++		{"negative_queueGate", 16, 16, -1, 0.05, "selected"},
++		{"negative_kvGate", 16, 16, 1, -0.1, "selected"},
++		{"kvGate_too_large", 16, 16, 1, 2.1, "selected"},
++		{"mode_pool-sum", 16, 16, 1, 0.05, "pool-sum"},
++		{"mode_max", 16, 16, 1, 0.05, "max"},
++		{"mode_invalid", 16, 16, 1, 0.05, "invalid"},
++	}
++	for _, tc := range tests {
++		t.Run(tc.name, func(t *testing.T) {
++			defer func() {
++				if r := recover(); r == nil {
++					t.Errorf("NewCacheAwareKvGatedPrefixDecider(%d, %d, %d, %f, %q): expected panic",
++						tc.threshold, tc.blockSize, tc.queueGate, tc.kvGate, tc.mode)
++				}
++			}()
++			NewCacheAwareKvGatedPrefixDecider(tc.threshold, tc.blockSize, tc.queueGate, tc.kvGate, tc.mode, nil)
++		})
++	}
++}
++
++// TestCacheAwareKvGatedPrefixDecider_BothSignalsQuiet verifies that when QD=0 and
++// KvTokensInUse=0 (no active decode), the gate does not fire → colocation.
++func TestCacheAwareKvGatedPrefixDecider_BothSignalsQuiet(t *testing.T) {
++	cacheQuery := map[string]func([]int) int{
++		"decode_0": func([]int) int { return 0 },
++	}
++	decider := NewCacheAwareKvGatedPrefixDecider(16, 16, 1, 0.05, "selected", cacheQuery)
++	tokens := make([]int, 1000)
++	req := &Request{ID: "req-quiet", InputTokens: tokens}
++	state := &RouterState{
++		Snapshots:        []RoutingSnapshot{{ID: "decode_0", QueueDepth: 0, KvTokensInUse: 0, TotalKvCapacityTokens: 100000}},
++		SelectedInstance: "decode_0",
++	}
++	got := decider.Decide(req, state)
++	if got.Disaggregate {
++		t.Error("BothSignalsQuiet: QD=0 and KvTokensInUse=0 → gate must not fire → Disaggregate=false")
++	}
++}
++
++// TestCacheAwareKvGatedPrefixDecider_ThresholdNotExceeded verifies that when
++// nonCached <= threshold, Disaggregate=false regardless of gate signals.
++func TestCacheAwareKvGatedPrefixDecider_ThresholdNotExceeded(t *testing.T) {
++	const blockSize = 16
++	const threshold = 512
++	cacheQuery := map[string]func([]int) int{
++		"decode_0": func([]int) int { return 40 }, // 640 cached tokens
++	}
++	decider := NewCacheAwareKvGatedPrefixDecider(threshold, blockSize, 1, 0.05, "selected", cacheQuery)
++	tokens := make([]int, 700) // 700 - 640 = 60 nonCached ≤ 512
++	req := &Request{ID: "req-warm", InputTokens: tokens}
++	state := &RouterState{
++		Snapshots:        []RoutingSnapshot{{ID: "decode_0", QueueDepth: 5, KvTokensInUse: 90000, TotalKvCapacityTokens: 100000}},
++		SelectedInstance: "decode_0",
++	}
++	got := decider.Decide(req, state)
++	if got.Disaggregate {
++		t.Error("ThresholdNotExceeded: nonCached ≤ threshold → Disaggregate=false even with high gate signals")
++	}
++}
++
++// TestCacheAwareKvGatedPrefixDecider_QueueDepthFires verifies that QD >= queueGate
++// triggers disaggregation when nonCached > threshold.
++func TestCacheAwareKvGatedPrefixDecider_QueueDepthFires(t *testing.T) {
++	cacheQuery := map[string]func([]int) int{
++		"decode_0": func([]int) int { return 0 },
++	}
++	decider := NewCacheAwareKvGatedPrefixDecider(16, 16, 1, 2.0, "selected", cacheQuery) // kvGate=2.0 → KV side vacuous
++	tokens := make([]int, 1000)
++	req := &Request{ID: "req-qd", InputTokens: tokens}
++	state := &RouterState{
++		Snapshots:        []RoutingSnapshot{{ID: "decode_0", QueueDepth: 1, KvTokensInUse: 0, TotalKvCapacityTokens: 100000}},
++		SelectedInstance: "decode_0",
++	}
++	got := decider.Decide(req, state)
++	if !got.Disaggregate {
++		t.Error("QueueDepthFires: QD=1 >= queueGate=1 → OR fires → Disaggregate=true")
++	}
++}
++
++// TestCacheAwareKvGatedPrefixDecider_TransientKvUtilFires verifies that when
++// KvTokensInUse exceeds the cached prefix contribution, the transient KV signal fires.
++func TestCacheAwareKvGatedPrefixDecider_TransientKvUtilFires(t *testing.T) {
++	const blockSize = 16
++	// Pod has 100 cached blocks = 1600 tokens for this request PLUS active decode KV.
++	// Total KvTokensInUse = 1600 + 6000 (active decode) = 7600.
++	// TotalKvCapacityTokens = 100000.
++	// transientKvTokens = 7600 - 1600 = 6000.
++	// transientKvUtil = 6000/100000 = 0.06 >= kvGate=0.05 → fires.
++	cacheQuery := map[string]func([]int) int{
++		"decode_0": func([]int) int { return 100 }, // 100 * 16 = 1600 cached tokens
++	}
++	decider := NewCacheAwareKvGatedPrefixDecider(16, blockSize, 1, 0.05, "selected", cacheQuery)
++	tokens := make([]int, 2000) // well above threshold=16
++	req := &Request{ID: "req-transient", InputTokens: tokens}
++	state := &RouterState{
++		Snapshots: []RoutingSnapshot{{
++			ID:                    "decode_0",
++			QueueDepth:            0,
++			KvTokensInUse:         7600,
++			TotalKvCapacityTokens: 100000,
++		}},
++		SelectedInstance: "decode_0",
++	}
++	got := decider.Decide(req, state)
++	if !got.Disaggregate {
++		t.Error("TransientKvUtilFires: transientKvUtil=0.06 >= kvGate=0.05 → fires → Disaggregate=true")
++	}
++}
++
++// TestCacheAwareKvGatedPrefixDecider_FullyCachedNoActiveDecode verifies the key
++// iter-10 failure case (RP-33): pod has only the request's prefix cached (LRU-pinned),
++// no active decode work → transientKvUtil=0 → gate must NOT fire → COLOCATE.
++func TestCacheAwareKvGatedPrefixDecider_FullyCachedNoActiveDecode(t *testing.T) {
++	const blockSize = 16
++	// Pod has 1875 cached blocks = 30000 tokens (30k shared prefix, LRU-pinned).
++	// KvTokensInUse = 30000 (only the cached prefix, no active decode).
++	// transientKvTokens = max(0, 30000 - 30000) = 0.
++	// transientKvUtil = 0 < kvGate=0.05 → KV side doesn't fire.
++	// QD=0 < queueGate=1 → QD side doesn't fire.
++	// → gate doesn't fire → COLOCATE (correct behavior).
++	cacheQuery := map[string]func([]int) int{
++		"decode_0": func([]int) int { return 1875 }, // 1875 * 16 = 30000 cached tokens
++	}
++	decider := NewCacheAwareKvGatedPrefixDecider(16, blockSize, 1, 0.05, "selected", cacheQuery)
++	tokens := make([]int, 35000) // above threshold=16
++	req := &Request{ID: "req-code-workload", InputTokens: tokens}
++	state := &RouterState{
++		Snapshots: []RoutingSnapshot{{
++			ID:                    "decode_0",
++			QueueDepth:            0,
++			KvTokensInUse:         30000, // only the cached prefix in KV, no active decode
++			TotalKvCapacityTokens: 200000,
++		}},
++		SelectedInstance: "decode_0",
++	}
++	got := decider.Decide(req, state)
++	if got.Disaggregate {
++		t.Error("FullyCachedNoActiveDecode: KvTokensInUse == cachedBlocks*blockSize, QD=0 → transientKvUtil=0 → gate must NOT fire → Disaggregate=false (iter-10 RP-33 failure case)")
++	}
++}
++
++// TestCacheAwareKvGatedPrefixDecider_ZeroCapacityFallback verifies that when
++// TotalKvCapacityTokens=0, transientKvUtil=0 (no division by zero) and
++// gate falls back to QD-only.
++func TestCacheAwareKvGatedPrefixDecider_ZeroCapacityFallback(t *testing.T) {
++	cacheQuery := map[string]func([]int) int{
++		"decode_0": func([]int) int { return 0 },
++	}
++	decider := NewCacheAwareKvGatedPrefixDecider(16, 16, 1, 0.05, "selected", cacheQuery)
++	tokens := make([]int, 1000)
++	req := &Request{ID: "req-zerocap", InputTokens: tokens}
++
++	// QD=0: no firing at all (capacity=0 means transientKvUtil=0 by defensive guard)
++	state := &RouterState{
++		Snapshots:        []RoutingSnapshot{{ID: "decode_0", QueueDepth: 0, KvTokensInUse: 50000, TotalKvCapacityTokens: 0}},
++		SelectedInstance: "decode_0",
++	}
++	got := decider.Decide(req, state)
++	if got.Disaggregate {
++		t.Error("ZeroCapacityFallback(QD=0): capacity=0 → transientKvUtil=0 → gate falls back to QD-only → Disaggregate=false")
++	}
++
++	// QD=1: QD side fires even with zero capacity
++	state.Snapshots[0].QueueDepth = 1
++	got = decider.Decide(req, state)
++	if !got.Disaggregate {
++		t.Error("ZeroCapacityFallback(QD=1): QD=1 >= queueGate=1 → fires → Disaggregate=true")
++	}
++}
++
++// TestCacheAwareKvGatedPrefixDecider_KvGate2_0EqualsLoadGated verifies that kvGate=2.0
++// makes the KV disjunct vacuous (transientKvUtil ≤ 1.0) → byte-equivalent to
++// LoadGatedPrefix(selected/queueGate=1) at the per-Decide level. This is the A2
++// ablation path used in iter-11.
++func TestCacheAwareKvGatedPrefixDecider_KvGate2_0EqualsLoadGated(t *testing.T) {
++	const blockSize = 16
++	const threshold = 16
++	cacheQuery := map[string]func([]int) int{
++		"decode_0": func([]int) int { return 0 },
++	}
++	cacheDecider := NewCacheAwareKvGatedPrefixDecider(threshold, blockSize, 1, 2.0, "selected", cacheQuery)
++	loadDecider := NewLoadKvGatedPrefixDecider(threshold, blockSize, 1, 2.0, "selected", cacheQuery)
++
++	tests := []struct {
++		name       string
++		queueDepth int
++		kvInUse    int64
++		capacity   int64
++	}{
++		{"qd=0_kv=0", 0, 0, 100000},
++		{"qd=1_kv=0", 1, 0, 100000},
++		{"qd=0_kv=high", 0, 95000, 100000}, // transientKvUtil=0.95 < 2.0 → KV side doesn't fire
++		{"qd=0_kv=max", 0, 100000, 100000}, // transientKvUtil=1.0 < 2.0 → KV side still doesn't fire
++	}
++	state := &RouterState{
++		Snapshots:        []RoutingSnapshot{{ID: "decode_0"}},
++		SelectedInstance: "decode_0",
++	}
++	tokens := make([]int, 1000)
++	req := &Request{ID: "req-ablation", InputTokens: tokens}
++
++	for _, tc := range tests {
++		t.Run(tc.name, func(t *testing.T) {
++			state.Snapshots[0].QueueDepth = tc.queueDepth
++			state.Snapshots[0].KvTokensInUse = tc.kvInUse
++			state.Snapshots[0].TotalKvCapacityTokens = tc.capacity
++			gotCache := cacheDecider.Decide(req, state)
++			gotLoad := loadDecider.Decide(req, state)
++			if gotCache.Disaggregate != gotLoad.Disaggregate {
++				t.Errorf("QD=%d KvInUse=%d: cache(kvGate=2.0)=%v vs load(kvGate=2.0)=%v — must be identical",
++					tc.queueDepth, tc.kvInUse, gotCache.Disaggregate, gotLoad.Disaggregate)
++			}
++		})
++	}
++}
++
++// TestCacheAwareKvGatedPrefixDecider_FallbackPaths verifies conservative Disaggregate=false
++// on nil state, empty SelectedInstance, nil cacheQuery, and missing snapshot.
++func TestCacheAwareKvGatedPrefixDecider_FallbackPaths(t *testing.T) {
++	const threshold = 16
++	cacheQuery := map[string]func([]int) int{
++		"decode_0": func([]int) int { return 0 },
++	}
++	tokens := make([]int, 1000)
++	req := &Request{ID: "req-fallback", InputTokens: tokens}
++
++	tests := []struct {
++		name    string
++		decider *CacheAwareKvGatedPrefixDecider
++		state   *RouterState
++	}{
++		{
++			"nil_state",
++			NewCacheAwareKvGatedPrefixDecider(threshold, 16, 1, 0.05, "selected", cacheQuery),
++			nil,
++		},
++		{
++			"empty_selected_instance",
++			NewCacheAwareKvGatedPrefixDecider(threshold, 16, 1, 0.05, "selected", cacheQuery),
++			&RouterState{
++				Snapshots:        []RoutingSnapshot{{ID: "decode_0", QueueDepth: 5}},
++				SelectedInstance: "",
++			},
++		},
++		{
++			"nil_cacheQuery",
++			NewCacheAwareKvGatedPrefixDecider(threshold, 16, 1, 0.05, "selected", nil),
++			&RouterState{
++				Snapshots:        []RoutingSnapshot{{ID: "decode_0", QueueDepth: 5}},
++				SelectedInstance: "decode_0",
++			},
++		},
++		{
++			"no_snapshot_match",
++			NewCacheAwareKvGatedPrefixDecider(threshold, 16, 1, 0.05, "selected", cacheQuery),
++			&RouterState{
++				Snapshots:        []RoutingSnapshot{{ID: "decode_1", QueueDepth: 5}},
++				SelectedInstance: "decode_0",
++			},
++		},
++	}
++	for _, tc := range tests {
++		t.Run(tc.name, func(t *testing.T) {
++			got := tc.decider.Decide(req, tc.state)
++			if got.Disaggregate {
++				t.Errorf("%s: expected Disaggregate=false (conservative fallback), got true", tc.name)
++			}
++		})
++	}
++}
++
++// --- CacheBypassedKvGatedPrefixDecider tests ---
++
++// TestNewCacheBypassedKvGatedPrefixDecider_Panics verifies R3 constructor validation.
++func TestNewCacheBypassedKvGatedPrefixDecider_Panics(t *testing.T) {
++	validCacheQuery := map[string]func([]int) int{"decode_0": func([]int) int { return 0 }}
++	tests := []struct {
++		name           string
++		threshold      int
++		blockSize      int
++		queueGate      int
++		kvGate         float64
++		cacheCapTokens int
++		mode           string
++	}{
++		{"negative threshold", -1, 16, 1, 0.05, 10000, "selected"},
++		{"zero blockSize", 16, 0, 1, 0.05, 10000, "selected"},
++		{"negative queueGate", 16, 16, -1, 0.05, 10000, "selected"},
++		{"negative kvGate", 16, 16, 1, -0.1, 10000, "selected"},
++		{"kvGate > 2.0", 16, 16, 1, 2.1, 10000, "selected"},
++		{"negative cacheCapTokens", 16, 16, 1, 0.05, -1, "selected"},
++		{"invalid mode", 16, 16, 1, 0.05, 10000, "pool-sum"},
++	}
++	for _, tc := range tests {
++		tc := tc
++		t.Run(tc.name, func(t *testing.T) {
++			defer func() {
++				if r := recover(); r == nil {
++					t.Errorf("NewCacheBypassedKvGatedPrefixDecider(%d, %d, %d, %f, %d, %q): expected panic",
++						tc.threshold, tc.blockSize, tc.queueGate, tc.kvGate, tc.cacheCapTokens, tc.mode)
++				}
++			}()
++			NewCacheBypassedKvGatedPrefixDecider(tc.threshold, tc.blockSize, tc.queueGate, tc.kvGate, tc.cacheCapTokens, tc.mode, validCacheQuery)
++		})
++	}
++}
++
++// TestCacheBypassedKvGatedPrefixDecider_BothSignalsQuiet verifies that when QD=0
++// and transientKvUtil=0 (KvTokensInUse == cachedBlocks*blockSize), result is colocate.
++func TestCacheBypassedKvGatedPrefixDecider_BothSignalsQuiet(t *testing.T) {
++	const blockSize = 16
++	cachedBlocks := 50
++	cacheQuery := map[string]func([]int) int{
++		"decode_0": func([]int) int { return cachedBlocks },
++	}
++	decider := NewCacheBypassedKvGatedPrefixDecider(16, blockSize, 1, 0.05, 10000, "selected", cacheQuery)
++	// 100 tokens input, 50 cached blocks * 16 = 800 cached tokens → nonCached = -700 ≤ threshold
++	// Actually let's make nonCached > threshold: 1000 tokens, 0 cached blocks
++	cacheQuery2 := map[string]func([]int) int{
++		"decode_0": func([]int) int { return 0 },
++	}
++	decider2 := NewCacheBypassedKvGatedPrefixDecider(16, blockSize, 1, 0.05, 10000, "selected", cacheQuery2)
++	req := &Request{ID: "req-1", InputTokens: make([]int, 100)}
++	state := &RouterState{
++		Snapshots: []RoutingSnapshot{{
++			ID:                    "decode_0",
++			QueueDepth:            0,
++			KvTokensInUse:         0,
++			TotalKvCapacityTokens: 100000,
++		}},
++		SelectedInstance: "decode_0",
++	}
++	got := decider2.Decide(req, state)
++	if got.Disaggregate {
++		t.Errorf("expected Disaggregate=false when both signals quiet, got true")
++	}
++	_ = decider
++}
++
++// TestCacheBypassedKvGatedPrefixDecider_ThresholdNotExceeded verifies that when
++// nonCached <= threshold, result is colocate regardless of gate signals.
++func TestCacheBypassedKvGatedPrefixDecider_ThresholdNotExceeded(t *testing.T) {
++	const threshold = 100
++	const blockSize = 16
++	// 100 input tokens, 0 cached → nonCached=100 which is NOT > threshold=100 → colocate
++	cacheQuery := map[string]func([]int) int{
++		"decode_0": func([]int) int { return 0 },
++	}
++	decider := NewCacheBypassedKvGatedPrefixDecider(threshold, blockSize, 1, 0.05, 10000, "selected", cacheQuery)
++	req := &Request{ID: "req-1", InputTokens: make([]int, 100)}
++	state := &RouterState{
++		Snapshots: []RoutingSnapshot{{
++			ID:                    "decode_0",
++			QueueDepth:            5, // QD fires, but threshold not exceeded
++			KvTokensInUse:         50000,
++			TotalKvCapacityTokens: 100000,
++		}},
++		SelectedInstance: "decode_0",
++	}
++	got := decider.Decide(req, state)
++	if got.Disaggregate {
++		t.Errorf("expected Disaggregate=false when threshold not exceeded, got true")
++	}
++}
++
++// TestCacheBypassedKvGatedPrefixDecider_QueueDepthFires verifies that QD >= queueGate
++// triggers disaggregation even when cachedTokens >= cacheCapTokens (QD path independent of bypass).
++func TestCacheBypassedKvGatedPrefixDecider_QueueDepthFires(t *testing.T) {
++	const blockSize = 16
++	// cachedTokens = 20*16 = 320; cacheCapTokens = 100 → 320 >= 100, so kvGate bypassed
++	// but QD=2 >= queueGate=1 → should still disaggregate
++	cachedBlocks := 20
++	cacheQuery := map[string]func([]int) int{
++		"decode_0": func([]int) int { return cachedBlocks },
++	}
++	decider := NewCacheBypassedKvGatedPrefixDecider(16, blockSize, 1, 2.0, 100, "selected", cacheQuery)
++	// 500 input tokens, 20 cached = 320 → nonCached=180 > threshold=16
++	req := &Request{ID: "req-1", InputTokens: make([]int, 500)}
++	state := &RouterState{
++		Snapshots: []RoutingSnapshot{{
++			ID:                    "decode_0",
++			QueueDepth:            2,
++			KvTokensInUse:         50000,
++			TotalKvCapacityTokens: 100000,
++		}},
++		SelectedInstance: "decode_0",
++	}
++	got := decider.Decide(req, state)
++	if !got.Disaggregate {
++		t.Errorf("expected Disaggregate=true when QD fires (above cap), got false")
++	}
++}
++
++// TestCacheBypassedKvGatedPrefixDecider_CacheBypassesAboveCap is the KEY new behavior:
++// when cachedTokens >= cacheCapTokens and QD=0, kvGate is bypassed → colocate.
++func TestCacheBypassedKvGatedPrefixDecider_CacheBypassesAboveCap(t *testing.T) {
++	const blockSize = 16
++	// cachedBlocks = 1250 → cachedTokens = 20000; cacheCapTokens = 10000 → 20000 >= 10000 → bypass kvGate
++	// QD=0, transientKvUtil=0.50 >> kvGate=0.05 → but kvGate is bypassed → colocate
++	cachedBlocks := 1250
++	cacheQuery := map[string]func([]int) int{
++		"decode_0": func([]int) int { return cachedBlocks },
++	}
++	decider := NewCacheBypassedKvGatedPrefixDecider(16, blockSize, 1, 0.05, 10000, "selected", cacheQuery)
++	// 21000 input tokens total, 20000 cached → nonCached=1000 > threshold=16
++	req := &Request{ID: "req-1", InputTokens: make([]int, 21000)}
++	kvInUse := int64(cachedBlocks*blockSize) + 50000 // 50000 transient tokens → util=0.50
++	state := &RouterState{
++		Snapshots: []RoutingSnapshot{{
++			ID:                    "decode_0",
++			QueueDepth:            0,
++			KvTokensInUse:         kvInUse,
++			TotalKvCapacityTokens: 100000,
++		}},
++		SelectedInstance: "decode_0",
++	}
++	got := decider.Decide(req, state)
++	if got.Disaggregate {
++		t.Errorf("expected Disaggregate=false (kvGate bypassed because cachedTokens >= cap), got true")
++	}
++}
++
++// TestCacheBypassedKvGatedPrefixDecider_CacheUnderCapKvGateFires verifies that when
++// cachedTokens < cacheCapTokens, kvGate is evaluated normally.
++func TestCacheBypassedKvGatedPrefixDecider_CacheUnderCapKvGateFires(t *testing.T) {
++	const blockSize = 16
++	// cachedBlocks = 125 → cachedTokens = 2000; cacheCapTokens = 10000 → 2000 < 10000 → evaluate kvGate
++	// transientKvUtil = (KvTokensInUse - cachedTokens) / capacity = 10000 / 100000 = 0.10 >= kvGate=0.05 → disaggregate
++	cachedBlocks := 125
++	cacheQuery := map[string]func([]int) int{
++		"decode_0": func([]int) int { return cachedBlocks },
++	}
++	decider := NewCacheBypassedKvGatedPrefixDecider(16, blockSize, 1, 0.05, 10000, "selected", cacheQuery)
++	// 3000 input tokens total, 2000 cached → nonCached=1000 > threshold=16
++	req := &Request{ID: "req-1", InputTokens: make([]int, 3000)}
++	kvInUse := int64(cachedBlocks*blockSize) + 10000 // 10000 transient → util=0.10
++	state := &RouterState{
++		Snapshots: []RoutingSnapshot{{
++			ID:                    "decode_0",
++			QueueDepth:            0,
++			KvTokensInUse:         kvInUse,
++			TotalKvCapacityTokens: 100000,
++		}},
++		SelectedInstance: "decode_0",
++	}
++	got := decider.Decide(req, state)
++	if !got.Disaggregate {
++		t.Errorf("expected Disaggregate=true (kvGate fires because cachedTokens < cap), got false")
++	}
++}
++
++// TestCacheBypassedKvGatedPrefixDecider_CacheCapZeroEqualsLoadGated verifies byte-equivalence
++// to LoadGatedPrefix (QD-only) at the per-Decide level when cacheCapTokens=0.
++func TestCacheBypassedKvGatedPrefixDecider_CacheCapZeroEqualsLoadGated(t *testing.T) {
++	const threshold = 16
++	const blockSize = 16
++	cacheQuery := map[string]func([]int) int{
++		"decode_0": func([]int) int { return 0 },
++	}
++	// cacheCap=0 → cachedTokens=0 is NOT < 0 → kvGate always bypassed → pure QD gate
++	bypassedDecider := NewCacheBypassedKvGatedPrefixDecider(threshold, blockSize, 1, 0.05, 0, "selected", cacheQuery)
++	// LoadGatedPrefix with kvGate=2.0 is QD-only (kvGate>1.0 never fires)
++	loadGatedDecider := NewCacheAwareKvGatedPrefixDecider(threshold, blockSize, 1, 2.0, "selected", cacheQuery)
++
++	req := &Request{ID: "req-1", InputTokens: make([]int, 100)}
++
++	testCases := []struct {
++		qd       int
++		wantDisagg bool
++	}{
++		{0, false}, // QD=0 < gate=1 → colocate
++		{1, true},  // QD=1 >= gate=1 → disaggregate
++		{5, true},  // QD=5 >= gate=1 → disaggregate
++	}
++	for _, tc := range testCases {
++		state := &RouterState{
++			Snapshots: []RoutingSnapshot{{
++				ID:                    "decode_0",
++				QueueDepth:            tc.qd,
++				KvTokensInUse:         50000, // high KV, but kvGate is bypassed/vacuous
++				TotalKvCapacityTokens: 100000,
++			}},
++			SelectedInstance: "decode_0",
++		}
++		got1 := bypassedDecider.Decide(req, state)
++		got2 := loadGatedDecider.Decide(req, state)
++		if got1 != got2 {
++			t.Errorf("QD=%d: bypassed(%v) != loadGated(%v); cap=0 must degenerate to QD-only",
++				tc.qd, got1.Disaggregate, got2.Disaggregate)
++		}
++	}
++}
++
++// TestCacheBypassedKvGatedPrefixDecider_CacheCapInfiniteEqualsCacheAware verifies
++// byte-equivalence to CacheAwareKvGatedPrefixDecider when cacheCapTokens is very large.
++func TestCacheBypassedKvGatedPrefixDecider_CacheCapInfiniteEqualsCacheAware(t *testing.T) {
++	const threshold = 16
++	const blockSize = 16
++	cachedBlocks := 0
++	cacheQuery := map[string]func([]int) int{
++		"decode_0": func([]int) int { return cachedBlocks },
++	}
++	// cacheCap=1<<30 → cachedTokens always < cap → kvGate always evaluated → same as CacheAware
++	bypassedDecider := NewCacheBypassedKvGatedPrefixDecider(threshold, blockSize, 1, 0.05, 1<<30, "selected", cacheQuery)
++	cacheAwareDecider := NewCacheAwareKvGatedPrefixDecider(threshold, blockSize, 1, 0.05, "selected", cacheQuery)
++
++	req := &Request{ID: "req-1", InputTokens: make([]int, 100)}
++	testCases := []struct {
++		qd      int
++		kvInUse int64
++	}{
++		{0, 0},       // neither fires
++		{1, 0},       // QD fires
++		{0, 5000},    // transientKvUtil = 5000/100000 = 0.05 >= 0.05 → fires
++		{0, 4999},    // transientKvUtil < 0.05 → does not fire
++		{1, 5000},    // both fire
++	}
++	for _, tc := range testCases {
++		state := &RouterState{
++			Snapshots: []RoutingSnapshot{{
++				ID:                    "decode_0",
++				QueueDepth:            tc.qd,
++				KvTokensInUse:         tc.kvInUse,
++				TotalKvCapacityTokens: 100000,
++			}},
++			SelectedInstance: "decode_0",
++		}
++		got1 := bypassedDecider.Decide(req, state)
++		got2 := cacheAwareDecider.Decide(req, state)
++		if got1 != got2 {
++			t.Errorf("QD=%d KvInUse=%d: bypassed(%v) != cacheAware(%v); cap=∞ must equal CacheAware",
++				tc.qd, tc.kvInUse, got1.Disaggregate, got2.Disaggregate)
++		}
++	}
++}
++
++// TestCacheBypassedKvGatedPrefixDecider_ZeroCapacityFallback verifies that when
++// TotalKvCapacityTokens=0, transientKvUtil=0 (no divide-by-zero) → QD-only gate.
++func TestCacheBypassedKvGatedPrefixDecider_ZeroCapacityFallback(t *testing.T) {
++	const blockSize = 16
++	cacheQuery := map[string]func([]int) int{
++		"decode_0": func([]int) int { return 0 },
++	}
++	decider := NewCacheBypassedKvGatedPrefixDecider(16, blockSize, 1, 0.05, 10000, "selected", cacheQuery)
++	req := &Request{ID: "req-1", InputTokens: make([]int, 100)}
++	state := &RouterState{
++		Snapshots: []RoutingSnapshot{{
++			ID:                    "decode_0",
++			QueueDepth:            0,
++			KvTokensInUse:         99999,
++			TotalKvCapacityTokens: 0, // capacity=0 → transientKvUtil=0 → kvFires=false
++		}},
++		SelectedInstance: "decode_0",
++	}
++	got := decider.Decide(req, state)
++	if got.Disaggregate {
++		t.Errorf("expected Disaggregate=false when capacity=0 (no divide-by-zero; kvFires=false), got true")
++	}
++}
++
+ // TestIsValidEncodeDecider verifies the encode-decider name validity set.
+ func TestIsValidEncodeDecider(t *testing.T) {
+ 	cases := []struct {
+@@ -674,3 +1512,105 @@ func TestNewEncodeDecider(t *testing.T) {
+ 	}()
+ 	_ = NewEncodeDecider("bogus")
+ }
++
++// TestClusterIfrGatedPrefixDecider_SmokeTest verifies constructor invariants (R3/R6),
++// early-return paths, and IFR-clause isolation.
++func TestClusterIfrGatedPrefixDecider_SmokeTest(t *testing.T) {
++	trivialCache := map[string]func([]int) int{
++		"inst-A": func(_ []int) int { return 0 },
++		"inst-B": func(_ []int) int { return 0 },
++		"inst-C": func(_ []int) int { return 0 },
++	}
++
++	// (1) Valid construction — no panic.
++	d := NewClusterIfrGatedPrefixDecider(16, 16, 1, 0.05, 12, "selected", trivialCache)
++	if d == nil {
++		t.Fatal("NewClusterIfrGatedPrefixDecider returned nil")
++	}
++
++	makeState := func(selectedID string, snaps []RoutingSnapshot) *RouterState {
++		return &RouterState{SelectedInstance: selectedID, Snapshots: snaps}
++	}
++	makeReq := func(tokens int) *Request { return &Request{InputTokens: make([]int, tokens)} }
++
++	cases := []struct {
++		name        string
++		req         *Request
++		state       *RouterState
++		wantDisagg  bool
++	}{
++		{
++			name:       "nil state -> false",
++			req:        makeReq(100),
++			state:      nil,
++			wantDisagg: false,
++		},
++		{
++			name:       "empty input tokens -> false",
++			req:        makeReq(0),
++			state:      makeState("inst-A", []RoutingSnapshot{{ID: "inst-A"}}),
++			wantDisagg: false,
++		},
++		{
++			name:       "no selected instance -> false",
++			req:        makeReq(100),
++			state:      makeState("", []RoutingSnapshot{{ID: "inst-A"}}),
++			wantDisagg: false,
++		},
++		{
++			name: "all gates quiet -> false",
++			req:  makeReq(100),
++			state: makeState("inst-A", []RoutingSnapshot{
++				{ID: "inst-A", QueueDepth: 0, KvTokensInUse: 0, TotalKvCapacityTokens: 10000, InFlightRequests: 3},
++				{ID: "inst-B", QueueDepth: 0, KvTokensInUse: 0, TotalKvCapacityTokens: 10000, InFlightRequests: 4},
++				{ID: "inst-C", QueueDepth: 0, KvTokensInUse: 0, TotalKvCapacityTokens: 10000, InFlightRequests: 4},
++			}),
++			wantDisagg: false, // sum IFR = 11 < 12, QD=0, transientKvUtil=0
++		},
++		{
++			name: "IFR clause fires (sum=12) -> true",
++			req:  makeReq(100),
++			state: makeState("inst-A", []RoutingSnapshot{
++				{ID: "inst-A", QueueDepth: 0, KvTokensInUse: 0, TotalKvCapacityTokens: 10000, InFlightRequests: 4},
++				{ID: "inst-B", QueueDepth: 0, KvTokensInUse: 0, TotalKvCapacityTokens: 10000, InFlightRequests: 4},
++				{ID: "inst-C", QueueDepth: 0, KvTokensInUse: 0, TotalKvCapacityTokens: 10000, InFlightRequests: 4},
++			}),
++			wantDisagg: true, // sum IFR = 12 >= 12, QD=0, transientKvUtil=0; only IFR fires
++		},
++		{
++			name: "threshold not exceeded -> false despite high IFR",
++			req:  makeReq(16), // exactly at threshold, not above
++			state: makeState("inst-A", []RoutingSnapshot{
++				{ID: "inst-A", QueueDepth: 0, KvTokensInUse: 0, TotalKvCapacityTokens: 10000, InFlightRequests: 100},
++			}),
++			wantDisagg: false, // nonCachedTokens=16 == threshold=16 (not >)
++		},
++		{
++			name: "selected snapshot missing -> false",
++			req:  makeReq(100),
++			state: makeState("inst-Z", []RoutingSnapshot{
++				{ID: "inst-A", QueueDepth: 0, KvTokensInUse: 0, TotalKvCapacityTokens: 10000, InFlightRequests: 50},
++			}),
++			wantDisagg: false,
++		},
++	}
++
++	for _, tc := range cases {
++		t.Run(tc.name, func(t *testing.T) {
++			got := d.Decide(tc.req, tc.state)
++			if got.Disaggregate != tc.wantDisagg {
++				t.Errorf("Decide() = %v, want %v", got.Disaggregate, tc.wantDisagg)
++			}
++		})
++	}
++
++	// (7) mode != "selected" panics.
++	func() {
++		defer func() {
++			if r := recover(); r == nil {
++				t.Error("NewClusterIfrGatedPrefixDecider with mode='max' did not panic")
++			}
++		}()
++		_ = NewClusterIfrGatedPrefixDecider(16, 16, 1, 0.05, 12, "max", trivialCache)
++	}()
++}

@@ -1,0 +1,61 @@
+# BLIS workload — chat-mt at prefix=4900 (multi-turn accumulate, 4 rounds).
+# Mirrors the catalog interactive-chat workload but with prefix shortened from
+# 5000 → 4900 to match the operating point used in earlier strong-win
+# characterization on qwen2.5-7b at 24 H100. The 100-token reduction sits below
+# the catalog's per-conversation prefix variance and does not change the
+# prefill-bound character of the workload.
+#
+# Inputs/outputs/turns are the catalog mapping (see
+# inference-perf-interactive-chat.yaml for the full derivation).
+#
+# Run (overridden per-cell by sweep-pd-rate_pd6.sh):
+#   ./blis run --model qwen/qwen2.5-7b-instruct \
+#     --workload-spec examples/inference-perf-interactive-chat-mt-pd6.yaml \
+#     --num-instances 12 --prefill-instances 1 --decode-instances 11 \
+#     --prefill-tp 2 --decode-tp 2 --hardware H100 \
+#     --pd-transfer-bandwidth 10.3 \
+#     --pd-decider prefix-threshold --pd-prefix-threshold 16
+
+version: "2"
+seed: 42
+category: reasoning
+aggregate_rate: 200
+num_requests: 30000
+
+clients:
+  - id: "interactive-chat-mt"
+    tenant_id: "chat-users"
+    slo_class: "standard"
+    rate_fraction: 1.0
+    streaming: true
+    arrival:
+      process: weibull
+      cv: 1.0
+    input_distribution:
+      type: lognormal
+      params:
+        mu: 3.665
+        sigma: 0.7034
+        min: 10
+        max: 1000
+    output_distribution:
+      type: gaussian
+      params:
+        mean: 300
+        std_dev: 150
+        min: 10
+        max: 1000
+    prefix_group: "interactive-chat-system-prompt"
+    prefix_length: 4900
+    reasoning:
+      reason_ratio_distribution:
+        type: gaussian
+        params:
+          mean: 0
+          std_dev: 0
+          min: 0
+          max: 0
+      multi_turn:
+        max_rounds: 4
+        think_time_us: 45000000
+        context_growth: accumulate
