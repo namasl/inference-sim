@@ -1,0 +1,92 @@
+# BLIS workload — mirror of inference-perf workload-catalog/reasoning
+# Source: github.com/kubernetes-sigs/inference-perf/blob/main/workload-catalog/reasoning/config.json
+# Target model: meta-llama/llama-3.3-70b-instruct (128K context)
+#
+# WHY THIS WORKLOAD
+#   The catalog tags reasoning as suitable_optimizations: ["P/D disaggregation"],
+#   prefill_decode_ratio: 0.125 (decode-heavy). Small precise prompts followed by
+#   thousands of "thinking" tokens — the canonical regime where dedicated decode
+#   parallelism wins by hiding prefill latency. Single-turn (no accumulating
+#   context), so context-budget pressure stays at request level.
+#
+# Catalog → BLIS mapping
+#   system_prompt (fixed 250 tok)              → prefix_length: 250
+#       Catalog uses a small fixed shared prompt — no dynamic per-conversation
+#       prefix component. Direct copy. Note: 250 is below the production
+#       --pd-prefix-threshold=16 default, so all requests will be PD-eligible.
+#
+#   input_sequence_length (lognormal mean=1000, std=800, [100, 5000])
+#                                              → input_distribution (lognormal)
+#       Whole-prompt ISL (single-turn). The prefix (250 tok) sits in front of
+#       this; effective prompt seen by the model = prefix + sampled ISL.
+#
+#   output_sequence_length (exponential mean=8000, [500, 32000])
+#                                              → output_distribution (exponential)
+#       BLIS supports exponential natively (see sim/workload/scenarios.go).
+#       Heavy right tail is the whole point — long thinking traces are what
+#       stress the decode pool.
+#
+#   number_of_turns: 1                         → no multi_turn block
+#       Single-turn workload. reasoning.multi_turn omitted entirely.
+#       reason_ratio kept at zero (BLIS reasoning_ratio is a separate decode-
+#       inflation knob; the catalog's "reasoning" semantics are already
+#       captured by the long-tailed output_distribution).
+#
+#   time_between_turns: 0                      → N/A (single-turn)
+#
+# Lognormal (μ, σ) for input_sequence_length, computed from catalog (mean, std):
+#   sigma² = ln(1 + (std/mean)²) = ln(1 + 0.64)   = 0.4947 → sigma ≈ 0.7034
+#   mu     = ln(mean) − sigma²/2  = ln(1000) − 0.247 ≈ 6.661
+#
+# Context budget (128K) — comfortably met:
+#   Mean per-request: prefix(250) + isl(1000) + osl(8000)        = 9250  ✓
+#   p95 per-request:  prefix(250) + isl(2700) + osl(24000)       ≈ 27K   ✓
+#   Worst (truncated): prefix(250) + isl(5000) + osl(32000)      = 37250 ✓
+#
+# Remaining gaps vs catalog (cannot fix without BLIS schema changes):
+#   - Open-loop Poisson arrival vs catalog's closed-loop concurrency stages.
+#   - input_sequence_type_token_ratio: 0.5 (50/50 numeric vs text token mix)
+#     is metadata that BLIS doesn't model — token type doesn't affect compute.
+#
+# Run:
+#   ./blis run --model meta-llama/llama-3.3-70b-instruct \
+#     --workload-spec examples/inference-perf-reasoning.yaml \
+#     --num-instances 4 --routing-policy weighted
+
+version: "2"
+seed: 42
+category: reasoning
+aggregate_rate: 3
+num_requests: 1000
+
+clients:
+  - id: "reasoning"
+    tenant_id: "reasoning-users"
+    slo_class: "standard"
+    rate_fraction: 1.0
+    streaming: true
+    arrival:
+      process: poisson
+    input_distribution:
+      type: lognormal
+      params:
+        mu: 6.661
+        sigma: 0.7034
+        min: 100
+        max: 5000
+    output_distribution:
+      type: exponential
+      params:
+        mean: 8000
+        min: 500
+        max: 32000
+    prefix_group: "reasoning-system-prompt"
+    prefix_length: 250
+    reasoning:
+      reason_ratio_distribution:
+        type: gaussian
+        params:
+          mean: 0
+          std_dev: 0
+          min: 0
+          max: 0

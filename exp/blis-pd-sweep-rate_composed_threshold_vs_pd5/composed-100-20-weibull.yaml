@@ -1,0 +1,77 @@
+version: "2"
+seed: 0
+category: reasoning
+clients:
+    - id: interactive-chat
+      tenant_id: chat-users
+      slo_class: standard
+      rate_fraction: 0.8333333333333334
+      arrival:
+        process: weibull
+        cv: 2
+      input_distribution:
+        type: lognormal
+        params:
+            max: 1000
+            min: 10
+            mu: 3.665
+            sigma: 0.7034
+      output_distribution:
+        type: gaussian
+        params:
+            max: 1000
+            mean: 300
+            min: 10
+            std_dev: 150
+      prefix_group: interactive-chat-system-prompt
+      prefix_length: 5000
+      streaming: true
+      reasoning:
+        reason_ratio_distribution:
+            type: gaussian
+            params:
+                max: 0
+                mean: 0
+                min: 0
+                std_dev: 0
+        multi_turn:
+            max_rounds: 4
+            think_time_us: 45000000
+            context_growth: accumulate
+    - id: code-generation
+      tenant_id: code-agents
+      slo_class: standard
+      rate_fraction: 0.16666666666666666
+      arrival:
+        process: weibull
+        cv: 2
+      input_distribution:
+        type: lognormal
+        params:
+            max: 5000
+            min: 100
+            mu: 7.066
+            sigma: 0.7034
+      output_distribution:
+        type: lognormal
+        params:
+            max: 4000
+            min: 50
+            mu: 5.271
+            sigma: 1.2498
+      prefix_group: code-generation-system-prompt
+      prefix_length: 30000
+      streaming: true
+      reasoning:
+        reason_ratio_distribution:
+            type: gaussian
+            params:
+                max: 0
+                mean: 0
+                min: 0
+                std_dev: 0
+        multi_turn:
+            max_rounds: 15
+            think_time_us: 15000000
+            context_growth: accumulate
+aggregate_rate: 120

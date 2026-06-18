@@ -1,0 +1,138 @@
+# BLIS workload — 3-prefix-group variant of inference-perf-code-generation.yaml
+# Derived from inference-perf-code-generation.yaml (do not modify the original).
+#
+# Purpose: enables multi-prefill-pod experiments (2P+Nd, 3P+Nd topologies).
+# With a single prefix group, the precise-prefix-cache scorer pins all traffic to
+# one decode pod and through it to one prefill pod, leaving additional prefill pods
+# idle. Splitting into 3 equal prefix groups distributes sessions across all 3
+# prefill pods. All distributions, prefix_length, and multi-turn parameters are
+# identical to the original; only prefix_group and rate_fraction differ.
+#
+# Each group models a distinct code repository or agent context (e.g., three
+# different codebases or agent deployments sharing the same cluster). This is
+# representative of real multi-tenant code-generation deployments.
+#
+# aggregate_rate is overridden by sweep scripts via sed substitution.
+#
+# Run:
+#   ./blis run --model meta-llama/llama-3.3-70b-instruct \
+#     --workload-spec examples/inference-perf-code-generation-3g.yaml \
+#     --num-instances 6 --prefill-instances 3 --decode-instances 3 \
+#     --prefill-tp 4 --decode-tp 4 --hardware H100 \
+#     --pd-transfer-bandwidth 10.3 \
+#     --pd-decider prefix-threshold --pd-prefix-threshold 16
+
+version: "2"
+seed: 42
+category: reasoning
+aggregate_rate: 80
+num_requests: 500
+
+clients:
+  - id: "code-generation-g1"
+    tenant_id: "code-agents-g1"
+    slo_class: "standard"
+    rate_fraction: 0.34
+    streaming: true
+    arrival:
+      process: poisson
+    input_distribution:
+      type: lognormal
+      params:
+        mu: 7.066
+        sigma: 0.7034
+        min: 100
+        max: 5000
+    output_distribution:
+      type: lognormal
+      params:
+        mu: 5.271
+        sigma: 1.2498
+        min: 50
+        max: 4000
+    prefix_group: "code-generation-system-prompt-1"
+    prefix_length: 30000
+    reasoning:
+      reason_ratio_distribution:
+        type: gaussian
+        params:
+          mean: 0
+          std_dev: 0
+          min: 0
+          max: 0
+      multi_turn:
+        max_rounds: 15
+        think_time_us: 15000000
+        context_growth: accumulate
+
+  - id: "code-generation-g2"
+    tenant_id: "code-agents-g2"
+    slo_class: "standard"
+    rate_fraction: 0.33
+    streaming: true
+    arrival:
+      process: poisson
+    input_distribution:
+      type: lognormal
+      params:
+        mu: 7.066
+        sigma: 0.7034
+        min: 100
+        max: 5000
+    output_distribution:
+      type: lognormal
+      params:
+        mu: 5.271
+        sigma: 1.2498
+        min: 50
+        max: 4000
+    prefix_group: "code-generation-system-prompt-2"
+    prefix_length: 30000
+    reasoning:
+      reason_ratio_distribution:
+        type: gaussian
+        params:
+          mean: 0
+          std_dev: 0
+          min: 0
+          max: 0
+      multi_turn:
+        max_rounds: 15
+        think_time_us: 15000000
+        context_growth: accumulate
+
+  - id: "code-generation-g3"
+    tenant_id: "code-agents-g3"
+    slo_class: "standard"
+    rate_fraction: 0.33
+    streaming: true
+    arrival:
+      process: poisson
+    input_distribution:
+      type: lognormal
+      params:
+        mu: 7.066
+        sigma: 0.7034
+        min: 100
+        max: 5000
+    output_distribution:
+      type: lognormal
+      params:
+        mu: 5.271
+        sigma: 1.2498
+        min: 50
+        max: 4000
+    prefix_group: "code-generation-system-prompt-3"
+    prefix_length: 30000
+    reasoning:
+      reason_ratio_distribution:
+        type: gaussian
+        params:
+          mean: 0
+          std_dev: 0
+          min: 0
+          max: 0
+      multi_turn:
+        max_rounds: 15
+        think_time_us: 15000000
+        context_growth: accumulate

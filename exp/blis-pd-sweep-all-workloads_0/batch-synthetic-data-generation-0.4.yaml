@@ -1,0 +1,87 @@
+# BLIS workload — mirror of inference-perf workload-catalog/batch-synthetic-data-generation
+# Source: github.com/kubernetes-sigs/inference-perf/blob/main/workload-catalog/batch-synthetic-data-generation/config.json
+# Target model: meta-llama/llama-3.3-70b-instruct (128K context)
+#
+# WHY THIS WORKLOAD
+#   The catalog tags this as suitable_optimizations: ["Prefix aware routing",
+#   "KV cache offloading", "Wide Expert Parallelism", "Fault-tolerant queueing"],
+#   prefill_decode_ratio: 0.125 (strongly decode-bound). Tiny seed prompts drive
+#   the model to generate large synthetic datasets in a single pass. The massive
+#   outputs and shared 2000-token system prompt make this a sustained decode
+#   throughput stress test with KV offloading pressure.
+#
+# Catalog → BLIS mapping
+#   system_prompt (fixed 2000 tok)             → prefix_length: 2000
+#       Fixed shared system prompt. Direct copy.
+#
+#   input_sequence_length (lognormal, mean=500, std=1200, [50, 15000])
+#                                              → input_distribution (lognormal)
+#       Direct copy. Seed prompts are tiny (median ~150 tok) but have a heavy
+#       right tail for document-injection workflows (up to 15k). Both config.json
+#       and inference-perf.yaml agree on lognormal with identical parameters.
+#
+#   output_sequence_length (uniform, mean=4000, std=2500, [500, 8000])
+#                                              → output_distribution (gaussian)
+#       BLIS has no native uniform distribution type. We approximate with
+#       gaussian(mean=4000, std=2500, min=500, max=8000).
+#       Note: a true uniform on [500, 8000] has mean=4250 and std=2165 —
+#       the catalog's stated mean=4000, std=2500 don't match a strict uniform
+#       either, suggesting the catalog's parameters are themselves approximate.
+#       The gaussian approximation has the correct mean and spread; it will
+#       be slightly peaked near 4000 rather than perfectly flat.
+#       DEVIATION: BLIS does not support uniform; gaussian used instead.
+#
+#   number_of_turns: 1, multi_turn: false      → no multi_turn block
+#   time_between_turns: 0                      → N/A
+#
+# Lognormal (μ, σ) for input_sequence_length, computed from catalog (mean, std):
+#   sigma² = ln(1 + (1200/500)²) = ln(1 + 5.76)  = ln(6.76) = 1.911
+#   mu     = ln(500) − 1.911/2   = 6.215 − 0.956              ≈ 5.259
+#
+# Context budget (128K) — comfortably met:
+#   Mean per-request: prefix(2000) + isl(500) + osl(4000)         = 6500  ✓
+#   p95 per-request:  prefix(2000) + isl(~4500) + osl(max=8000)  ≈ 14500 ✓
+#   Worst (truncated): prefix(2000) + isl(15000) + osl(8000)      = 25000 ✓
+#
+# Remaining gaps vs catalog (cannot fix without BLIS schema changes):
+#   - Uniform output distribution not supported; gaussian approximation used.
+#   - Open-loop Poisson arrival vs catalog's closed-loop concurrency stages.
+#   - input_sequence_type_token_ratio: 0.5 is metadata BLIS doesn't model.
+#
+# Run:
+#   ./blis run --model meta-llama/llama-3.3-70b-instruct \
+#     --workload-spec workloads/inference-perf-batch-synthetic-data-generation.yaml \
+#     --num-instances 4 --routing-policy weighted
+
+version: "2"
+seed: 42
+category: language
+aggregate_rate: 0.4
+num_requests: 500
+
+clients:
+  - id: "synthetic-data-generation"
+    tenant_id: "batch-jobs"
+    slo_class: "batch"
+    rate_fraction: 1.0
+    streaming: false
+    arrival:
+      process: poisson
+    input_distribution:
+      type: lognormal
+      params:
+        mu: 5.259
+        sigma: 1.3824
+        min: 50
+        max: 15000
+    output_distribution:
+      type: gaussian
+      params:
+        mean: 4000
+        std_dev: 2500
+        min: 500
+        max: 8000
+        # NOTE: catalog specifies uniform distribution; gaussian used as
+        # approximation (BLIS does not support uniform). See comment header.
+    prefix_group: "synthetic-data-system-prompt"
+    prefix_length: 2000
