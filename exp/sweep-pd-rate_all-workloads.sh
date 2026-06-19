@@ -62,9 +62,9 @@ ARMS=(
   "pd-1p3d-thresh16|./blis|--num-instances 4 --prefill-instances 1 --decode-instances 3 --prefill-tp 4 --decode-tp 4 --hardware H100 --pd-transfer-bandwidth 10.3 --pd-decider prefix-threshold --pd-prefix-threshold 16"
   "pd-2p2d-thresh16|./blis|--num-instances 4 --prefill-instances 2 --decode-instances 2 --prefill-tp 4 --decode-tp 4 --hardware H100 --pd-transfer-bandwidth 10.3 --pd-decider prefix-threshold --pd-prefix-threshold 16"
   "pd-3p1d-thresh16|./blis|--num-instances 4 --prefill-instances 3 --decode-instances 1 --prefill-tp 4 --decode-tp 4 --hardware H100 --pd-transfer-bandwidth 10.3 --pd-decider prefix-threshold --pd-prefix-threshold 16"
-  "pd-1p3d-edpp|./exp/blis-edpp|--num-instances 4 --prefill-instances 1 --decode-instances 3 --prefill-tp 4 --decode-tp 4 --hardware H100 --pd-transfer-bandwidth 10.3 --pd-decider edpp"
-  "pd-2p2d-edpp|./exp/blis-edpp|--num-instances 4 --prefill-instances 2 --decode-instances 2 --prefill-tp 4 --decode-tp 4 --hardware H100 --pd-transfer-bandwidth 10.3 --pd-decider edpp"
-  "pd-3p1d-edpp|./exp/blis-edpp|--num-instances 4 --prefill-instances 3 --decode-instances 1 --prefill-tp 4 --decode-tp 4 --hardware H100 --pd-transfer-bandwidth 10.3 --pd-decider edpp"
+  # "pd-1p3d-edpp|./exp/blis-edpp|--num-instances 4 --prefill-instances 1 --decode-instances 3 --prefill-tp 4 --decode-tp 4 --hardware H100 --pd-transfer-bandwidth 10.3 --pd-decider edpp"
+  # "pd-2p2d-edpp|./exp/blis-edpp|--num-instances 4 --prefill-instances 2 --decode-instances 2 --prefill-tp 4 --decode-tp 4 --hardware H100 --pd-transfer-bandwidth 10.3 --pd-decider edpp"
+  # "pd-3p1d-edpp|./exp/blis-edpp|--num-instances 4 --prefill-instances 3 --decode-instances 1 --prefill-tp 4 --decode-tp 4 --hardware H100 --pd-transfer-bandwidth 10.3 --pd-decider edpp"
 )
 
 CSV_HEADER="arm,rate,seed,throughput_rps,tokens_per_sec,completed,ttft_mean_ms,ttft_p90_ms,ttft_p95_ms,ttft_p99_ms,e2e_mean_ms,e2e_p90_ms,e2e_p95_ms,e2e_p99_ms,itl_mean_ms,itl_p90_ms,itl_p95_ms,itl_p99_ms,timeouts,preemptions,disagg_count,sat_level,sat_score"
@@ -74,8 +74,8 @@ run_sweep() {
   shift 2
   local rates=("$@")
   local csv="$OUTDIR/${wl_name}.csv"
+  local failures=()
 
-  echo "$CSV_HEADER" > "$csv"
   echo "=== $wl_name ==="
 
   read -ra seeds <<< "$SEEDS"
@@ -97,37 +97,43 @@ run_sweep() {
 
         printf "    rate=%-8s seed=%-4s ... " "$rate" "$seed"
 
+        # Skip if valid result already exists (idempotency).
+        if [[ -f "$metrics" ]] && jq -e . "$metrics" > /dev/null 2>&1; then
+          local s_ttft s_e2e s_sat s_disagg
+          s_ttft=$(jq -r '.ttft_p99_ms // 0' "$metrics")
+          s_e2e=$(jq -r  '.e2e_p99_ms  // 0' "$metrics")
+          s_sat=$(jq -r  '.saturation.level // "?"' "$metrics")
+          s_disagg=0
+          if [[ -f "$log" ]]; then
+            s_disagg=$(grep -oE 'Disaggregated Requests: [0-9]+' "$log" | grep -oE '[0-9]+$' || echo 0)
+          fi
+          printf "SKIP  ttft_p99=%8.1fms  e2e_p99=%9.1fms  sat=%-10s  disagg=%s\n" \
+            "$s_ttft" "$s_e2e" "$s_sat" "$s_disagg"
+          continue
+        fi
+
         # shellcheck disable=SC2086
+        local rc=0
         "$bin" run \
           --model "$MODEL" \
           --workload-spec "$cfg_yaml" \
           --seed "$seed" \
           $flags \
           --post-hoc-detector composite \
-          --metrics-path "$metrics" > "$log" 2>&1
+          --metrics-path "$metrics" > "$log" 2>&1 || rc=$?
+
+        if (( rc != 0 )); then
+          printf "FAILED (exit %d) — see %s\n" "$rc" "$log"
+          local cell="${wl_name}  arm=${arm}  rate=${rate}  seed=${seed}  (exit ${rc})  log=${log}"
+          failures+=("$cell")
+          ALL_FAILURES+=("$cell")
+          continue
+        fi
 
         # PD metrics live in stdout, not the JSON. Aggregate arm has no PD
         # metrics; default disagg=0.
-        local disagg
+        local disagg ttft e2e sat
         disagg=$(grep -oE 'Disaggregated Requests: [0-9]+' "$log" | grep -oE '[0-9]+$' || echo 0)
-
-        jq -r --arg arm "$arm" --arg r "$rate" --arg s "$seed" --argjson d "$disagg" '
-          [$arm, $r, $s,
-           (.responses_per_sec // 0),
-           (.tokens_per_sec // 0),
-           (.completed_requests // 0),
-           (.ttft_mean_ms // 0), (.ttft_p90_ms // 0), (.ttft_p95_ms // 0), (.ttft_p99_ms // 0),
-           (.e2e_mean_ms // 0),  (.e2e_p90_ms // 0),  (.e2e_p95_ms // 0),  (.e2e_p99_ms // 0),
-           (.itl_mean_ms // 0),  (.itl_p90_ms // 0),  (.itl_p95_ms // 0),  (.itl_p99_ms // 0),
-           (.timed_out_requests // 0),
-           (.preemption_count // 0),
-           $d,
-           (.saturation.level // ""),
-           (.saturation.score // 0)
-          ] | @csv
-        ' "$metrics" >> "$csv"
-
-        local ttft e2e sat
         ttft=$(jq -r '.ttft_p99_ms // 0' "$metrics")
         e2e=$(jq -r  '.e2e_p99_ms  // 0' "$metrics")
         sat=$(jq -r  '.saturation.level // "?"' "$metrics")
@@ -137,6 +143,56 @@ run_sweep() {
     done
     echo ""
   done
+
+  # Rebuild the CSV from every valid result JSON for this workload, including
+  # results from arms that are currently commented out. Arm/rate/seed are parsed
+  # from the filename: strip the workload prefix, then peel the last two
+  # dash-fields from the right (seed, then rate); the remainder is the arm label.
+  echo "$CSV_HEADER" > "$csv"
+  local jfile bname r_rest r_arm r_rate r_seed r_disagg r_log
+  for jfile in "$OUTDIR/${wl_name}"-*.json; do
+    [[ -f "$jfile" ]] || continue                        # handle empty glob
+    jq -e . "$jfile" > /dev/null 2>&1 || continue       # skip corrupt/incomplete files
+    bname=$(basename "$jfile" .json)
+    r_rest="${bname#${wl_name}-}"                        # strip workload-name prefix
+    r_seed="${r_rest##*-}"                               # last dash-field  → seed
+    r_rest="${r_rest%-${r_seed}}"                        # drop seed
+    r_rate="${r_rest##*-}"                               # last dash-field  → rate
+    r_arm="${r_rest%-${r_rate}}"                         # remainder        → arm label
+    [[ -n "$r_arm" && -n "$r_rate" && -n "$r_seed" ]] || continue
+    r_disagg=0
+    r_log="${jfile%.json}.log"
+    if [[ -f "$r_log" ]]; then
+      r_disagg=$(grep -oE 'Disaggregated Requests: [0-9]+' "$r_log" | grep -oE '[0-9]+$' || echo 0)
+    fi
+    jq -r --arg arm "$r_arm" --arg r "$r_rate" --arg s "$r_seed" --argjson d "$r_disagg" '
+      [$arm, $r, $s,
+       (.responses_per_sec // 0),
+       (.tokens_per_sec // 0),
+       (.completed_requests // 0),
+       (.ttft_mean_ms // 0), (.ttft_p90_ms // 0), (.ttft_p95_ms // 0), (.ttft_p99_ms // 0),
+       (.e2e_mean_ms // 0),  (.e2e_p90_ms // 0),  (.e2e_p95_ms // 0),  (.e2e_p99_ms // 0),
+       (.itl_mean_ms // 0),  (.itl_p90_ms // 0),  (.itl_p95_ms // 0),  (.itl_p99_ms // 0),
+       (.timed_out_requests // 0),
+       (.preemption_count // 0),
+       $d,
+       (.saturation.level // ""),
+       (.saturation.score // 0)
+      ] | @csv
+    ' "$jfile" >> "$csv"
+  done
+
+  # Per-workload failure banner.
+  if (( ${#failures[@]} > 0 )); then
+    printf "\n\033[1;31m%s\033[0m\n" "$(printf '=%.0s' {1..80})"
+    printf "\033[1;31m  FAILED CELLS in workload '%s' — %d cell(s) failed (re-run to retry)\033[0m\n" \
+      "$wl_name" "${#failures[@]}"
+    printf "\033[1;31m%s\033[0m\n" "$(printf '=%.0s' {1..80})"
+    for f in "${failures[@]}"; do
+      printf "\033[1;31m  x  %s\033[0m\n" "$f"
+    done
+    printf "\033[1;31m%s\033[0m\n\n" "$(printf '=%.0s' {1..80})"
+  fi
 
   # Summary: seed-mean per (arm, rate), sorted by rate then TTFT p99.
   # Reads the CSV and averages across seeds per (arm, rate) cell.
@@ -185,6 +241,8 @@ read -ra reasoning_rates        <<< "$REASONING_RATES"
 read -ra batchsummarization_rates <<< "$BATCHSUMMARIZATION_RATES"
 read -ra batchsynthetic_rates   <<< "$BATCHSYNTHETIC_RATES"
 
+ALL_FAILURES=()
+
 run_sweep "interactive-chat"               "workloads/inference-perf-interactive-chat.yaml"               "${chat_rates[@]}"
 run_sweep "code-generation"                "workloads/inference-perf-code-generation.yaml"                "${code_rates[@]}"
 run_sweep "deep-research"                  "workloads/inference-perf-deep-research.yaml"                  "${deepresearch_rates[@]}"
@@ -193,3 +251,19 @@ run_sweep "batch-summarization-rag"        "workloads/inference-perf-batch-summa
 run_sweep "batch-synthetic-data-generation" "workloads/inference-perf-batch-synthetic-data-generation.yaml" "${batchsynthetic_rates[@]}"
 
 echo "All results in: $OUTDIR"
+
+# Cross-workload failure summary — printed last so it's impossible to miss.
+if (( ${#ALL_FAILURES[@]} > 0 )); then
+  printf "\n"
+  printf "\033[1;31m%s\033[0m\n" "$(printf '#%.0s' {1..80})"
+  printf "\033[1;31m%s\033[0m\n" "$(printf '#%.0s' {1..80})"
+  printf "\033[1;31m##  SWEEP FINISHED WITH %d FAILURE(S) — re-run this script to retry%-*s##\033[0m\n" \
+    "${#ALL_FAILURES[@]}" 1 ""
+  printf "\033[1;31m%s\033[0m\n" "$(printf '#%.0s' {1..80})"
+  for f in "${ALL_FAILURES[@]}"; do
+    printf "\033[1;31m  x  %s\033[0m\n" "$f"
+  done
+  printf "\033[1;31m%s\033[0m\n" "$(printf '#%.0s' {1..80})"
+  printf "\033[1;31m%s\033[0m\n\n" "$(printf '#%.0s' {1..80})"
+  exit 1
+fi
