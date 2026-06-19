@@ -67,8 +67,17 @@ type DeploymentConfig struct {
 	// assigns PoolRolePrefillDecode to the last `shared` indices after
 	// the prefill-only and decode-only ranges.
 	SharedInstances   int
-	PDDecider         string // Disaggregation decider: "" or "never" (default), "always", "prefix-threshold"
+	PDDecider         string // Disaggregation decider: "" or "never" (default), "always", "prefix-threshold", "edpp"
 	PDPrefixThreshold int    // Non-cached token threshold for prefix-threshold decider (PR6)
+
+	// EDPP (Lyapunov drift-plus-penalty) decider knobs — used only when PDDecider == "edpp".
+	// All durations are microseconds. See sim/edpp.go and the design doc for semantics.
+	EDPPTauTTFTUs        int64   // τ_ttft: time-average TTFT SLO target (µs)
+	EDPPTauITLUs         int64   // τ_itl: time-average ITL SLO target (µs)
+	EDPPV                float64 // V: penalty/stability tradeoff knob (larger ⇒ fewer offloads)
+	EDPPCXferUs          int64   // c_xfer: KV-transfer cost paid when routing P (µs)
+	EDPPNomPrefillTokens int     // S_nom: nominal prefill chunk for the fixed prefill normalizer
+	EDPPNomDecodeCtx     int     // L_nom: nominal decode context for the fixed decode normalizer
 
 	// E/P/D disaggregation configuration (GAP-4, issue #1264).
 	// When EncodeInstances == 0 (default), the encode stage is disabled and the
@@ -120,21 +129,21 @@ type DeploymentConfig struct {
 	// Flow control configuration (issue #882, GIE parity).
 	// When FlowControlEnabled is false (default), the gateway queue is bypassed
 	// and requests flow directly from admission to routing (BC-1 pass-through).
-	FlowControlEnabled              bool    `yaml:"flow_control_enabled,omitempty"`
-	FlowControlDetector             string  `yaml:"flow_control_detector,omitempty"`                // "never" (default), "utilization", "concurrency"
-	FlowControlDispatchOrder        string           `yaml:"flow_control_dispatch_order,omitempty"`  // "fifo" (default), "priority", "slo-deadline"
-	FlowControlSLOTargets           map[string]int64 `yaml:"flow_control_slo_targets,omitempty"`     // SLO class → TTFT target µs for slo-deadline ordering
-	FlowControlMaxQueueDepth        int              `yaml:"flow_control_max_queue_depth,omitempty"` // 0 = unlimited
-	FlowControlQueueDepthThreshold  float64 `yaml:"flow_control_queue_depth_threshold,omitempty"`   // for utilization detector
-	FlowControlKVCacheUtilThreshold float64 `yaml:"flow_control_kv_cache_util_threshold,omitempty"` // for utilization detector
-	FlowControlMaxConcurrency       int     `yaml:"flow_control_max_concurrency,omitempty"`         // for concurrency detector
-	FlowControlPerBandCapacity      int     `yaml:"flow_control_per_band_capacity,omitempty"`       // 0 = unlimited; max requests per priority band
-	FlowControlUsageLimitThreshold  float64 `yaml:"flow_control_usage_limit_threshold,omitempty"`   // per-band HoL blocking ceiling (1.0=no HoL, <1.0 gates lower bands earlier)
-	FlowControlFairnessPolicy       string  `yaml:"flow_control_fairness_policy,omitempty"`         // "global-strict" (default), "round-robin"
-	FlowControlRequestTTL           int64   `yaml:"flow_control_request_ttl,omitempty"`             // microseconds; 0 = disabled (default). GIE parity: DefaultRequestTTL.
-	FlowControlQueueShedding        bool    `yaml:"flow_control_queue_shedding,omitempty"`          // BLIS-extra: cross-band shedding on full queue (not in llm-d). Default false.
-	FlowControlDispatchTickInterval int64   `yaml:"flow_control_dispatch_tick_interval,omitempty"`  // µs between periodic dispatch ticks (default 1000 = 1ms, llm-d parity). 0 = use default.
-	FlowControlInFlightEviction     bool    `yaml:"flow_control_in_flight_eviction,omitempty"`      // BLIS-extra: evict sheddable in-flight requests when saturated (not in llm-d). Default false.
+	FlowControlEnabled              bool             `yaml:"flow_control_enabled,omitempty"`
+	FlowControlDetector             string           `yaml:"flow_control_detector,omitempty"`                // "never" (default), "utilization", "concurrency"
+	FlowControlDispatchOrder        string           `yaml:"flow_control_dispatch_order,omitempty"`          // "fifo" (default), "priority", "slo-deadline"
+	FlowControlSLOTargets           map[string]int64 `yaml:"flow_control_slo_targets,omitempty"`             // SLO class → TTFT target µs for slo-deadline ordering
+	FlowControlMaxQueueDepth        int              `yaml:"flow_control_max_queue_depth,omitempty"`         // 0 = unlimited
+	FlowControlQueueDepthThreshold  float64          `yaml:"flow_control_queue_depth_threshold,omitempty"`   // for utilization detector
+	FlowControlKVCacheUtilThreshold float64          `yaml:"flow_control_kv_cache_util_threshold,omitempty"` // for utilization detector
+	FlowControlMaxConcurrency       int              `yaml:"flow_control_max_concurrency,omitempty"`         // for concurrency detector
+	FlowControlPerBandCapacity      int              `yaml:"flow_control_per_band_capacity,omitempty"`       // 0 = unlimited; max requests per priority band
+	FlowControlUsageLimitThreshold  float64          `yaml:"flow_control_usage_limit_threshold,omitempty"`   // per-band HoL blocking ceiling (1.0=no HoL, <1.0 gates lower bands earlier)
+	FlowControlFairnessPolicy       string           `yaml:"flow_control_fairness_policy,omitempty"`         // "global-strict" (default), "round-robin"
+	FlowControlRequestTTL           int64            `yaml:"flow_control_request_ttl,omitempty"`             // microseconds; 0 = disabled (default). GIE parity: DefaultRequestTTL.
+	FlowControlQueueShedding        bool             `yaml:"flow_control_queue_shedding,omitempty"`          // BLIS-extra: cross-band shedding on full queue (not in llm-d). Default false.
+	FlowControlDispatchTickInterval int64            `yaml:"flow_control_dispatch_tick_interval,omitempty"`  // µs between periodic dispatch ticks (default 1000 = 1ms, llm-d parity). 0 = use default.
+	FlowControlInFlightEviction     bool             `yaml:"flow_control_in_flight_eviction,omitempty"`      // BLIS-extra: evict sheddable in-flight requests when saturated (not in llm-d). Default false.
 
 	// Issue #893: per-GPU-type hardware calibration for roofline and trained-physics backends.
 	// Key: GPU type string (e.g., "A100", "H100"). Value: HardwareCalib for that GPU.

@@ -137,16 +137,22 @@ var (
 	gpuMemoryUtilization    float64
 
 	// PD disaggregation config
-	prefillInstances       int     // Number of instances dedicated to prefill
-	decodeInstances        int     // Number of instances dedicated to decode
-	prefillDecodeInstances int     // Number of shared-role instances (both prefill and decode), issue #1276
-	pdDecider              string  // Disaggregation decider name
-	pdTransferBandwidth    float64 // Inter-instance KV transfer bandwidth in GB/s
-	pdTransferBaseLatency  float64 // Inter-instance KV transfer base latency in ms
-	pdTransferContention   bool    // Enable fair-share bandwidth contention model
-	pdPrefixThreshold      int     // Non-cached token threshold for prefix-threshold decider
-	prefillRoutingScorers  string  // Scorer weights for prefill pool routing
-	decodeRoutingScorers   string  // Scorer weights for decode pool routing
+	prefillInstances       int           // Number of instances dedicated to prefill
+	decodeInstances        int           // Number of instances dedicated to decode
+	prefillDecodeInstances int           // Number of shared-role instances (both prefill and decode), issue #1276
+	pdDecider              string        // Disaggregation decider name
+	pdTransferBandwidth    float64       // Inter-instance KV transfer bandwidth in GB/s
+	pdTransferBaseLatency  float64       // Inter-instance KV transfer base latency in ms
+	pdTransferContention   bool          // Enable fair-share bandwidth contention model
+	pdPrefixThreshold      int           // Non-cached token threshold for prefix-threshold decider
+	edppTauTTFT            time.Duration // EDPP τ_ttft: time-average TTFT SLO target
+	edppTauITL             time.Duration // EDPP τ_itl: time-average ITL SLO target
+	edppV                  float64       // EDPP V: penalty/stability tradeoff knob
+	edppCXfer              time.Duration // EDPP c_xfer: assumed KV-transfer cost when routing P
+	edppNomPrefillTokens   int           // EDPP nominal prefill chunk for the fixed prefill normalizer
+	edppNomDecodeCtx       int           // EDPP nominal decode context for the fixed decode normalizer
+	prefillRoutingScorers  string        // Scorer weights for prefill pool routing
+	decodeRoutingScorers   string        // Scorer weights for decode pool routing
 
 	// E/P/D disaggregation config (GAP-4, issue #1264)
 	encodeInstances int    // Number of instances dedicated to encoding multimodal input (0 = disabled)
@@ -1074,11 +1080,18 @@ func registerSimConfigFlags(cmd *cobra.Command) {
 	cmd.Flags().IntVar(&prefillInstances, "prefill-instances", 0, "Number of instances dedicated to prefill (0 = disabled)")
 	cmd.Flags().IntVar(&decodeInstances, "decode-instances", 0, "Number of instances dedicated to decode (0 = disabled)")
 	cmd.Flags().IntVar(&prefillDecodeInstances, "prefill-decode-instances", 0, "Number of shared-role instances serving both prefill and decode (llm-d 'prefill-decode'/'both' parity; 0 = disabled). Must satisfy --prefill-instances + --decode-instances + --prefill-decode-instances <= --num-instances.")
-	cmd.Flags().StringVar(&pdDecider, "pd-decider", "never", "PD disaggregation decider: never (default), always, prefix-threshold")
+	cmd.Flags().StringVar(&pdDecider, "pd-decider", "never", "PD disaggregation decider: never (default), always, prefix-threshold, edpp")
 	cmd.Flags().Float64Var(&pdTransferBandwidth, "pd-transfer-bandwidth", 25.0, "PD KV transfer bandwidth in GB/s (NIXL RDMA default)")
 	cmd.Flags().Float64Var(&pdTransferBaseLatency, "pd-transfer-base-latency", 0.05, "PD KV transfer base latency in ms")
 	cmd.Flags().BoolVar(&pdTransferContention, "pd-transfer-contention", false, "Enable fair-share bandwidth contention model for concurrent KV transfers (INV-P2-2)")
 	cmd.Flags().IntVar(&pdPrefixThreshold, "pd-prefix-threshold", 16, "Non-cached token threshold for prefix-threshold decider (>= 0); disaggregate when non-cached tokens exceed this value. Default 16 matches llm-d's shipped P/D configs (deploy/config/pd-epp-config.yaml).")
+	// EDPP (Lyapunov drift-plus-penalty) decider knobs — used only with --pd-decider edpp.
+	cmd.Flags().DurationVar(&edppTauTTFT, "edpp-tau-ttft", 500*time.Millisecond, "EDPP τ_ttft: time-average TTFT SLO target (only used with --pd-decider edpp)")
+	cmd.Flags().DurationVar(&edppTauITL, "edpp-tau-itl", 100*time.Millisecond, "EDPP τ_itl: time-average ITL SLO target (only used with --pd-decider edpp)")
+	cmd.Flags().Float64Var(&edppV, "edpp-v", 1.0, "EDPP V: penalty/stability tradeoff knob; larger ⇒ fewer offloads (only used with --pd-decider edpp)")
+	cmd.Flags().DurationVar(&edppCXfer, "edpp-c-xfer", 5*time.Millisecond, "EDPP c_xfer: assumed KV-transfer cost when routing P (only used with --pd-decider edpp)")
+	cmd.Flags().IntVar(&edppNomPrefillTokens, "edpp-nom-prefill-tokens", 512, "EDPP nominal prefill chunk size for the fixed prefill normalizer (only used with --pd-decider edpp)")
+	cmd.Flags().IntVar(&edppNomDecodeCtx, "edpp-nom-decode-ctx", 2048, "EDPP nominal decode context length for the fixed decode normalizer (only used with --pd-decider edpp)")
 	cmd.Flags().StringVar(&prefillRoutingScorers, "prefill-routing-scorers", "", "Scorer weights for prefill pool routing (e.g., queue-depth:2,kv-utilization:2)")
 	cmd.Flags().StringVar(&decodeRoutingScorers, "decode-routing-scorers", "", "Scorer weights for decode pool routing (e.g., queue-depth:2,kv-utilization:2)")
 
@@ -1690,6 +1703,12 @@ var runCmd = &cobra.Command{
 			EncodeDecider:                   encodeDecider,
 			PDDecider:                       pdDecider,
 			PDPrefixThreshold:               pdPrefixThreshold,
+			EDPPTauTTFTUs:                   edppTauTTFT.Microseconds(),
+			EDPPTauITLUs:                    edppTauITL.Microseconds(),
+			EDPPV:                           edppV,
+			EDPPCXferUs:                     edppCXfer.Microseconds(),
+			EDPPNomPrefillTokens:            edppNomPrefillTokens,
+			EDPPNomDecodeCtx:                edppNomDecodeCtx,
 			PDTransferBandwidthGBps:         pdTransferBandwidth,
 			PDTransferBaseLatencyMs:         pdTransferBaseLatency,
 			PDTransferContention:            pdTransferContention,

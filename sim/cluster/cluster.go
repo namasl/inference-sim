@@ -25,20 +25,20 @@ type ClusterSimulator struct {
 	aggregatedMetrics *sim.Metrics
 
 	// Online routing pipeline fields
-	clusterEvents         ClusterEventQueue
-	seqCounter            int64
-	admissionLatency      int64
-	routingLatency        int64
-	admissionPolicy       sim.AdmissionPolicy
-	priorityMap           *sim.SLOPriorityMap
-	snapshotProvider      *CachedSnapshotProvider
-	routingPolicy         sim.RoutingPolicy
-	rejectedRequests      int                       // EC-2: count of requests rejected by admission policy
-	routingRejections     int                       // I13: count of requests rejected at routing (no routable instances)
-	shedByTier            map[string]int            // per-SLOClass shedding: admission rejections + gateway queue shed + in-flight evictions
+	clusterEvents     ClusterEventQueue
+	seqCounter        int64
+	admissionLatency  int64
+	routingLatency    int64
+	admissionPolicy   sim.AdmissionPolicy
+	priorityMap       *sim.SLOPriorityMap
+	snapshotProvider  *CachedSnapshotProvider
+	routingPolicy     sim.RoutingPolicy
+	rejectedRequests  int            // EC-2: count of requests rejected by admission policy
+	routingRejections int            // I13: count of requests rejected at routing (no routable instances)
+	shedByTier        map[string]int // per-SLOClass shedding: admission rejections + gateway queue shed + in-flight evictions
 	// injectedByClass: per-SLOClass arrival counter. Incremented in ClusterArrivalEvent.Execute
 	// before any drop/route/admission decision. Goodput denominator (issue #1409, BC-5).
-	injectedByClass map[string]int64
+	injectedByClass       map[string]int64
 	trace                 *trace.SimulationTrace    // nil when trace-level is "none" (BC-1: zero overhead)
 	preGeneratedRequests  []*sim.Request            // Pre-generated requests (all workload paths unified)
 	inFlightRequests      map[string]int            // instance ID → dispatched-but-not-completed count (#463)
@@ -50,6 +50,7 @@ type ClusterSimulator struct {
 	dispatchTickPending   bool                      // true when a GatewayDispatchTickEvent is already scheduled
 	poolMembership        map[string]PoolRole       // instance ID → pool role (nil when disaggregation disabled)
 	disaggregationDecider sim.DisaggregationDecider // PD disaggregation decider (nil when disabled)
+	sloFeedback           sim.SLOFeedbackDecider    // non-nil when the decider consumes realized-SLO feedback (EDPP)
 
 	// PD disaggregation state (PR2)
 	parentRequests            map[string]*ParentRequest // parent request ID → tracking record
@@ -398,8 +399,33 @@ func NewClusterSimulator(config DeploymentConfig, requests []*sim.Request, onReq
 		switch config.PDDecider {
 		case "prefix-threshold":
 			cs.disaggregationDecider = sim.NewPrefixThresholdDecider(config.PDPrefixThreshold, int(config.BlockSizeTokens), cs.cacheQueryFn)
+		case "edpp":
+			// EDPP recovers α/δ by finite-difference on a latency model (no live scrape in
+			// BLIS), so build the model here and inject it. Prefill-pool backlogs come from a
+			// closure over the snapshot provider; the decode pool arrives via RouterState.
+			lm, err := latency.NewLatencyModel(config.LatencyCoeffs, config.ModelHardwareConfig)
+			if err != nil {
+				logrus.Fatalf("[cluster] EDPP decider: latency model construction failed: %v", err)
+			}
+			prefillSnapshots := func() []sim.RoutingSnapshot {
+				return cs.buildPoolFilteredSnapshots(PoolRolePrefill)
+			}
+			cs.disaggregationDecider = sim.NewEDPPDecider(sim.EDPPConfig{
+				TauTTFTUs:        config.EDPPTauTTFTUs,
+				TauITLUs:         config.EDPPTauITLUs,
+				V:                config.EDPPV,
+				CXferUs:          config.EDPPCXferUs,
+				NomPrefillTokens: config.EDPPNomPrefillTokens,
+				NomDecodeCtx:     config.EDPPNomDecodeCtx,
+				BlockSize:        int(config.BlockSizeTokens),
+			}, lm, cs.cacheQueryFn, prefillSnapshots)
 		default:
 			cs.disaggregationDecider = sim.NewDisaggregationDecider(config.PDDecider)
+		}
+		// Capture the SLO-feedback hook once: deciders that track realized SLOs (EDPP)
+		// get OnComplete callbacks from the per-request completion site (R4: single point).
+		if fb, ok := cs.disaggregationDecider.(sim.SLOFeedbackDecider); ok {
+			cs.sloFeedback = fb
 		}
 	}
 
@@ -541,7 +567,7 @@ func NewClusterSimulator(config DeploymentConfig, requests []*sim.Request, onReq
 	// admission → routing → instance injection. The callback returns nil so the per-instance
 	// simulator does not inject locally.
 	// Phase 1B-2a: also notify tenantTracker on completion when budgets are configured.
-	if onRequestDone != nil || cs.tenantTracker != nil || cs.evictionTracker != nil {
+	if onRequestDone != nil || cs.tenantTracker != nil || cs.evictionTracker != nil || cs.sloFeedback != nil {
 		for _, inst := range cs.instances {
 			inst.sim.OnRequestDone = func(req *sim.Request, tick int64) []*sim.Request {
 				// Phase 1B-2a: release tenant in-flight slot on every terminal state.
@@ -552,6 +578,8 @@ func NewClusterSimulator(config DeploymentConfig, requests []*sim.Request, onReq
 				if cs.evictionTracker != nil {
 					cs.evictionTracker.Untrack(req.ID)
 				}
+				// EDPP virtual-queue feedback (no-op unless an SLO-feedback decider is set).
+				cs.feedSLOFeedback(req)
 				if onRequestDone == nil {
 					return nil
 				}
@@ -1061,7 +1089,7 @@ func (cs *ClusterSimulator) addLiveInstance(
 
 	// Wire OnRequestDone callback — mirrors startup path in NewClusterSimulator (R4).
 	onRequestDone := cs.sessionCallback
-	if onRequestDone != nil || cs.tenantTracker != nil || cs.evictionTracker != nil {
+	if onRequestDone != nil || cs.tenantTracker != nil || cs.evictionTracker != nil || cs.sloFeedback != nil {
 		inst.sim.OnRequestDone = func(req *sim.Request, tick int64) []*sim.Request {
 			if cs.tenantTracker != nil {
 				cs.tenantTracker.OnComplete(req.TenantID)
@@ -1069,6 +1097,8 @@ func (cs *ClusterSimulator) addLiveInstance(
 			if cs.evictionTracker != nil {
 				cs.evictionTracker.Untrack(req.ID)
 			}
+			// EDPP virtual-queue feedback (no-op unless an SLO-feedback decider is set).
+			cs.feedSLOFeedback(req)
 			if onRequestDone == nil {
 				return nil
 			}
@@ -1148,6 +1178,31 @@ func (c *ClusterSimulator) buildPoolFilteredSnapshots(role PoolRole) []sim.Routi
 // and schedules KV transfer events for each.
 // R2/INV-6: Collects completed IDs into a sorted slice before processing to ensure
 // deterministic nextSeqID() assignment regardless of Go's random map iteration order.
+// feedSLOFeedback delivers a completed request's realized TTFT and mean ITL to an
+// SLO-feedback decider (EDPP). It is a no-op unless such a decider is configured.
+// Only requests that produced a first token and at least one ITL sample are fed;
+// timed-out or zero-output requests carry no usable latency signal and are skipped.
+//
+// For PD-disaggregated requests this fires for the decode sub-request, so TTFT is
+// measured from decode-side arrival (it omits the prefill+transfer prefix). The design
+// accepts crude realized signals — the virtual queues self-correct over time (§5.1) —
+// and the ITL signal that drives the disaggregation-payoff term is exact regardless of
+// where it is measured.
+func (c *ClusterSimulator) feedSLOFeedback(req *sim.Request) {
+	if c.sloFeedback == nil || !req.TTFTSet || len(req.ITL) == 0 {
+		return
+	}
+	ttftUs := req.FirstTokenTime - req.ArrivalTime
+	if ttftUs < 0 {
+		return
+	}
+	var sum int64
+	for _, v := range req.ITL {
+		sum += v
+	}
+	c.sloFeedback.OnComplete(ttftUs, sum/int64(len(req.ITL)))
+}
+
 func (c *ClusterSimulator) detectPrefillCompletions(inst *InstanceSimulator) {
 	instID := string(inst.ID())
 	// Phase 1: collect completed sub-request IDs (sorted for determinism)
