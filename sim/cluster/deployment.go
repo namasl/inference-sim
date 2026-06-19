@@ -72,12 +72,14 @@ type DeploymentConfig struct {
 
 	// EDPP (Lyapunov drift-plus-penalty) decider knobs — used only when PDDecider == "edpp".
 	// All durations are microseconds. See sim/edpp.go and the design doc for semantics.
-	EDPPTauTTFTUs        int64   // τ_ttft: time-average TTFT SLO target (µs)
-	EDPPTauITLUs         int64   // τ_itl: time-average ITL SLO target (µs)
-	EDPPV                float64 // V: penalty/stability tradeoff knob (larger ⇒ fewer offloads)
-	EDPPCXferUs          int64   // c_xfer: KV-transfer cost paid when routing P (µs)
-	EDPPNomPrefillTokens int     // S_nom: nominal prefill chunk for the fixed prefill normalizer
-	EDPPNomDecodeCtx     int     // L_nom: nominal decode context for the fixed decode normalizer
+	EDPPTauTTFTUs        int64            // default τ_ttft: time-average TTFT SLO target (µs)
+	EDPPTauITLUs         int64            // default τ_itl: time-average ITL SLO target (µs)
+	EDPPTauTTFTByClassUs map[string]int64 // per-SLO-class τ_ttft overrides (µs); nil = defaults for all
+	EDPPTauITLByClassUs  map[string]int64 // per-SLO-class τ_itl overrides (µs); nil = defaults for all
+	EDPPV                float64          // V: penalty/stability tradeoff knob (larger ⇒ fewer offloads)
+	EDPPCXferUs          int64            // c_xfer: KV-transfer cost paid when routing P (µs)
+	EDPPNomPrefillTokens int              // S_nom: nominal prefill chunk for the fixed prefill normalizer
+	EDPPNomDecodeCtx     int              // L_nom: nominal decode context for the fixed decode normalizer
 
 	// E/P/D disaggregation configuration (GAP-4, issue #1264).
 	// When EncodeInstances == 0 (default), the encode stage is disabled and the

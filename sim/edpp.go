@@ -38,22 +38,34 @@ import (
 //
 //   - Backlog Q is estimated as (QueueDepth + BatchSize) · δ̄ per pool — monotone in
 //     batch size B, so the §11 signal-direction anchor holds by construction.
-//   - δ_pf-chunk (ITL inflation from prefill-on-decode) is approximated by W_p; refine
-//     here first if measured ITL spikes during co-scheduled prefill disagree.
+//   - δ_pf-chunk (ITL inflation from prefill-on-decode) is the marginal work of ONE
+//     prefill chunk — min(a_p, ChunkTokens) tokens, since only one chunk co-schedules
+//     per decode iteration (§3.2: δ_pf(s)=c_pf·s, s = chunk tokens). It is distinct
+//     from the full prefill demand W_p, which lands on the backlog/TTFT terms instead.
 //   - For MoE models, finite-difference α slightly under-counts because weight-load
 //     grows weakly with B via nEff; exact for dense models.
 //   - Optimistic in-flight backlog increments (§8.1) are omitted in the base
 //     implementation; the z-feedback half of the rule is immune to scrape staleness.
 
 // EDPPConfig holds the controller's fixed knobs. All durations are microseconds.
+//
+// SLO targets are per-SLO-class. TauTTFTUs/TauITLUs are the defaults applied to any
+// class without an explicit entry in the per-class override maps (and to the empty
+// "" class). TauTTFTByClassUs/TauITLByClassUs override the defaults for named classes
+// (e.g. "critical", "batch"). The decision rule is evaluated from the perspective of
+// the request's own class: a stricter class reads the same server backlog as more
+// threatening, and its realized-SLO feedback accumulates in its own virtual queue.
 type EDPPConfig struct {
-	TauTTFTUs        int64   // τ_ttft: time-average TTFT SLO target (µs)
-	TauITLUs         int64   // τ_itl: time-average ITL SLO target (µs)
-	V                float64 // penalty/stability tradeoff knob (Neely's V); larger ⇒ fewer offloads
-	CXferUs          int64   // c_xfer: KV-transfer cost paid when routing P (µs)
-	NomPrefillTokens int     // S_nom: nominal prefill chunk for the fixed prefill normalizer
-	NomDecodeCtx     int     // L_nom: nominal decode context for the fixed decode normalizer
-	BlockSize        int     // token block size for the prefix-cache a_p computation
+	TauTTFTUs        int64            // default τ_ttft: time-average TTFT SLO target (µs)
+	TauITLUs         int64            // default τ_itl: time-average ITL SLO target (µs)
+	TauTTFTByClassUs map[string]int64 // per-class τ_ttft overrides (µs); nil = use default for all
+	TauITLByClassUs  map[string]int64 // per-class τ_itl overrides (µs); nil = use default for all
+	V                float64          // penalty/stability tradeoff knob (Neely's V); larger ⇒ fewer offloads
+	CXferUs          int64            // c_xfer: KV-transfer cost paid when routing P (µs)
+	NomPrefillTokens int              // S_nom: nominal prefill chunk for the fixed prefill normalizer
+	NomDecodeCtx     int              // L_nom: nominal decode context for the fixed decode normalizer
+	BlockSize        int              // token block size for the prefix-cache a_p computation
+	ChunkTokens      int              // per-step prefill token budget (max_num_batched_tokens); caps δ_pf-chunk. 0 = no cap (whole prefill counts as one chunk)
 }
 
 func (c EDPPConfig) validate() {
@@ -72,6 +84,16 @@ func (c EDPPConfig) validate() {
 		panic(fmt.Sprintf("EDPPConfig: NomDecodeCtx must be > 0, got %d", c.NomDecodeCtx))
 	case c.BlockSize <= 0:
 		panic(fmt.Sprintf("EDPPConfig: BlockSize must be > 0, got %d", c.BlockSize))
+	}
+	for cls, v := range c.TauTTFTByClassUs {
+		if v <= 0 {
+			panic(fmt.Sprintf("EDPPConfig: TauTTFTByClassUs[%q] must be > 0, got %d", cls, v))
+		}
+	}
+	for cls, v := range c.TauITLByClassUs {
+		if v <= 0 {
+			panic(fmt.Sprintf("EDPPConfig: TauITLByClassUs[%q] must be > 0, got %d", cls, v))
+		}
 	}
 }
 
@@ -117,9 +139,25 @@ func edppMarginalDelta(m LatencyModel, probe *Request) int64 {
 // update SLO-tracking state. Call sites discover it via a type assertion, so
 // adding it does not break the DisaggregationDecider interface.
 type SLOFeedbackDecider interface {
-	// OnComplete reports a completed request's realized end-to-end TTFT and mean
-	// inter-token latency, both in microseconds.
-	OnComplete(realizedTTFTUs, realizedMeanITLUs int64)
+	// OnComplete reports a completed request's SLO class and its realized end-to-end
+	// TTFT and mean inter-token latency (both microseconds). The class lets the decider
+	// attribute the violation to the correct per-class SLO accumulator.
+	OnComplete(sloClass string, realizedTTFTUs, realizedMeanITLUs int64)
+}
+
+// edppClassState is the per-SLO-class virtual-queue state (accumulated SLO
+// violation, µs). Bumped on each completion (E8).
+type edppClassState struct {
+	zTTFT, zITL float64
+}
+
+// edppNorm bundles the class-resolved normalizers used by a single Decide call.
+// μ_p^nom is class-independent (it depends on the prefill iteration time, not the
+// SLO); μ_d^nom and both W* depend on the class's τ targets.
+type edppNorm struct {
+	muDNom, muPNom  float64
+	wStarD, wStarP  float64
+	tauTTFT, tauITL float64
 }
 
 // EDPPDecider implements DisaggregationDecider and SLOFeedbackDecider.
@@ -129,33 +167,35 @@ type EDPPDecider struct {
 	cacheQuery       map[string]func([]int) int // shared with precise-prefix-cache scorer; may be nil
 	prefillSnapshots func() []RoutingSnapshot   // prefill-pool backlogs; may be nil (⇒ Q_p = 0)
 
-	// Constants precomputed once at construction (E10–E12). μ^nom is fixed: a moving
-	// normalizer would break the Lyapunov drift telescoping and invert the congestion
-	// signal (design §4.3).
+	// Physics constants precomputed once at construction (class-independent).
+	// μ_p^nom is fixed: a moving normalizer would break the Lyapunov drift telescoping
+	// and invert the congestion signal (design §4.3).
 	alphaD, alphaP       int64
-	muDNom, muPNom       float64
 	deltaBarD, deltaBarP int64
-	wStarD, wStarP       float64
+	muPNom               float64 // μ_p^nom = 1 − α_p/T_iter^nom (E11); does not depend on τ
 
-	// Controller state: virtual queues (accumulated SLO violation, µs). Owned by the
-	// decider, bumped on each completion (E8).
-	zTTFT, zITL float64
+	// Per-class controller state: virtual queues keyed by SLO class. Lazily created.
+	zByClass map[string]*edppClassState
 }
 
-// NewEDPPDecider constructs the decider and precomputes its fixed normalizers from
-// the injected latency model. cfg is validated (panics on invalid values, R3).
-// cacheQuery and prefillSnapshots may be nil (e.g. unit tests, or no prefill pool).
+// NewEDPPDecider constructs the decider and precomputes its class-independent physics
+// constants from the injected latency model. cfg is validated (panics on invalid
+// values, R3). cacheQuery and prefillSnapshots may be nil (e.g. unit tests, or no
+// prefill pool). The per-class target maps are copied defensively.
 func NewEDPPDecider(cfg EDPPConfig, model LatencyModel, cacheQuery map[string]func([]int) int, prefillSnapshots func() []RoutingSnapshot) *EDPPDecider {
 	cfg.validate()
 	if model == nil {
 		panic("NewEDPPDecider: model must not be nil")
 	}
+	cfg.TauTTFTByClassUs = copyClassTargets(cfg.TauTTFTByClassUs)
+	cfg.TauITLByClassUs = copyClassTargets(cfg.TauITLByClassUs)
 
 	d := &EDPPDecider{
 		cfg:              cfg,
 		model:            model,
 		cacheQuery:       cacheQuery,
 		prefillSnapshots: prefillSnapshots,
+		zByClass:         make(map[string]*edppClassState),
 	}
 
 	// Decode coefficients (nominal context) and prefill coefficients (nominal chunk).
@@ -166,17 +206,21 @@ func NewEDPPDecider(cfg EDPPConfig, model LatencyModel, cacheQuery map[string]fu
 	d.deltaBarD = edppMarginalDelta(model, decodeProbe)
 	d.deltaBarP = edppMarginalDelta(model, prefillProbe)
 
-	// μ_d^nom = 1 − α/τ_itl (E11): decode at the ITL-SLO-critical operating point.
-	d.muDNom = clampMu(1.0 - float64(d.alphaD)/float64(cfg.TauITLUs))
 	// μ_p^nom = 1 − α/T_iter^nom (E11): prefill at the nominal prefill iteration time.
 	tIterPNom := float64(model.StepTime([]*Request{prefillProbe}))
 	d.muPNom = clampMu(1.0 - float64(d.alphaP)/tIterPNom)
-
-	// W* = μ^nom · τ_ttft (E10): the backlog whose induced queueing delay equals one
-	// TTFT window. Constant, by design — see §4.3 / §11 signal-direction anchor.
-	d.wStarD = d.muDNom * float64(cfg.TauTTFTUs)
-	d.wStarP = d.muPNom * float64(cfg.TauTTFTUs)
 	return d
+}
+
+func copyClassTargets(m map[string]int64) map[string]int64 {
+	if len(m) == 0 {
+		return nil
+	}
+	out := make(map[string]int64, len(m))
+	for k, v := range m {
+		out[k] = v
+	}
+	return out
 }
 
 func clampMu(mu float64) float64 {
@@ -189,10 +233,40 @@ func clampMu(mu float64) float64 {
 	return mu
 }
 
-// normalizedBacklogs returns the dimensionless decode/prefill backlogs q_d, q_p (E9).
-// Q = (QueueDepth + BatchSize) · δ̄ per pool [µs]; q = Q / W*. Q grows with batch size,
-// and W* uses fixed μ^nom, so q_d cannot decrease as B rises (§11 signal-direction).
-func (d *EDPPDecider) normalizedBacklogs(decodeSnaps, prefillSnaps []RoutingSnapshot) (qd, qp float64) {
+// targetsFor resolves the (τ_ttft, τ_itl) SLO targets for an SLO class: a per-class
+// override if present, else the configured defaults (also used for the empty class).
+func (d *EDPPDecider) targetsFor(class string) (tauTTFTUs, tauITLUs int64) {
+	tauTTFTUs, tauITLUs = d.cfg.TauTTFTUs, d.cfg.TauITLUs
+	if v, ok := d.cfg.TauTTFTByClassUs[class]; ok {
+		tauTTFTUs = v
+	}
+	if v, ok := d.cfg.TauITLByClassUs[class]; ok {
+		tauITLUs = v
+	}
+	return
+}
+
+// normFor computes the class-resolved normalizers (E10–E12). μ_d^nom = 1 − α/τ_itl
+// and W* = μ^nom · τ_ttft are constant for a given class (α and μ_p^nom are fixed),
+// so the §11 signal-direction property holds within each class.
+func (d *EDPPDecider) normFor(class string) edppNorm {
+	tauTTFTUs, tauITLUs := d.targetsFor(class)
+	muD := clampMu(1.0 - float64(d.alphaD)/float64(tauITLUs))
+	return edppNorm{
+		muDNom:  muD,
+		muPNom:  d.muPNom,
+		wStarD:  muD * float64(tauTTFTUs),
+		wStarP:  d.muPNom * float64(tauTTFTUs),
+		tauTTFT: float64(tauTTFTUs),
+		tauITL:  float64(tauITLUs),
+	}
+}
+
+// normalizedBacklogs returns the dimensionless decode/prefill backlogs q_d, q_p (E9)
+// under the given class normalizers. Q = (QueueDepth + BatchSize) · δ̄ per pool [µs];
+// q = Q / W*. Q grows with batch size, and W* uses fixed μ^nom, so q_d cannot decrease
+// as B rises (§11 signal-direction).
+func (d *EDPPDecider) normalizedBacklogs(decodeSnaps, prefillSnaps []RoutingSnapshot, n edppNorm) (qd, qp float64) {
 	var qD float64
 	for _, s := range decodeSnaps {
 		qD += float64(s.QueueDepth+s.BatchSize) * float64(d.deltaBarD)
@@ -201,7 +275,7 @@ func (d *EDPPDecider) normalizedBacklogs(decodeSnaps, prefillSnaps []RoutingSnap
 	for _, s := range prefillSnaps {
 		qP += float64(s.QueueDepth+s.BatchSize) * float64(d.deltaBarP)
 	}
-	return qD / d.wStarD, qP / d.wStarP
+	return qD / n.wStarD, qP / n.wStarP
 }
 
 // Decide evaluates the E14 rule and returns Disaggregate=true (route P) when the
@@ -225,8 +299,14 @@ func (d *EDPPDecider) Decide(req *Request, state *RouterState) DisaggregationDec
 		return keepD // fully cached: no prefill work to disaggregate
 	}
 
-	// W_p = prefill demand of this request (E6), via the latency model's marginal cost.
+	// W_p = full prefill demand of this request (E6): all a_p uncached tokens. Drives
+	// the backlog (Q) and TTFT terms — the whole prefill must finish before first token.
 	wp := float64(edppMarginalDelta(d.model, edppPrefillProbe(ap)))
+
+	// δ_pf-chunk = marginal work of ONE prefill chunk (§3.2/§6, E15). Only one chunk of
+	// min(a_p, ChunkTokens) tokens co-schedules per decode iteration, so this — not the
+	// whole W_p — is what inflates the decode batch's ITL on that iteration.
+	deltaPfChunk := d.chunkInflation(ap)
 
 	var decodeSnaps []RoutingSnapshot
 	if state != nil {
@@ -237,6 +317,10 @@ func (d *EDPPDecider) Decide(req *Request, state *RouterState) DisaggregationDec
 		prefillSnaps = d.prefillSnapshots()
 	}
 
+	// Resolve this request's class normalizers/targets — the rule is evaluated from
+	// the perspective of the request's own SLO.
+	n := d.normFor(req.SLOClass)
+
 	// Backlogs in work-seconds (for the §6 predictors) and normalized (for the LHS).
 	var qD float64
 	for _, s := range decodeSnaps {
@@ -246,29 +330,42 @@ func (d *EDPPDecider) Decide(req *Request, state *RouterState) DisaggregationDec
 	for _, s := range prefillSnaps {
 		qP += float64(s.QueueDepth+s.BatchSize) * float64(d.deltaBarP)
 	}
-	qd := qD / d.wStarD
-	qp := qP / d.wStarP
+	qd := qD / n.wStarD
+	qp := qP / n.wStarP
 
 	// Current decode ITL (protected under P): measured if available, else nominal.
 	itlP := d.selectedDecodeITL(decodeSnaps, state)
 
 	// Counterfactual predictors (§6, E15), all µs.
-	ttftP := (qP+wp)/d.muPNom + float64(d.cfg.CXferUs)
-	ttftD := (qD + wp) / d.muDNom
-	itlD := itlP + wp // δ_pf-chunk ≈ W_p (design §6 residual)
+	ttftP := (qP+wp)/n.muPNom + float64(d.cfg.CXferUs)
+	ttftD := (qD + wp) / n.muDNom
+	itlD := itlP + deltaPfChunk // E15: prefill chunk inflates this decode iteration's ITL
 
-	tauTTFT := float64(d.cfg.TauTTFTUs)
-	tauITL := float64(d.cfg.TauITLUs)
-	zTTFT := d.zTTFT / tauTTFT
-	zITL := d.zITL / tauITL
+	// Per-class virtual queues (zero when this class has not yet completed a request).
+	var zTTFT, zITL float64
+	if z := d.zByClass[req.SLOClass]; z != nil {
+		zTTFT = z.zTTFT / n.tauTTFT
+		zITL = z.zITL / n.tauITL
+	}
 
 	// E14: choose P ⟺ LHS > RHS. Every term is dimensionless.
-	lhs := qd*(wp/d.wStarD) - qp*(wp/d.wStarP)
-	rhs := d.cfg.V*(float64(d.cfg.CXferUs)/tauTTFT) +
-		zTTFT*(ttftP-ttftD)/tauTTFT +
-		zITL*(itlP-itlD)/tauITL
+	lhs := qd*(wp/n.wStarD) - qp*(wp/n.wStarP)
+	rhs := d.cfg.V*(float64(d.cfg.CXferUs)/n.tauTTFT) +
+		zTTFT*(ttftP-ttftD)/n.tauTTFT +
+		zITL*(itlP-itlD)/n.tauITL
 
 	return DisaggregationDecision{Disaggregate: lhs > rhs}
+}
+
+// chunkInflation returns δ_pf-chunk: the marginal work [µs] of co-scheduling one
+// prefill chunk of min(a_p, ChunkTokens) tokens onto a decode iteration (§3.2 §6).
+// ChunkTokens == 0 means "no cap" — the whole a_p-token prefill counts as one chunk.
+func (d *EDPPDecider) chunkInflation(ap int) float64 {
+	chunk := ap
+	if d.cfg.ChunkTokens > 0 && d.cfg.ChunkTokens < chunk {
+		chunk = d.cfg.ChunkTokens
+	}
+	return float64(edppMarginalDelta(d.model, edppPrefillProbe(chunk)))
 }
 
 // selectedDecodeITL returns the measured ITL of the pre-selected decode pod, falling
@@ -287,11 +384,18 @@ func (d *EDPPDecider) selectedDecodeITL(decodeSnaps []RoutingSnapshot, state *Ro
 	return float64(d.alphaD + d.deltaBarD)
 }
 
-// OnComplete bumps the virtual queues from a realized completion (E8). Stabilizing
-// Z enforces the time-average SLO; the max(·, 0) floor is the standard Neely update.
-func (d *EDPPDecider) OnComplete(realizedTTFTUs, realizedMeanITLUs int64) {
-	d.zTTFT = math.Max(d.zTTFT+float64(realizedTTFTUs-d.cfg.TauTTFTUs), 0)
-	d.zITL = math.Max(d.zITL+float64(realizedMeanITLUs-d.cfg.TauITLUs), 0)
+// OnComplete bumps the completing request's per-class virtual queues from its realized
+// latencies (E8). Stabilizing Z enforces the time-average SLO for that class; the
+// max(·, 0) floor is the standard Neely update. The class's queues are created lazily.
+func (d *EDPPDecider) OnComplete(sloClass string, realizedTTFTUs, realizedMeanITLUs int64) {
+	tauTTFTUs, tauITLUs := d.targetsFor(sloClass)
+	z := d.zByClass[sloClass]
+	if z == nil {
+		z = &edppClassState{}
+		d.zByClass[sloClass] = z
+	}
+	z.zTTFT = math.Max(z.zTTFT+float64(realizedTTFTUs-tauTTFTUs), 0)
+	z.zITL = math.Max(z.zITL+float64(realizedMeanITLUs-tauITLUs), 0)
 }
 
 // Compile-time interface compliance checks.

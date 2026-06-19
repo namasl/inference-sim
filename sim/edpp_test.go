@@ -86,11 +86,12 @@ func TestEDPP_AlphaZero_YieldsConservingRate(t *testing.T) {
 	// §11 conservation anchor: with α → 0, μ^nom → 1 (work-conserving server).
 	m := &edppAffineModel{alpha: 0, kp: 10, c0: 100, c1: 1}
 	d := NewEDPPDecider(defaultTestEDPPConfig(), m, nil, nil)
-	if math.Abs(d.muDNom-1.0) > 1e-9 {
-		t.Errorf("α=0 ⇒ μ_d^nom = %v, want 1.0", d.muDNom)
+	n := d.normFor("") // default class
+	if math.Abs(n.muDNom-1.0) > 1e-9 {
+		t.Errorf("α=0 ⇒ μ_d^nom = %v, want 1.0", n.muDNom)
 	}
-	if math.Abs(d.muPNom-1.0) > 1e-9 {
-		t.Errorf("α=0 ⇒ μ_p^nom = %v, want 1.0", d.muPNom)
+	if math.Abs(n.muPNom-1.0) > 1e-9 {
+		t.Errorf("α=0 ⇒ μ_p^nom = %v, want 1.0", n.muPNom)
 	}
 }
 
@@ -100,20 +101,21 @@ func TestEDPP_Constructor_PrecomputesNormalizers(t *testing.T) {
 	m := newTestAffineModel()
 	cfg := defaultTestEDPPConfig()
 	d := NewEDPPDecider(cfg, m, nil, nil)
+	n := d.normFor("") // default class
 
 	// μ_d^nom = 1 − α_d/τ_itl = 1 − 1000/50000 = 0.98
-	if math.Abs(d.muDNom-0.98) > 1e-9 {
-		t.Errorf("μ_d^nom = %v, want 0.98", d.muDNom)
+	if math.Abs(n.muDNom-0.98) > 1e-9 {
+		t.Errorf("μ_d^nom = %v, want 0.98", n.muDNom)
 	}
 	// T_iter_p^nom = StepTime([prefillProbe(512)]) = 1000 + 10·512 = 6120
 	// μ_p^nom = 1 − 1000/6120
 	wantMuP := 1 - 1000.0/6120.0
-	if math.Abs(d.muPNom-wantMuP) > 1e-9 {
-		t.Errorf("μ_p^nom = %v, want %v", d.muPNom, wantMuP)
+	if math.Abs(n.muPNom-wantMuP) > 1e-9 {
+		t.Errorf("μ_p^nom = %v, want %v", n.muPNom, wantMuP)
 	}
 	// W*_d = μ_d^nom · τ_ttft = 0.98 · 100000 = 98000
-	if math.Abs(d.wStarD-98000) > 1e-6 {
-		t.Errorf("W*_d = %v, want 98000", d.wStarD)
+	if math.Abs(n.wStarD-98000) > 1e-6 {
+		t.Errorf("W*_d = %v, want 98000", n.wStarD)
 	}
 	// δ̄_d = decode δ at ctx 2048 = 2148 ; δ̄_p = prefill δ at 512 = 5120
 	if d.deltaBarD != 2148 {
@@ -166,8 +168,9 @@ func TestEDPP_SignalDirection_QdNonDecreasingInBatch(t *testing.T) {
 	lowB := []RoutingSnapshot{{ID: "d0", QueueDepth: 5, BatchSize: 2}}
 	highB := []RoutingSnapshot{{ID: "d0", QueueDepth: 5, BatchSize: 40}}
 
-	qdLow, _ := d.normalizedBacklogs(lowB, nil)
-	qdHigh, _ := d.normalizedBacklogs(highB, nil)
+	n := d.normFor("")
+	qdLow, _ := d.normalizedBacklogs(lowB, nil, n)
+	qdHigh, _ := d.normalizedBacklogs(highB, nil, n)
 	if qdHigh < qdLow {
 		t.Errorf("q_d decreased as batch grew: low=%v high=%v", qdLow, qdHigh)
 	}
@@ -197,7 +200,7 @@ func TestEDPP_DisaggregationPayoffSign(t *testing.T) {
 
 	// Drive z_itl large via realized ITL misses (E8), prefill stays idle.
 	for i := 0; i < 50; i++ {
-		d.OnComplete(0, 200_000) // realized ITL = 200ms >> τ_itl
+		d.OnComplete("", 0, 200_000) // realized ITL = 200ms >> τ_itl, default class
 	}
 	if !d.Decide(req, state).Disaggregate {
 		t.Errorf("expected P (disaggregate) under z_itl breach with idle prefill")
@@ -207,17 +210,89 @@ func TestEDPP_DisaggregationPayoffSign(t *testing.T) {
 func TestEDPP_OnComplete_UpdatesVirtualQueues(t *testing.T) {
 	// E8: Z_ttft and Z_itl accumulate positive violations and floor at 0.
 	d := NewEDPPDecider(defaultTestEDPPConfig(), newTestAffineModel(), nil, nil)
-	d.OnComplete(150_000, 80_000) // TTFT 150ms (τ=100ms), ITL 80ms (τ=50ms)
-	if d.zTTFT != 50_000 {
-		t.Errorf("Z_ttft = %v, want 50000", d.zTTFT)
+	d.OnComplete("", 150_000, 80_000) // TTFT 150ms (τ=100ms), ITL 80ms (τ=50ms)
+	z := d.zByClass[""]
+	if z == nil || z.zTTFT != 50_000 {
+		t.Errorf("Z_ttft = %v, want 50000", z)
 	}
-	if d.zITL != 30_000 {
-		t.Errorf("Z_itl = %v, want 30000", d.zITL)
+	if z.zITL != 30_000 {
+		t.Errorf("Z_itl = %v, want 30000", z.zITL)
 	}
 	// A large under-target completion must floor each queue at 0, not go negative.
-	d.OnComplete(0, 0)
-	if d.zTTFT != 0 || d.zITL != 0 {
-		t.Errorf("virtual queues not floored at 0: zTTFT=%v zITL=%v", d.zTTFT, d.zITL)
+	d.OnComplete("", 0, 0)
+	if z.zTTFT != 0 || z.zITL != 0 {
+		t.Errorf("virtual queues not floored at 0: zTTFT=%v zITL=%v", z.zTTFT, z.zITL)
+	}
+}
+
+func TestEDPP_PerClass_TargetsResolve(t *testing.T) {
+	// A class with an explicit override uses it; an unlisted class falls back to defaults.
+	cfg := defaultTestEDPPConfig()
+	cfg.TauTTFTByClassUs = map[string]int64{"critical": 30_000}
+	cfg.TauITLByClassUs = map[string]int64{"critical": 10_000}
+	d := NewEDPPDecider(cfg, newTestAffineModel(), nil, nil)
+
+	tT, tI := d.targetsFor("critical")
+	if tT != 30_000 || tI != 10_000 {
+		t.Errorf("critical targets = (%d,%d), want (30000,10000)", tT, tI)
+	}
+	tT, tI = d.targetsFor("batch") // unlisted → defaults
+	if tT != cfg.TauTTFTUs || tI != cfg.TauITLUs {
+		t.Errorf("batch targets = (%d,%d), want defaults (%d,%d)", tT, tI, cfg.TauTTFTUs, cfg.TauITLUs)
+	}
+}
+
+func TestEDPP_PerClass_IndependentVirtualQueues(t *testing.T) {
+	// An ITL breach reported for one class must not bleed into another class's
+	// virtual queue: the SLO-pressure feedback is per-class.
+	cfg := defaultTestEDPPConfig()
+	cfg.TauTTFTByClassUs = map[string]int64{"critical": 30_000}
+	cfg.TauITLByClassUs = map[string]int64{"critical": 10_000}
+	d := NewEDPPDecider(cfg, newTestAffineModel(), nil, func() []RoutingSnapshot { return nil })
+
+	for i := 0; i < 50; i++ {
+		d.OnComplete("critical", 0, 200_000) // breach only the critical class
+	}
+	if d.zByClass["critical"] == nil || d.zByClass["critical"].zITL == 0 {
+		t.Fatalf("critical z_itl did not accumulate")
+	}
+	if z := d.zByClass["batch"]; z != nil && z.zITL != 0 {
+		t.Errorf("batch z_itl leaked from critical breach: %v", z.zITL)
+	}
+
+	state := decodeState("d0", 10, 8, 60_000)
+	// Critical (breached) shifts toward P; batch (no breach, loose target) stays D.
+	if !d.Decide(&Request{ID: "c", InputTokens: make([]int, 800), SLOClass: "critical"}, state).Disaggregate {
+		t.Errorf("critical request should disaggregate under its own ITL breach")
+	}
+	if d.Decide(&Request{ID: "b", InputTokens: make([]int, 800), SLOClass: "batch"}, state).Disaggregate {
+		t.Errorf("batch request should not disaggregate (no breach on its class)")
+	}
+}
+
+func TestEDPP_DeltaPfChunk_UsesChunkBudgetNotFullPrompt(t *testing.T) {
+	// δ_pf-chunk is the marginal work of ONE prefill chunk = min(a_p, ChunkTokens)
+	// tokens, NOT the whole prefill demand W_p. With the affine model δ_pf(s) = kp·s
+	// (kp = 10), the inflation must track the chunk budget, not the prompt length.
+	const ap = 8000
+
+	// Capped well below a_p ⇒ inflation reflects the chunk (256·10), not 8000·10.
+	capped := NewEDPPDecider(func() EDPPConfig { c := defaultTestEDPPConfig(); c.ChunkTokens = 256; return c }(),
+		newTestAffineModel(), nil, nil)
+	if got := capped.chunkInflation(ap); got != 2560 {
+		t.Errorf("capped δ_pf-chunk = %v, want 2560 (kp·256)", got)
+	}
+
+	// No cap (0) ⇒ the whole prefill counts as one chunk: 8000·10.
+	uncapped := NewEDPPDecider(func() EDPPConfig { c := defaultTestEDPPConfig(); c.ChunkTokens = 0; return c }(),
+		newTestAffineModel(), nil, nil)
+	if got := uncapped.chunkInflation(ap); got != 80000 {
+		t.Errorf("uncapped δ_pf-chunk = %v, want 80000 (kp·8000)", got)
+	}
+
+	// When a_p <= ChunkTokens the whole (small) prefill is one chunk: 100·10.
+	if got := capped.chunkInflation(100); got != 1000 {
+		t.Errorf("small-prompt δ_pf-chunk = %v, want 1000 (kp·100)", got)
 	}
 }
 

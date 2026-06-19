@@ -151,6 +151,8 @@ var (
 	edppCXfer              time.Duration // EDPP c_xfer: assumed KV-transfer cost when routing P
 	edppNomPrefillTokens   int           // EDPP nominal prefill chunk for the fixed prefill normalizer
 	edppNomDecodeCtx       int           // EDPP nominal decode context for the fixed decode normalizer
+	edppTauTTFTClasses     string        // EDPP per-class τ_ttft overrides ("critical=100ms,batch=10s")
+	edppTauITLClasses      string        // EDPP per-class τ_itl overrides ("critical=20ms,batch=500ms")
 	prefillRoutingScorers  string        // Scorer weights for prefill pool routing
 	decodeRoutingScorers   string        // Scorer weights for decode pool routing
 
@@ -1092,6 +1094,8 @@ func registerSimConfigFlags(cmd *cobra.Command) {
 	cmd.Flags().DurationVar(&edppCXfer, "edpp-c-xfer", 5*time.Millisecond, "EDPP c_xfer: assumed KV-transfer cost when routing P (only used with --pd-decider edpp)")
 	cmd.Flags().IntVar(&edppNomPrefillTokens, "edpp-nom-prefill-tokens", 512, "EDPP nominal prefill chunk size for the fixed prefill normalizer (only used with --pd-decider edpp)")
 	cmd.Flags().IntVar(&edppNomDecodeCtx, "edpp-nom-decode-ctx", 2048, "EDPP nominal decode context length for the fixed decode normalizer (only used with --pd-decider edpp)")
+	cmd.Flags().StringVar(&edppTauTTFTClasses, "edpp-tau-ttft-classes", "", "EDPP per-SLO-class τ_ttft overrides (e.g. \"critical=100ms,batch=10s\"); unlisted classes use --edpp-tau-ttft")
+	cmd.Flags().StringVar(&edppTauITLClasses, "edpp-tau-itl-classes", "", "EDPP per-SLO-class τ_itl overrides (e.g. \"critical=20ms,batch=500ms\"); unlisted classes use --edpp-tau-itl")
 	cmd.Flags().StringVar(&prefillRoutingScorers, "prefill-routing-scorers", "", "Scorer weights for prefill pool routing (e.g., queue-depth:2,kv-utilization:2)")
 	cmd.Flags().StringVar(&decodeRoutingScorers, "decode-routing-scorers", "", "Scorer weights for decode pool routing (e.g., queue-depth:2,kv-utilization:2)")
 
@@ -1705,6 +1709,8 @@ var runCmd = &cobra.Command{
 			PDPrefixThreshold:               pdPrefixThreshold,
 			EDPPTauTTFTUs:                   edppTauTTFT.Microseconds(),
 			EDPPTauITLUs:                    edppTauITL.Microseconds(),
+			EDPPTauTTFTByClassUs:            parseEDPPClassTargets(edppTauTTFTClasses, "edpp-tau-ttft-classes"),
+			EDPPTauITLByClassUs:             parseEDPPClassTargets(edppTauITLClasses, "edpp-tau-itl-classes"),
 			EDPPV:                           edppV,
 			EDPPCXferUs:                     edppCXfer.Microseconds(),
 			EDPPNomPrefillTokens:            edppNomPrefillTokens,

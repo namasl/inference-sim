@@ -413,11 +413,14 @@ func NewClusterSimulator(config DeploymentConfig, requests []*sim.Request, onReq
 			cs.disaggregationDecider = sim.NewEDPPDecider(sim.EDPPConfig{
 				TauTTFTUs:        config.EDPPTauTTFTUs,
 				TauITLUs:         config.EDPPTauITLUs,
+				TauTTFTByClassUs: config.EDPPTauTTFTByClassUs,
+				TauITLByClassUs:  config.EDPPTauITLByClassUs,
 				V:                config.EDPPV,
 				CXferUs:          config.EDPPCXferUs,
 				NomPrefillTokens: config.EDPPNomPrefillTokens,
 				NomDecodeCtx:     config.EDPPNomDecodeCtx,
 				BlockSize:        int(config.BlockSizeTokens),
+				ChunkTokens:      int(config.BatchConfig.MaxScheduledTokens),
 			}, lm, cs.cacheQueryFn, prefillSnapshots)
 		default:
 			cs.disaggregationDecider = sim.NewDisaggregationDecider(config.PDDecider)
@@ -1200,7 +1203,7 @@ func (c *ClusterSimulator) feedSLOFeedback(req *sim.Request) {
 	for _, v := range req.ITL {
 		sum += v
 	}
-	c.sloFeedback.OnComplete(ttftUs, sum/int64(len(req.ITL)))
+	c.sloFeedback.OnComplete(req.SLOClass, ttftUs, sum/int64(len(req.ITL)))
 }
 
 func (c *ClusterSimulator) detectPrefillCompletions(inst *InstanceSimulator) {

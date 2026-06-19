@@ -9,6 +9,7 @@ import (
 	sim "github.com/inference-sim/inference-sim/sim"
 	"github.com/inference-sim/inference-sim/sim/cluster"
 	"github.com/inference-sim/inference-sim/sim/workload"
+	"github.com/sirupsen/logrus"
 )
 
 // parseSLODurationFlag parses comma-separated key=duration pairs (e.g.
@@ -45,6 +46,24 @@ func parseSLODurationFlag(s string) (map[string]time.Duration, error) {
 		out[key] = d
 	}
 	return out, nil
+}
+
+// parseEDPPClassTargets parses a per-class duration flag ("critical=100ms,...") into
+// a map of microseconds for EDPPConfig's per-class overrides. Empty input returns nil.
+// On a parse error it logrus.Fatalf with the flag name for consistent CLI context.
+func parseEDPPClassTargets(s, flagName string) map[string]int64 {
+	durs, err := parseSLODurationFlag(s)
+	if err != nil {
+		logrus.Fatalf("--%s: %v", flagName, err)
+	}
+	if len(durs) == 0 {
+		return nil
+	}
+	out := make(map[string]int64, len(durs))
+	for cls, d := range durs {
+		out[cls] = d.Microseconds()
+	}
+	return out
 }
 
 // mergeGoodputTargets composes the resolved per-class SLODimTargets map from

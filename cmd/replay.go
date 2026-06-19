@@ -487,6 +487,8 @@ Example:
 			PDPrefixThreshold:               pdPrefixThreshold,
 			EDPPTauTTFTUs:                   edppTauTTFT.Microseconds(),
 			EDPPTauITLUs:                    edppTauITL.Microseconds(),
+			EDPPTauTTFTByClassUs:            parseEDPPClassTargets(edppTauTTFTClasses, "edpp-tau-ttft-classes"),
+			EDPPTauITLByClassUs:             parseEDPPClassTargets(edppTauITLClasses, "edpp-tau-itl-classes"),
 			EDPPV:                           edppV,
 			EDPPCXferUs:                     edppCXfer.Microseconds(),
 			EDPPNomPrefillTokens:            edppNomPrefillTokens,
