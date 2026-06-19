@@ -46,6 +46,7 @@ func defaultTestEDPPConfig() EDPPConfig {
 	return EDPPConfig{
 		TauTTFTUs:        100_000, // 100 ms
 		TauITLUs:         50_000,  // 50 ms
+		TauRefUs:         100_000, // fixed reference = default τ_ttft ⇒ factor 1 at default
 		V:                1.0,
 		CXferUs:          5_000, // 5 ms
 		NomPrefillTokens: 512,
@@ -136,6 +137,7 @@ func TestEDPP_Constructor_RejectsInvalidConfig(t *testing.T) {
 		func() EDPPConfig { c := defaultTestEDPPConfig(); c.NomPrefillTokens = 0; return c }(),
 		func() EDPPConfig { c := defaultTestEDPPConfig(); c.NomDecodeCtx = 0; return c }(),
 		func() EDPPConfig { c := defaultTestEDPPConfig(); c.BlockSize = 0; return c }(),
+		func() EDPPConfig { c := defaultTestEDPPConfig(); c.TauRefUs = 0; return c }(),
 	}
 	for i, c := range bad {
 		func() {
@@ -379,6 +381,50 @@ func TestEDPP_DecisionTrace_EarlyReturnRecordsSkipReason(t *testing.T) {
 	}
 	if dec.EDPPTrace == nil || dec.EDPPTrace.SkipReason == "" {
 		t.Errorf("empty-prompt trace must carry a SkipReason, got %+v", dec.EDPPTrace)
+	}
+}
+
+// --- τ-consistent transfer penalty (fix for the τ/W* coupling) ---
+
+func TestEDPP_TransferTerm_ScalesInverseTauSquared(t *testing.T) {
+	// The transfer penalty must scale as 1/τ_ttft² (like the balance and SLO terms),
+	// not 1/τ_ttft. With τ_ref = the default τ_ttft, a class at 2×τ_ref must show a
+	// transfer term that is ONE QUARTER of the default-class term (was: one half).
+	cfg := defaultTestEDPPConfig() // τ_ref = TauTTFTUs = 100_000
+	cfg.TauTTFTByClassUs = map[string]int64{"x2": 200_000}
+	cfg.TraceEnabled = true
+	d := NewEDPPDecider(cfg, newTestAffineModel(), nil, func() []RoutingSnapshot { return nil })
+	state := decodeState("d0", 10, 8, 60_000)
+
+	base := d.Decide(&Request{ID: "a", InputTokens: make([]int, 800), SLOClass: "batch"}, state).EDPPTrace // τ = τ_ref
+	dbl := d.Decide(&Request{ID: "b", InputTokens: make([]int, 800), SLOClass: "x2"}, state).EDPPTrace     // τ = 2·τ_ref
+
+	if base == nil || dbl == nil {
+		t.Fatal("expected traces")
+	}
+	if math.Abs(base.TransferTerm-0.05) > 1e-12 { // V·c_xfer/τ_ref = 1·5000/100000, ratio 1 at default
+		t.Errorf("base TransferTerm = %v, want 0.05 (backward-compatible at default τ)", base.TransferTerm)
+	}
+	if math.Abs(dbl.TransferTerm-base.TransferTerm/4) > 1e-12 {
+		t.Errorf("TransferTerm at 2×τ = %v, want base/4 = %v (1/τ² scaling)", dbl.TransferTerm, base.TransferTerm/4)
+	}
+}
+
+func TestEDPP_TransferPenalty_FixedTauRef_EngagesAtLooseDefault(t *testing.T) {
+	// The bug regression for the REAL scenario: a globally-loose default τ_ttft (no
+	// per-class override) with a FIXED τ_ref. Under heavy decode imbalance, idle prefill,
+	// and no SLO pressure (z=0), the request must disaggregate on the load-balancing
+	// signal. τ_ref must NOT track the loose default τ_ttft (that would make the penalty
+	// ∝1/τ again and wrongly keep work local).
+	cfg := defaultTestEDPPConfig()
+	cfg.TauTTFTUs = 1_000_000 // loose default τ_ttft (1s), applied to all classes
+	cfg.TauRefUs = 100_000    // fixed reference (100ms), independent of the loose default
+	d := NewEDPPDecider(cfg, newTestAffineModel(), nil, func() []RoutingSnapshot { return nil })
+
+	state := decodeState("d0", 50, 0, 60_000) // heavy decode backlog, idle prefill
+	req := &Request{ID: "r", InputTokens: make([]int, 800), SLOClass: "batch"}
+	if !d.Decide(req, state).Disaggregate {
+		t.Errorf("loose-default-τ request must disaggregate under heavy imbalance (fixed τ_ref), got kept-local")
 	}
 }
 

@@ -13,6 +13,7 @@ func edppTraceConfig(traceLevel string) DeploymentConfig {
 	config.TraceLevel = traceLevel
 	config.BlockSizeTokens = 16
 	config.EDPPTauTTFTUs = 500_000
+	config.EDPPTauRefUs = 500_000
 	config.EDPPTauITLUs = 100_000
 	config.EDPPV = 1.0
 	config.EDPPCXferUs = 5_000

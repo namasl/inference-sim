@@ -58,6 +58,7 @@ import (
 type EDPPConfig struct {
 	TauTTFTUs        int64            // default τ_ttft: time-average TTFT SLO target (µs)
 	TauITLUs         int64            // default τ_itl: time-average ITL SLO target (µs)
+	TauRefUs         int64            // fixed reference τ for the transfer-penalty normalization (µs); makes the penalty scale 1/τ_ttft² like the other terms. Independent of the operating τ_ttft.
 	TauTTFTByClassUs map[string]int64 // per-class τ_ttft overrides (µs); nil = use default for all
 	TauITLByClassUs  map[string]int64 // per-class τ_itl overrides (µs); nil = use default for all
 	V                float64          // penalty/stability tradeoff knob (Neely's V); larger ⇒ fewer offloads
@@ -118,6 +119,8 @@ func (c EDPPConfig) validate() {
 		panic(fmt.Sprintf("EDPPConfig: TauTTFTUs must be > 0, got %d", c.TauTTFTUs))
 	case c.TauITLUs <= 0:
 		panic(fmt.Sprintf("EDPPConfig: TauITLUs must be > 0, got %d", c.TauITLUs))
+	case c.TauRefUs <= 0:
+		panic(fmt.Sprintf("EDPPConfig: TauRefUs must be > 0, got %d", c.TauRefUs))
 	case c.V < 0:
 		panic(fmt.Sprintf("EDPPConfig: V must be >= 0, got %v", c.V))
 	case c.CXferUs < 0:
@@ -404,7 +407,14 @@ func (d *EDPPDecider) Decide(req *Request, state *RouterState) DisaggregationDec
 	balanceTermP := qp * (wp / n.wStarP)
 	lhs := balanceTermD - balanceTermP
 
-	transferTerm := d.cfg.V * (float64(d.cfg.CXferUs) / n.tauTTFT)
+	// Transfer penalty, normalized consistently with the balance and SLO terms (all ∝
+	// 1/τ_ttft²). The extra τ_ref/τ_ttft factor corrects the lone 1/τ_ttft outlier that
+	// let a loose τ_ttft (which heavy workloads need) shrink the load-balancing benefit
+	// faster than the penalty, locking out disaggregation. τ_ref (TauRefUs) is a FIXED
+	// reference independent of the operating τ_ttft, so loosening τ_ttft genuinely
+	// attenuates the penalty; at τ_ttft == τ_ref the factor is 1 (byte-for-byte unchanged).
+	tauRef := float64(d.cfg.TauRefUs)
+	transferTerm := d.cfg.V * (float64(d.cfg.CXferUs) / n.tauTTFT) * (tauRef / n.tauTTFT)
 	ttftTerm := zTTFT * (ttftP - ttftD) / n.tauTTFT
 	itlTerm := zITL * (itlP - itlD) / n.tauITL
 	rhs := transferTerm + ttftTerm + itlTerm

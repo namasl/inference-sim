@@ -413,6 +413,7 @@ func NewClusterSimulator(config DeploymentConfig, requests []*sim.Request, onReq
 			cs.disaggregationDecider = sim.NewEDPPDecider(sim.EDPPConfig{
 				TauTTFTUs:        config.EDPPTauTTFTUs,
 				TauITLUs:         config.EDPPTauITLUs,
+				TauRefUs:         config.EDPPTauRefUs,
 				TauTTFTByClassUs: config.EDPPTauTTFTByClassUs,
 				TauITLByClassUs:  config.EDPPTauITLByClassUs,
 				V:                config.EDPPV,

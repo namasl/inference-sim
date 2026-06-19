@@ -147,6 +147,7 @@ var (
 	pdTransferContention   bool          // Enable fair-share bandwidth contention model
 	pdPrefixThreshold      int           // Non-cached token threshold for prefix-threshold decider
 	edppTauTTFT            time.Duration // EDPP τ_ttft: time-average TTFT SLO target
+	edppTauRef             time.Duration // EDPP τ_ref: fixed reference for the transfer-penalty normalization
 	edppTauITL             time.Duration // EDPP τ_itl: time-average ITL SLO target
 	edppV                  float64       // EDPP V: penalty/stability tradeoff knob
 	edppCXfer              time.Duration // EDPP c_xfer: assumed KV-transfer cost when routing P
@@ -1091,6 +1092,7 @@ func registerSimConfigFlags(cmd *cobra.Command) {
 	cmd.Flags().IntVar(&pdPrefixThreshold, "pd-prefix-threshold", 16, "Non-cached token threshold for prefix-threshold decider (>= 0); disaggregate when non-cached tokens exceed this value. Default 16 matches llm-d's shipped P/D configs (deploy/config/pd-epp-config.yaml).")
 	// EDPP (Lyapunov drift-plus-penalty) decider knobs — used only with --pd-decider edpp.
 	cmd.Flags().DurationVar(&edppTauTTFT, "edpp-tau-ttft", 500*time.Millisecond, "EDPP τ_ttft: time-average TTFT SLO target (only used with --pd-decider edpp)")
+	cmd.Flags().DurationVar(&edppTauRef, "edpp-tau-ref", 500*time.Millisecond, "EDPP τ_ref: fixed reference τ for the transfer-penalty normalization; makes the penalty scale 1/τ_ttft² like the other terms. Default 500ms (= shipped τ_ttft default ⇒ no change at the default operating point); loosening --edpp-tau-ttft above τ_ref attenuates the penalty (only used with --pd-decider edpp)")
 	cmd.Flags().DurationVar(&edppTauITL, "edpp-tau-itl", 100*time.Millisecond, "EDPP τ_itl: time-average ITL SLO target (only used with --pd-decider edpp)")
 	cmd.Flags().Float64Var(&edppV, "edpp-v", 1.0, "EDPP V: penalty/stability tradeoff knob; larger ⇒ fewer offloads (only used with --pd-decider edpp)")
 	cmd.Flags().DurationVar(&edppCXfer, "edpp-c-xfer", 5*time.Millisecond, "EDPP c_xfer: assumed KV-transfer cost when routing P (only used with --pd-decider edpp)")
@@ -1710,6 +1712,7 @@ var runCmd = &cobra.Command{
 			PDDecider:                       pdDecider,
 			PDPrefixThreshold:               pdPrefixThreshold,
 			EDPPTauTTFTUs:                   edppTauTTFT.Microseconds(),
+			EDPPTauRefUs:                    edppTauRef.Microseconds(),
 			EDPPTauITLUs:                    edppTauITL.Microseconds(),
 			EDPPTauTTFTByClassUs:            parseEDPPClassTargets(edppTauTTFTClasses, "edpp-tau-ttft-classes"),
 			EDPPTauITLByClassUs:             parseEDPPClassTargets(edppTauITLClasses, "edpp-tau-itl-classes"),

@@ -74,6 +74,7 @@ type DeploymentConfig struct {
 	// All durations are microseconds. See sim/edpp.go and the design doc for semantics.
 	EDPPTauTTFTUs        int64            // default τ_ttft: time-average TTFT SLO target (µs)
 	EDPPTauITLUs         int64            // default τ_itl: time-average ITL SLO target (µs)
+	EDPPTauRefUs         int64            // fixed reference τ for the transfer-penalty normalization (µs)
 	EDPPTauTTFTByClassUs map[string]int64 // per-SLO-class τ_ttft overrides (µs); nil = defaults for all
 	EDPPTauITLByClassUs  map[string]int64 // per-SLO-class τ_itl overrides (µs); nil = defaults for all
 	EDPPV                float64          // V: penalty/stability tradeoff knob (larger ⇒ fewer offloads)

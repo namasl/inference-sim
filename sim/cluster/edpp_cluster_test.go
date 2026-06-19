@@ -35,6 +35,7 @@ func newTestEDPPDeploymentConfig(numInstances, prefill, decode int) DeploymentCo
 		DecodeInstances:         decode,
 		PDDecider:               "edpp",
 		EDPPTauTTFTUs:           100_000,
+		EDPPTauRefUs:            100_000,
 		EDPPTauITLUs:            5_000,
 		EDPPV:                   0.1,
 		EDPPCXferUs:             1_000,

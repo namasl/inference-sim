@@ -486,6 +486,7 @@ Example:
 			PDDecider:                       pdDecider,
 			PDPrefixThreshold:               pdPrefixThreshold,
 			EDPPTauTTFTUs:                   edppTauTTFT.Microseconds(),
+			EDPPTauRefUs:                    edppTauRef.Microseconds(),
 			EDPPTauITLUs:                    edppTauITL.Microseconds(),
 			EDPPTauTTFTByClassUs:            parseEDPPClassTargets(edppTauTTFTClasses, "edpp-tau-ttft-classes"),
 			EDPPTauITLByClassUs:             parseEDPPClassTargets(edppTauITLClasses, "edpp-tau-itl-classes"),
