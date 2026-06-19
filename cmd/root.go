@@ -120,9 +120,10 @@ var (
 	fitnessWeights string // Fitness weights string "key:val,key:val"
 
 	// Decision trace config (PR13)
-	traceLevel      string // Trace verbosity level
-	counterfactualK int    // Number of counterfactual candidates
-	summarizeTrace  bool   // Print trace summary after simulation
+	traceLevel            string // Trace verbosity level
+	counterfactualK       int    // Number of counterfactual candidates
+	summarizeTrace        bool   // Print trace summary after simulation
+	edppDecisionTracePath string // Path to write EDPP per-decision rule-term CSV (requires --trace-level decisions + --pd-decider edpp)
 
 	// Workload spec config (PR10)
 	workloadSpecPath string // Path to YAML workload specification file
@@ -1067,6 +1068,7 @@ func registerSimConfigFlags(cmd *cobra.Command) {
 	cmd.Flags().StringVar(&traceLevel, "trace-level", "none", "Trace verbosity: none, decisions")
 	cmd.Flags().IntVar(&counterfactualK, "counterfactual-k", 0, "Number of counterfactual candidates per routing decision")
 	cmd.Flags().BoolVar(&summarizeTrace, "summarize-trace", false, "Print trace summary after simulation")
+	cmd.Flags().StringVar(&edppDecisionTracePath, "edpp-decision-trace", "", "Write per-decision EDPP rule-term breakdown to this CSV path (requires --trace-level decisions and --pd-decider edpp)")
 
 	// Tiered KV cache (PR12)
 	cmd.Flags().Int64Var(&kvCPUBlocks, "kv-cpu-blocks", 0, "CPU tier KV cache blocks (0 = disabled, single-tier mode). Typical: 1/3 of --total-kv-blocks")
@@ -2014,6 +2016,42 @@ var runCmd = &cobra.Command{
 			}
 			fmt.Printf("Mean Regret: %.6f\n", traceSummary.MeanRegret)
 			fmt.Printf("Max Regret: %.6f\n", traceSummary.MaxRegret)
+
+			if e := traceSummary.EDPP; e.Total > 0 {
+				fmt.Println("=== EDPP Decision Decomposition ===")
+				fmt.Printf("Decisions: %d (evaluated %d, skipped %d)\n", e.Total, e.Evaluated, e.Skipped)
+				fmt.Printf("  Disaggregated (P): %d   Kept local (D): %d\n", e.DisaggregatedCount, e.KeptLocalCount)
+				fmt.Printf("Mean LHS (balance benefit): %.6f\n", e.MeanLHS)
+				fmt.Printf("Mean RHS (penalty+SLO):     %.6f\n", e.MeanRHS)
+				fmt.Printf("  Mean transfer term: %.6f\n", e.MeanTransferTerm)
+				fmt.Printf("  Mean TTFT term:     %.6f\n", e.MeanTTFTTerm)
+				fmt.Printf("  Mean ITL term:      %.6f\n", e.MeanITLTerm)
+				fmt.Println("Kept-local dominant suppressor:")
+				fmt.Printf("  transfer penalty: %d   TTFT term: %d   ITL term: %d   weak LHS: %d\n",
+					e.SuppressorTransfer, e.SuppressorTTFT, e.SuppressorITL, e.SuppressorWeakLHS)
+			}
+		}
+
+		// Write per-decision EDPP rule-term CSV if requested. Diagnostic file output;
+		// does not affect stdout determinism (INV-6). Warns (does not fail) when no
+		// EDPP decision records are present (wrong decider or trace level).
+		if edppDecisionTracePath != "" {
+			tr := cs.Trace()
+			if tr == nil || len(tr.EDPPDecisions) == 0 {
+				logrus.Warnf("--edpp-decision-trace: no EDPP decision records to write (need --trace-level decisions and --pd-decider edpp)")
+			} else if f, err := os.Create(edppDecisionTracePath); err != nil {
+				logrus.Errorf("--edpp-decision-trace: could not create %q: %v", edppDecisionTracePath, err)
+			} else {
+				werr := trace.WriteEDPPDecisionCSV(f, tr.EDPPDecisions)
+				cerr := f.Close()
+				if werr != nil {
+					logrus.Errorf("--edpp-decision-trace: write failed: %v", werr)
+				} else if cerr != nil {
+					logrus.Errorf("--edpp-decision-trace: close failed: %v", cerr)
+				} else {
+					logrus.Infof("Wrote %d EDPP decision records to %s", len(tr.EDPPDecisions), edppDecisionTracePath)
+				}
+			}
 		}
 
 		logrus.Info("Simulation complete.")

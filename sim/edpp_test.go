@@ -303,6 +303,85 @@ func TestEDPP_EmptyPrompt_DoesNotDisaggregate(t *testing.T) {
 	}
 }
 
+// --- Decision-trace instrumentation ---
+
+func TestEDPP_DecisionTrace_PopulatedAndConsistent(t *testing.T) {
+	// With tracing enabled, Decide attaches an EDPPDecisionTrace whose intermediate
+	// terms compose into LHS/RHS exactly, and whose Disaggregate matches LHS > RHS.
+	cfg := defaultTestEDPPConfig()
+	cfg.TraceEnabled = true
+	d := NewEDPPDecider(cfg, newTestAffineModel(), nil, func() []RoutingSnapshot { return nil })
+
+	req := &Request{ID: "r", InputTokens: make([]int, 800), SLOClass: "batch"}
+	state := decodeState("d0", 10, 8, 60_000)
+
+	dec := d.Decide(req, state)
+	tr := dec.EDPPTrace
+	if tr == nil {
+		t.Fatal("expected non-nil EDPPTrace when tracing enabled")
+	}
+	if tr.SkipReason != "" {
+		t.Errorf("rule was evaluated; SkipReason should be empty, got %q", tr.SkipReason)
+	}
+	if tr.Class != "batch" {
+		t.Errorf("Class = %q, want batch", tr.Class)
+	}
+
+	// Intermediate-term composition (the whole point of the instrumentation).
+	if math.Abs(tr.LHS-(tr.BalanceTermD-tr.BalanceTermP)) > 1e-9 {
+		t.Errorf("LHS %v != BalanceTermD %v - BalanceTermP %v", tr.LHS, tr.BalanceTermD, tr.BalanceTermP)
+	}
+	if math.Abs(tr.RHS-(tr.TransferTerm+tr.TTFTTerm+tr.ITLTerm)) > 1e-9 {
+		t.Errorf("RHS %v != TransferTerm %v + TTFTTerm %v + ITLTerm %v",
+			tr.RHS, tr.TransferTerm, tr.TTFTTerm, tr.ITLTerm)
+	}
+	if tr.Disaggregate != dec.Disaggregate {
+		t.Errorf("trace.Disaggregate %v != decision.Disaggregate %v", tr.Disaggregate, dec.Disaggregate)
+	}
+	if tr.Disaggregate != (tr.LHS > tr.RHS) {
+		t.Errorf("Disaggregate %v inconsistent with LHS %v > RHS %v", tr.Disaggregate, tr.LHS, tr.RHS)
+	}
+
+	// A few anchored intermediate values (affine model, default cfg, no z, idle prefill).
+	if tr.Ap != 800 {
+		t.Errorf("Ap = %d, want 800", tr.Ap)
+	}
+	if tr.Wp != 8000 { // kp·a_p = 10·800
+		t.Errorf("Wp = %v, want 8000", tr.Wp)
+	}
+	if math.Abs(tr.TransferTerm-0.05) > 1e-9 { // V·(c_xfer/τ_ttft) = 1·5000/100000
+		t.Errorf("TransferTerm = %v, want 0.05", tr.TransferTerm)
+	}
+	if tr.TTFTTerm != 0 || tr.ITLTerm != 0 { // z=0 (no completions reported)
+		t.Errorf("z-gated terms should be 0 with no completions: ttft=%v itl=%v", tr.TTFTTerm, tr.ITLTerm)
+	}
+}
+
+func TestEDPP_DecisionTrace_NilWhenDisabled(t *testing.T) {
+	// Default config leaves tracing off ⇒ zero overhead, no trace attached.
+	d := NewEDPPDecider(defaultTestEDPPConfig(), newTestAffineModel(), nil, nil)
+	dec := d.Decide(&Request{ID: "r", InputTokens: make([]int, 800)}, decodeState("d0", 10, 8, 60_000))
+	if dec.EDPPTrace != nil {
+		t.Errorf("EDPPTrace should be nil when tracing disabled, got %+v", dec.EDPPTrace)
+	}
+}
+
+func TestEDPP_DecisionTrace_EarlyReturnRecordsSkipReason(t *testing.T) {
+	// Early-return paths still emit a trace (when enabled) with a SkipReason, so every
+	// request is accounted for in the per-decision record.
+	cfg := defaultTestEDPPConfig()
+	cfg.TraceEnabled = true
+	d := NewEDPPDecider(cfg, newTestAffineModel(), nil, nil)
+
+	dec := d.Decide(&Request{ID: "empty"}, decodeState("d0", 1, 1, 60_000))
+	if dec.Disaggregate {
+		t.Errorf("empty prompt must not disaggregate")
+	}
+	if dec.EDPPTrace == nil || dec.EDPPTrace.SkipReason == "" {
+		t.Errorf("empty-prompt trace must carry a SkipReason, got %+v", dec.EDPPTrace)
+	}
+}
+
 // Compile-time interface compliance.
 var (
 	_ DisaggregationDecider = (*EDPPDecider)(nil)

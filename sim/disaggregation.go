@@ -18,6 +18,10 @@ type DisaggregationDecision struct {
 	Disaggregate      bool   // true = route to prefill pool, false = route to shared/decode pool
 	DecodePodOverride string // empty = keep pre-selected decode pod
 	PrefillPodHint    string // empty = normal prefill routing (reserved for future joint D+P policies)
+	// EDPPTrace carries the EDPP rule's intermediate terms for this decision when the
+	// decider has tracing enabled (EDPPConfig.TraceEnabled); nil otherwise and for all
+	// non-EDPP deciders. The cluster records it into the SimulationTrace at the call site.
+	EDPPTrace *EDPPDecisionTrace
 }
 
 // DisaggregationDecider decides whether a request should be disaggregated

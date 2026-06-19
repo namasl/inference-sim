@@ -38,6 +38,7 @@ type SimulationTrace struct {
 	DecodeRoutings  []DecodeRoutingRecord
 	EncodeRoutings  []EncodeRoutingRecord // GAP-4 (issue #1264)
 	KVTransfers     []KVTransferRecord
+	EDPPDecisions   []EDPPDecisionRecord // EDPP rule-term traces (when EDPP tracing enabled)
 }
 
 // NewSimulationTrace creates a SimulationTrace ready for recording.
@@ -51,6 +52,7 @@ func NewSimulationTrace(config TraceConfig) *SimulationTrace {
 		DecodeRoutings:  make([]DecodeRoutingRecord, 0),
 		EncodeRoutings:  make([]EncodeRoutingRecord, 0),
 		KVTransfers:     make([]KVTransferRecord, 0),
+		EDPPDecisions:   make([]EDPPDecisionRecord, 0),
 	}
 }
 
@@ -87,4 +89,9 @@ func (st *SimulationTrace) RecordKVTransfer(record KVTransferRecord) {
 // RecordEncodeRouting appends an encode pool routing decision record (GAP-4, #1264).
 func (st *SimulationTrace) RecordEncodeRouting(record EncodeRoutingRecord) {
 	st.EncodeRoutings = append(st.EncodeRoutings, record)
+}
+
+// RecordEDPPDecision appends an EDPP rule-term trace record.
+func (st *SimulationTrace) RecordEDPPDecision(record EDPPDecisionRecord) {
+	st.EDPPDecisions = append(st.EDPPDecisions, record)
 }

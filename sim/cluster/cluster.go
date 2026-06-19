@@ -421,6 +421,7 @@ func NewClusterSimulator(config DeploymentConfig, requests []*sim.Request, onReq
 				NomDecodeCtx:     config.EDPPNomDecodeCtx,
 				BlockSize:        int(config.BlockSizeTokens),
 				ChunkTokens:      int(config.BatchConfig.MaxScheduledTokens),
+				TraceEnabled:     trace.TraceLevel(config.TraceLevel) == trace.TraceLevelDecisions,
 			}, lm, cs.cacheQueryFn, prefillSnapshots)
 		default:
 			cs.disaggregationDecider = sim.NewDisaggregationDecider(config.PDDecider)
@@ -1954,6 +1955,22 @@ func (cs *ClusterSimulator) executeDisaggregatedRouting(req *sim.Request, time i
 			Clock:        cs.clock,
 			Disaggregate: disaggDecision.Disaggregate,
 		})
+		// EDPP rule-term trace: present only when the EDPP decider has tracing enabled.
+		if et := disaggDecision.EDPPTrace; et != nil {
+			cs.trace.RecordEDPPDecision(trace.EDPPDecisionRecord{
+				RequestID: req.ID, Clock: cs.clock,
+				Class: et.Class, SkipReason: et.SkipReason,
+				Ap: et.Ap, Wp: et.Wp, DeltaPfChunk: et.DeltaPfChunk,
+				QdRaw: et.QdRaw, QpRaw: et.QpRaw, Qd: et.Qd, Qp: et.Qp,
+				MuDNom: et.MuDNom, MuPNom: et.MuPNom, WStarD: et.WStarD, WStarP: et.WStarP,
+				TauTTFT: et.TauTTFT, TauITL: et.TauITL,
+				TTFTP: et.TTFTP, TTFTD: et.TTFTD, ITLP: et.ITLP, ITLD: et.ITLD,
+				ZTTFT: et.ZTTFT, ZITL: et.ZITL,
+				BalanceTermD: et.BalanceTermD, BalanceTermP: et.BalanceTermP,
+				TransferTerm: et.TransferTerm, TTFTTerm: et.TTFTTerm, ITLTerm: et.ITLTerm,
+				LHS: et.LHS, RHS: et.RHS, Disaggregate: et.Disaggregate,
+			})
+		}
 	}
 
 	// Find the target decode instance object (used in both paths below).

@@ -103,6 +103,52 @@ type EncodeRoutingRecord struct {
 	Regret     float64          // max(alternative scores) - score(chosen); >= 0
 }
 
+// EDPPDecisionRecord captures the intermediate terms of one EDPP (E14) rule evaluation
+// for a request, for diagnostic analysis of why the decider chose P or D. It is a flat
+// mirror of sim.EDPPDecisionTrace (this package has no dependency on sim/), plus the
+// request ID and the decision clock. Recorded only when the EDPP decider has tracing
+// enabled and trace-level=decisions. The two sides compose exactly:
+//
+//	LHS = BalanceTermD − BalanceTermP
+//	RHS = TransferTerm + TTFTTerm + ITLTerm
+//	Disaggregate = LHS > RHS
+//
+// On early-return paths SkipReason names the path ("empty-prompt"/"fully-cached") and the
+// term fields are zero.
+type EDPPDecisionRecord struct {
+	RequestID    string
+	Clock        int64
+	Class        string
+	SkipReason   string
+	Ap           int
+	Wp           float64
+	DeltaPfChunk float64
+	QdRaw        float64
+	QpRaw        float64
+	Qd           float64
+	Qp           float64
+	MuDNom       float64
+	MuPNom       float64
+	WStarD       float64
+	WStarP       float64
+	TauTTFT      float64
+	TauITL       float64
+	TTFTP        float64
+	TTFTD        float64
+	ITLP         float64
+	ITLD         float64
+	ZTTFT        float64
+	ZITL         float64
+	BalanceTermD float64
+	BalanceTermP float64
+	TransferTerm float64
+	TTFTTerm     float64
+	ITLTerm      float64
+	LHS          float64
+	RHS          float64
+	Disaggregate bool
+}
+
 // KVTransferRecord captures a KV cache transfer event between prefill and decode instances.
 // TransferDuration is always >= 0; negative values are clamped to 0 with a warning in
 // KVTransferCompletedEvent.Execute() (sim/cluster/pd_events.go) if INV-PD-4 is ever violated.

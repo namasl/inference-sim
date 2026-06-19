@@ -66,6 +66,50 @@ type EDPPConfig struct {
 	NomDecodeCtx     int              // L_nom: nominal decode context for the fixed decode normalizer
 	BlockSize        int              // token block size for the prefix-cache a_p computation
 	ChunkTokens      int              // per-step prefill token budget (max_num_batched_tokens); caps δ_pf-chunk. 0 = no cap (whole prefill counts as one chunk)
+	TraceEnabled     bool             // when true, Decide attaches an EDPPDecisionTrace (intermediate rule terms) to each decision. Off ⇒ zero allocation.
+}
+
+// EDPPDecisionTrace records the intermediate terms of one E14 rule evaluation, for
+// diagnostics. It is attached to DisaggregationDecision.EDPPTrace only when the decider
+// has TraceEnabled set. Every field is dimensionless or in microseconds; LHS and RHS are
+// the two sides of the (E14) inequality and decompose exactly into the listed components:
+//
+//	LHS = BalanceTermD − BalanceTermP
+//	RHS = TransferTerm + TTFTTerm + ITLTerm
+//	Disaggregate = LHS > RHS
+//
+// On early-return paths (empty prompt, fully prefix-cached) the rule is not evaluated;
+// SkipReason names the path and the term fields are left zero.
+type EDPPDecisionTrace struct {
+	Class        string  // request SLO class (drives τ resolution)
+	SkipReason   string  // "" = rule evaluated; else "empty-prompt" or "fully-cached"
+	Ap           int     // a_p: uncached prompt tokens
+	Wp           float64 // W_p: prefill demand (µs)
+	DeltaPfChunk float64 // δ_pf-chunk: one-chunk ITL inflation (µs)
+	QdRaw        float64 // Q_d: raw decode backlog (µs)
+	QpRaw        float64 // Q_p: raw prefill backlog (µs)
+	Qd           float64 // normalized decode backlog (Q_d / W*_d)
+	Qp           float64 // normalized prefill backlog (Q_p / W*_p)
+	MuDNom       float64 // μ_d^nom
+	MuPNom       float64 // μ_p^nom
+	WStarD       float64 // W*_d normalizer (µs)
+	WStarP       float64 // W*_p normalizer (µs)
+	TauTTFT      float64 // τ_ttft for this class (µs)
+	TauITL       float64 // τ_itl for this class (µs)
+	TTFTP        float64 // predicted TTFT under P (µs)
+	TTFTD        float64 // predicted TTFT under D (µs)
+	ITLP         float64 // predicted ITL under P (µs)
+	ITLD         float64 // predicted ITL under D (µs)
+	ZTTFT        float64 // normalized TTFT virtual queue (z_ttft = Z_ttft / τ_ttft)
+	ZITL         float64 // normalized ITL virtual queue (z_itl = Z_itl / τ_itl)
+	BalanceTermD float64 // q_d·(W_p/W*_d)
+	BalanceTermP float64 // q_p·(W_p/W*_p)
+	TransferTerm float64 // V·(c_xfer/τ_ttft)
+	TTFTTerm     float64 // z_ttft·(TTFT_P−TTFT_D)/τ_ttft
+	ITLTerm      float64 // z_itl·(ITL_P−ITL_D)/τ_itl
+	LHS          float64 // backlog-balancing benefit
+	RHS          float64 // transfer penalty + SLO pressure
+	Disaggregate bool    // the decision (LHS > RHS)
 }
 
 func (c EDPPConfig) validate() {
@@ -285,6 +329,9 @@ func (d *EDPPDecider) normalizedBacklogs(decodeSnaps, prefillSnaps []RoutingSnap
 func (d *EDPPDecider) Decide(req *Request, state *RouterState) DisaggregationDecision {
 	keepD := DisaggregationDecision{Disaggregate: false}
 	if len(req.InputTokens) == 0 {
+		if d.cfg.TraceEnabled {
+			keepD.EDPPTrace = &EDPPDecisionTrace{Class: req.SLOClass, SkipReason: "empty-prompt"}
+		}
 		return keepD
 	}
 
@@ -296,6 +343,9 @@ func (d *EDPPDecider) Decide(req *Request, state *RouterState) DisaggregationDec
 		}
 	}
 	if ap <= 0 {
+		if d.cfg.TraceEnabled {
+			keepD.EDPPTrace = &EDPPDecisionTrace{Class: req.SLOClass, SkipReason: "fully-cached", Ap: ap}
+		}
 		return keepD // fully cached: no prefill work to disaggregate
 	}
 
@@ -348,13 +398,32 @@ func (d *EDPPDecider) Decide(req *Request, state *RouterState) DisaggregationDec
 		zITL = z.zITL / n.tauITL
 	}
 
-	// E14: choose P ⟺ LHS > RHS. Every term is dimensionless.
-	lhs := qd*(wp/n.wStarD) - qp*(wp/n.wStarP)
-	rhs := d.cfg.V*(float64(d.cfg.CXferUs)/n.tauTTFT) +
-		zTTFT*(ttftP-ttftD)/n.tauTTFT +
-		zITL*(itlP-itlD)/n.tauITL
+	// E14: choose P ⟺ LHS > RHS. Every term is dimensionless. Decomposed into named
+	// components so the trace can expose each intermediate; the arithmetic is unchanged.
+	balanceTermD := qd * (wp / n.wStarD)
+	balanceTermP := qp * (wp / n.wStarP)
+	lhs := balanceTermD - balanceTermP
 
-	return DisaggregationDecision{Disaggregate: lhs > rhs}
+	transferTerm := d.cfg.V * (float64(d.cfg.CXferUs) / n.tauTTFT)
+	ttftTerm := zTTFT * (ttftP - ttftD) / n.tauTTFT
+	itlTerm := zITL * (itlP - itlD) / n.tauITL
+	rhs := transferTerm + ttftTerm + itlTerm
+
+	dec := DisaggregationDecision{Disaggregate: lhs > rhs}
+	if d.cfg.TraceEnabled {
+		dec.EDPPTrace = &EDPPDecisionTrace{
+			Class: req.SLOClass, Ap: ap, Wp: wp, DeltaPfChunk: deltaPfChunk,
+			QdRaw: qD, QpRaw: qP, Qd: qd, Qp: qp,
+			MuDNom: n.muDNom, MuPNom: n.muPNom, WStarD: n.wStarD, WStarP: n.wStarP,
+			TauTTFT: n.tauTTFT, TauITL: n.tauITL,
+			TTFTP: ttftP, TTFTD: ttftD, ITLP: itlP, ITLD: itlD,
+			ZTTFT: zTTFT, ZITL: zITL,
+			BalanceTermD: balanceTermD, BalanceTermP: balanceTermP,
+			TransferTerm: transferTerm, TTFTTerm: ttftTerm, ITLTerm: itlTerm,
+			LHS: lhs, RHS: rhs, Disaggregate: lhs > rhs,
+		}
+	}
+	return dec
 }
 
 // chunkInflation returns δ_pf-chunk: the marginal work [µs] of co-scheduling one
