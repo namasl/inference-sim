@@ -8,6 +8,30 @@ target-model constraints.
 
 ## BLIS Schema Limitations
 
+### Goodput SLO targets lose the percentile dimension
+
+**Affects:** all workloads (catalog SLOs are now mapped into `goodput_slo_targets`)
+
+The catalog specifies SLO thresholds at specific percentiles that vary per workload
+and per dimension — e.g. `ttft_p90_ms: 15000` (batch-summarization-rag),
+`ttft_p95_ms: 30000` (code-generation), `itl_p99_ms: 100` (most workloads),
+`itl_p95_ms: 150` (batch-summarization-rag). BLIS's `goodput_slo_targets` schema
+takes a single `{ttft_ms, itl_ms, e2e_ms}` triple per SLO class. We map the
+catalog's per-percentile thresholds to those flat fields and rely on the comment
+in each workload to record the intended percentile. BLIS reports the attainment
+fraction (per-request pass/fail compliance), so the user must compare it
+manually:
+
+  - `ttft_p90_ms: 15000` in the catalog means "the SLO passes when
+    `slo_attainment_by_dim.ttft >= 0.90`."
+  - `ttft_p95_ms: 30000` means `>= 0.95`.
+  - `ttft_p99_ms: 1000` means `>= 0.99`.
+
+This works but is fragile: the percentile binding is not enforced by BLIS, only
+documented inline. A future schema extension could carry per-dimension target
+percentiles (`ttft_target_pct: 0.90`) so attainment could be evaluated against
+the intended threshold automatically.
+
 ### Fixed `max_rounds` causes artificial session synchronization
 
 **Affects:** interactive-chat, code-generation, deep-research

@@ -57,6 +57,12 @@ category: language
 aggregate_rate: 5.0
 num_requests: 1000
 
+# Goodput SLOs from config.json metadata.slos (target percentile noted per field).
+goodput_slo_targets:
+  standard:
+    ttft_ms: 1000   # ttft_p99_ms
+    itl_ms: 50      # itl_p99_ms
+
 cohorts:
   - id: "interactive-chat"
     population: 50    # matches inference-perf num_conversations: 50
