@@ -59,6 +59,11 @@ category: language
 aggregate_rate: 1
 num_requests: 500
 
+# Goodput SLOs from config.json metadata.slos (target percentile noted per field).
+goodput_slo_targets:
+  batch:
+    e2e_ms: 2080000   # e2e_p99_ms
+
 clients:
   - id: "synthetic-data-generation"
     tenant_id: "batch-jobs"

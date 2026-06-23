@@ -70,6 +70,12 @@ category: reasoning
 aggregate_rate: 0.2
 num_requests: 1000
 
+# Goodput SLOs from config.json metadata.slos (target percentile noted per field).
+goodput_slo_targets:
+  standard:
+    ttft_ms: 2000   # ttft_p99_ms
+    itl_ms: 100     # itl_p99_ms
+
 clients:
   - id: "reasoning"
     tenant_id: "reasoning-users"

@@ -70,6 +70,13 @@ category: language
 aggregate_rate: 50
 num_requests: 1000
 
+# Goodput SLOs from config.json metadata.slos (target percentile noted per field).
+goodput_slo_targets:
+  batch:
+    ttft_ms: 15000    # ttft_p90_ms
+    itl_ms: 150       # itl_p95_ms
+    e2e_ms: 630000    # e2e_p99_ms
+
 clients:
   - id: "vector-qa"
     tenant_id: "rag-users"

@@ -102,6 +102,12 @@ category: language
 aggregate_rate: 20
 num_requests: 200
 
+# Goodput SLOs from config.json metadata.slos (target percentile noted per field).
+goodput_slo_targets:
+  standard:
+    ttft_ms: 10000  # ttft_p90_ms
+    itl_ms: 100     # itl_p99_ms
+
 cohorts:
   - id: "deep-research"
     population: 5     # matches inference-perf num_conversations: 5

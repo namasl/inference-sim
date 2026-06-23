@@ -14,8 +14,10 @@ import os
 from collections import defaultdict
 import matplotlib.pyplot as plt
 import matplotlib.lines as mlines
+import yaml
 
 DATA_DIR = "./blis-pd-sweep-all-workloads"
+WORKLOAD_DIR = "../workloads"
 WORKLOADS = [
     "interactive-chat",
     "code-generation",
@@ -63,6 +65,41 @@ SCALAR_METRICS = [
     ("disagg_count",   "Disaggregated requests"),
 ]
 
+def load_workload_slos(name):
+    """Read goodput_slo_targets from the matching workloads/inference-perf-*.yaml.
+
+    Returns a flat list of (class, metric, threshold_ms) tuples — one per
+    (class, dimension) pair in the spec. BLIS evaluates these per-request and
+    emits goodput_rps/slo_attainment in the metrics JSON; this function exists
+    only to render the SLO description panel and the threshold reference lines.
+    """
+    path = f"{WORKLOAD_DIR}/inference-perf-{name}.yaml"
+    if not os.path.exists(path):
+        return []
+    with open(path) as f:
+        spec = yaml.safe_load(f) or {}
+    targets = spec.get("goodput_slo_targets") or {}
+    out = []
+    for cls, dims in targets.items():
+        for dim_key, value in (dims or {}).items():
+            metric = dim_key.removesuffix("_ms")
+            out.append((cls, metric, value))
+    return out
+
+
+def slo_description(slos):
+    """Human-readable summary of the workload's SLOs for the description panel."""
+    if not slos:
+        return "No SLOs defined."
+    lines = ["Goodput SLOs (BLIS-native, per-request):"]
+    for cls, metric, threshold in slos:
+        if threshold >= 1000:
+            unit = f"{threshold / 1000:g} s"
+        else:
+            unit = f"{threshold} ms"
+        lines.append(f"  [{cls}] {metric.upper():<5s} ≤ {unit}")
+    return "\n".join(lines)
+
 
 def load_csv(path):
     """Group rows by (arm, rate) and average numeric columns across seeds.
@@ -101,6 +138,13 @@ def make_legend(ax):
     ax.legend(handles=handles, loc="center", fontsize=8, frameon=False)
 
 
+def make_slo_panel(ax, slos):
+    ax.axis("off")
+    ax.text(0.0, 1.0, slo_description(slos), family="monospace", fontsize=9,
+            verticalalignment="top", horizontalalignment="left",
+            transform=ax.transAxes)
+
+
 for name in WORKLOADS:
     csv_path = f"{DATA_DIR}/{name}.csv"
     if not os.path.exists(csv_path):
@@ -109,8 +153,17 @@ for name in WORKLOADS:
 
     data = load_csv(csv_path)
     rates = sorted({r for arm_data in data.values() for r in arm_data})
+    slos = load_workload_slos(name)
 
-    fig, axes = plt.subplots(2, 3, figsize=(16, 9))
+    # Detect whether the CSV carries BLIS-native goodput. Old runs (made before
+    # SLOs landed in the workload YAMLs) have no goodput_rps column at all;
+    # newer runs may have a numeric value. Anything else → native data missing.
+    has_native_goodput = any(
+        isinstance(arm_data.get(r, {}).get("goodput_rps"), (int, float))
+        for arm_data in data.values() for r in arm_data
+    )
+
+    fig, axes = plt.subplots(3, 3, figsize=(16, 13))
 
     for ax, (title, series) in zip(axes[0], METRIC_GROUPS):
         for arm, color, _desc in ARMS:
@@ -121,6 +174,17 @@ for name in WORKLOADS:
                 y = [arm_data[r][col] for r in rates if r in arm_data and col in arm_data[r]]
                 xr = [r for r in rates if r in arm_data and col in arm_data[r]]
                 ax.plot(xr, y, color=color, linestyle=ls, marker="o", markersize=4)
+        # Overlay SLO thresholds for the matching metric (TTFT/E2E/ITL). BLIS
+        # evaluates SLOs per-request, but a horizontal reference line still
+        # helps eyeball where the latency curves cross the gate.
+        metric_key = title.split()[0].lower()  # "TTFT (ms)" → "ttft"
+        for cls, slo_metric, threshold in slos:
+            if slo_metric == metric_key:
+                ax.axhline(threshold, color="red", linestyle=(0, (1, 1)),
+                           linewidth=1, alpha=0.7)
+                ax.text(0.98, threshold, f"SLO[{cls}]", color="red",
+                        fontsize=7, ha="right", va="bottom",
+                        transform=ax.get_yaxis_transform())
         ax.set_title(title)
         ax.set_xlabel("aggregate_rate")
         ax.set_xscale("log")
@@ -142,6 +206,48 @@ for name in WORKLOADS:
         ax.grid(True, alpha=0.3, which="both")
 
     make_legend(axes[1, 2])
+
+    # Bottom row: native goodput (rps), SLO attainment (fraction), SLO panel.
+    # Both come from BLIS — goodput_rps and slo_attainment are populated by
+    # cmd/goodput.go when the workload YAML carries goodput_slo_targets.
+    ax_goodput = axes[2, 0]
+    for arm, color, _desc in ARMS:
+        if arm not in data:
+            continue
+        arm_data = data[arm]
+        xr = [r for r in rates if r in arm_data and isinstance(arm_data[r].get("goodput_rps"), (int, float))]
+        y = [arm_data[r]["goodput_rps"] for r in xr]
+        ax_goodput.plot(xr, y, color=color, linestyle="-", marker="o", markersize=4)
+    ax_goodput.set_title("Goodput (rps) — BLIS native")
+    ax_goodput.set_xlabel("aggregate_rate")
+    ax_goodput.set_xscale("log")
+    ax_goodput.grid(True, alpha=0.3, which="both")
+    if not has_native_goodput:
+        ax_goodput.text(0.5, 0.5,
+                        "No native goodput in CSV.\nRe-run sweep with SLO-bearing\nworkload specs.",
+                        transform=ax_goodput.transAxes, ha="center", va="center",
+                        color="gray", fontsize=10)
+
+    ax_attain = axes[2, 1]
+    for arm, color, _desc in ARMS:
+        if arm not in data:
+            continue
+        arm_data = data[arm]
+        xr = [r for r in rates if r in arm_data and isinstance(arm_data[r].get("slo_attainment"), (int, float))]
+        y = [arm_data[r]["slo_attainment"] for r in xr]
+        ax_attain.plot(xr, y, color=color, linestyle="-", marker="o", markersize=4)
+    ax_attain.set_title("SLO attainment (fraction of requests meeting SLO)")
+    ax_attain.set_xlabel("aggregate_rate")
+    ax_attain.set_xscale("log")
+    ax_attain.set_ylim(0.0, 1.05)
+    ax_attain.grid(True, alpha=0.3, which="both")
+    if not has_native_goodput:
+        ax_attain.text(0.5, 0.5,
+                       "No native attainment in CSV.\nRe-run sweep with SLO-bearing\nworkload specs.",
+                       transform=ax_attain.transAxes, ha="center", va="center",
+                       color="gray", fontsize=10)
+
+    make_slo_panel(axes[2, 2], slos)
 
     fig.suptitle(f"PD rate sweep: agg vs 1P+3D vs 2P+2D vs 3P+1D (threshold=16) — {name}", fontsize=14)
     plt.tight_layout()

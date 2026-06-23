@@ -67,7 +67,7 @@ ARMS=(
   # "pd-3p1d-edpp|./exp/blis-edpp|--num-instances 4 --prefill-instances 3 --decode-instances 1 --prefill-tp 4 --decode-tp 4 --hardware H100 --pd-transfer-bandwidth 10.3 --pd-decider edpp"
 )
 
-CSV_HEADER="arm,rate,seed,throughput_rps,tokens_per_sec,completed,ttft_mean_ms,ttft_p90_ms,ttft_p95_ms,ttft_p99_ms,e2e_mean_ms,e2e_p90_ms,e2e_p95_ms,e2e_p99_ms,itl_mean_ms,itl_p90_ms,itl_p95_ms,itl_p99_ms,timeouts,preemptions,disagg_count,sat_level,sat_score"
+CSV_HEADER="arm,rate,seed,throughput_rps,tokens_per_sec,completed,ttft_mean_ms,ttft_p90_ms,ttft_p95_ms,ttft_p99_ms,e2e_mean_ms,e2e_p90_ms,e2e_p95_ms,e2e_p99_ms,itl_mean_ms,itl_p90_ms,itl_p95_ms,itl_p99_ms,timeouts,preemptions,disagg_count,sat_level,sat_score,goodput_rps,slo_attainment"
 
 run_sweep() {
   local wl_name=$1 wl_path=$2
@@ -177,7 +177,9 @@ run_sweep() {
        (.preemption_count // 0),
        $d,
        (.saturation.level // ""),
-       (.saturation.score // 0)
+       (.saturation.score // 0),
+       (.goodput_rps // ""),
+       (.slo_attainment // "")
       ] | @csv
     ' "$jfile" >> "$csv"
   done
