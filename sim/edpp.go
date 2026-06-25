@@ -264,9 +264,8 @@ func NewEDPPDecider(cfg EDPPConfig, model LatencyModel, cacheQuery map[string]fu
 	d.deltaBarD = edppMarginalDelta(model, decodeProbe)
 	d.deltaBarP = edppMarginalDelta(model, prefillProbe)
 
-	// μ_p^nom = 1 − α/T_iter^nom (E11): prefill at the nominal prefill iteration time.
-	tIterPNom := float64(model.StepTime([]*Request{prefillProbe}))
-	d.muPNom = clampMu(1.0 - float64(d.alphaP)/tIterPNom)
+	// μ_p^nom = 1 − α_p/(α_p + c_pf·S_pf^nom) (design §7): from frozen coefficients.
+	d.muPNom = d.coeffs.muPNom(cfg.NomPrefillTokens)
 	return d
 }
 
@@ -309,7 +308,7 @@ func (d *EDPPDecider) targetsFor(class string) (tauTTFTUs, tauITLUs int64) {
 // so the §11 signal-direction property holds within each class.
 func (d *EDPPDecider) normFor(class string) edppNorm {
 	tauTTFTUs, tauITLUs := d.targetsFor(class)
-	muD := clampMu(1.0 - float64(d.alphaD)/float64(tauITLUs))
+	muD := d.coeffs.muDNom(float64(tauITLUs))
 	return edppNorm{
 		muDNom:  muD,
 		muPNom:  d.muPNom,

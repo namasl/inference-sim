@@ -85,6 +85,18 @@ func (c EDPPCoeffs) muPrefill(sPf int64) float64 {
 	return clampMu(1.0 - c.AlphaP/c.tIterPrefill(sPf))
 }
 
+// muDNom is the fixed nominal decode drain rate at the SLO-critical batch
+// (T_iter = τ_itl), design §7. Caller guarantees τ_itl > AlphaD (config guard).
+func (c EDPPCoeffs) muDNom(tauITLUs float64) float64 {
+	return clampMu(1.0 - c.AlphaD/tauITLUs)
+}
+
+// muPNom is the fixed nominal prefill drain rate at the nominal operating chunk
+// S_pf^nom (design §7).
+func (c EDPPCoeffs) muPNom(sPfNom int) float64 {
+	return clampMu(1.0 - c.AlphaP/(c.AlphaP+c.CPf*float64(sPfNom)))
+}
+
 // deltaBarDecode is the marginal decode work per step at context length ctxLen
 // (design §6.3: δ̄_dec = c0 + c1·L̄), in µs.
 func (c EDPPCoeffs) deltaBarDecode(ctxLen float64) float64 {

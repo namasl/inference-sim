@@ -96,14 +96,64 @@ func TestEDPP_MarginalDelta_RecoversPerCopyWork(t *testing.T) {
 
 func TestEDPP_AlphaZero_YieldsConservingRate(t *testing.T) {
 	// §11 conservation anchor: with α → 0, μ^nom → 1 (work-conserving server).
+	// Both the affine model and the coeffs must have AlphaD=AlphaP=0 so both the
+	// probe path (alphaD/alphaP) and the coeff path (coeffs.muDNom/muPNom) yield 1.
 	m := &edppAffineModel{alpha: 0, kp: 10, c0: 100, c1: 1}
-	d := NewEDPPDecider(defaultTestEDPPConfig(), m, nil, nil)
+	cfg := defaultTestEDPPConfig()
+	cfg.Coeffs = EDPPCoeffs{AlphaD: 0, AlphaP: 0, C0: 100, C1: 1, CPf: 10, CAttn: 0}
+	// Note: validate() requires AlphaD>0 and AlphaP>0, but we bypass via direct field
+	// construction — the test verifies behavior at the mathematical limit α→0.
+	// We construct the decider directly to skip validate(), exercising clampMu.
+	d := &EDPPDecider{
+		cfg:    cfg,
+		model:  m,
+		coeffs: cfg.Coeffs,
+		zByClass: make(map[string]*edppClassState),
+	}
+	d.alphaD = 0
+	d.alphaP = 0
+	tIterPNom := float64(m.StepTime([]*Request{edppPrefillProbe(cfg.NomPrefillTokens)}))
+	_ = tIterPNom // not used in coeff path
+	d.muPNom = d.coeffs.muPNom(cfg.NomPrefillTokens)
+	d.deltaBarD = edppMarginalDelta(m, edppDecodeProbe(cfg.NomDecodeCtx))
+	d.deltaBarP = edppMarginalDelta(m, edppPrefillProbe(cfg.NomPrefillTokens))
 	n := d.normFor("") // default class
 	if math.Abs(n.muDNom-1.0) > 1e-9 {
 		t.Errorf("α=0 ⇒ μ_d^nom = %v, want 1.0", n.muDNom)
 	}
 	if math.Abs(n.muPNom-1.0) > 1e-9 {
 		t.Errorf("α=0 ⇒ μ_p^nom = %v, want 1.0", n.muPNom)
+	}
+}
+
+func TestEDPP_NormalizersFromCoeffs(t *testing.T) {
+	// Prove the normalizers come from the frozen coefficients, not the probe path.
+	// We use Coeffs.CPf=7 while the affine model keeps kp=10, so the two paths diverge:
+	//   coeff path: muPNom = 1 − 1000/(1000 + 7·512) = 1 − 1000/4584 ≈ 0.7820...
+	//   probe path: muPNom = 1 − 1000/StepTime(prefillProbe(512))
+	//             = 1 − 1000/(1000 + 10·512) = 1 − 1000/6120 ≈ 0.8366...
+	// If the test passes, it must be reading the coeff path.
+	cfg := defaultTestEDPPConfig()
+	cfg.Coeffs.CPf = 7 // diverges from model's kp=10
+	d := NewEDPPDecider(cfg, newTestAffineModel(), nil, nil)
+	n := d.normFor("") // default class: τ_ttft=100_000, τ_itl=50_000
+
+	// μ_d^nom = 1 − α/τ_itl = 1 − 1000/50000 = 0.98 (coeff path: AlphaD=1000)
+	if math.Abs(n.muDNom-0.98) > 1e-9 {
+		t.Errorf("muDNom = %v, want 0.98", n.muDNom)
+	}
+	// μ_p^nom via coeff path: 1 − AlphaP/(AlphaP + CPf·S_pf^nom) = 1 − 1000/(1000+7·512)
+	wantMuP := 1 - 1000.0/(1000.0+7.0*512)
+	if math.Abs(n.muPNom-wantMuP) > 1e-9 {
+		t.Errorf("muPNom = %v, want %v (coeff path with CPf=7; probe path would give ~0.8366)", n.muPNom, wantMuP)
+	}
+	// W*_d = μ_d^nom · τ_ttft = 0.98 · 100000 = 98000
+	if math.Abs(n.wStarD-98000) > 1e-6 {
+		t.Errorf("wStarD = %v, want 98000", n.wStarD)
+	}
+	// W*_p = μ_p^nom · τ_ttft (coeff path)
+	if math.Abs(n.wStarP-wantMuP*100000) > 1e-6 {
+		t.Errorf("wStarP = %v, want %v", n.wStarP, wantMuP*100000)
 	}
 }
 
