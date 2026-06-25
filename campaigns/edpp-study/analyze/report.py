@@ -54,6 +54,8 @@ def build_summary():
         work = offered_work(f"../specs/{wl}_rate{rate}.yaml")
         rows.append({"workload": wl, "rate": rate, "decider": dec, "split": split,
                      **work, **tier1(rs)})
+    if not rows:
+        print("build_summary: no results_*.json found — run sweep.sh first"); return
     with open("../out/summary.csv", "w", newline="") as fh:
         w = csv.DictWriter(fh, fieldnames=list(rows[0].keys()))
         w.writeheader(); w.writerows(rows)
@@ -66,6 +68,9 @@ def regret_join():
     out = []
     for f in sorted(glob.glob("../out/results_*_edpp_*.json")):
         wl, rate, dec, split = parse_name(f)
+        # Join contract: replay request IDs are exactly "request_<int>". SimResult
+        # stores the int (request_ stripped); the decision CSV stores the raw req.ID
+        # ("request_<int>"). Re-prefix the SimResult int so both sides match.
         rs = {f'request_{r["request_id"]}': r for r in json.load(open(f))}
         dec_path = f"../out/decisions_{wl}_rate{rate}_edpp_{split}.csv"
         if not os.path.exists(dec_path):
