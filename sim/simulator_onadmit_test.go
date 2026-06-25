@@ -7,7 +7,11 @@ import "testing"
 func TestSimulator_OnAdmit_FiresOnFirstAdmission(t *testing.T) {
 	sim := mustNewSimulator(t, newTestSimConfig())
 	var admitted []string
-	sim.OnAdmit = func(req *Request, tick int64) { admitted = append(admitted, req.ID) }
+	var admittedTick int64 = -1
+	sim.OnAdmit = func(req *Request, tick int64) {
+		admitted = append(admitted, req.ID)
+		admittedTick = tick
+	}
 
 	req := &Request{
 		ID:           "r1",
@@ -34,5 +38,34 @@ func TestSimulator_OnAdmit_FiresOnFirstAdmission(t *testing.T) {
 	}
 	if count != 1 {
 		t.Errorf("OnAdmit fired %d times for r1, want 1", count)
+	}
+
+	if admittedTick < 0 {
+		t.Errorf("OnAdmit tick = %d, want >= 0", admittedTick)
+	}
+	// Request has ArrivalTime 0; admitted tick must be >= arrival time.
+	if admittedTick < req.ArrivalTime {
+		t.Errorf("OnAdmit tick = %d, want >= ArrivalTime %d", admittedTick, req.ArrivalTime)
+	}
+}
+
+// TestSimulator_OnAdmit_NilIsNoop verifies that leaving OnAdmit nil does not panic.
+func TestSimulator_OnAdmit_NilIsNoop(t *testing.T) {
+	sim := mustNewSimulator(t, newTestSimConfig())
+	// sim.OnAdmit is nil by default — do not set it.
+
+	req := &Request{
+		ID:           "r1",
+		ArrivalTime:  0,
+		InputTokens:  make([]int, 3),
+		OutputTokens: make([]int, 4),
+		State:        StateQueued,
+	}
+	sim.InjectArrival(req)
+	sim.Run() // must not panic
+
+	// Verify the request completed (conservation check).
+	if sim.Metrics.CompletedRequests != 1 {
+		t.Errorf("expected 1 completed request, got %d", sim.Metrics.CompletedRequests)
 	}
 }

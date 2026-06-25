@@ -116,6 +116,7 @@ type Simulator struct {
 	// entry). Used by control-plane deciders that track a *waiting* backlog and must
 	// remove a request's work when it is admitted (EDPP waiting-only backlog, design §6.2).
 	// nil ⇒ no-op. Fired inside the deterministic event loop (INV-6 safe).
+	// Note: a preempted-then-readmitted request fires OnAdmit again on re-admission, so consumers must be idempotent.
 	OnAdmit func(req *Request, tick int64)
 
 	progressHook               ProgressHook
