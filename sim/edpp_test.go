@@ -587,6 +587,52 @@ func TestEDPP_PredictorsAndITLCollapse(t *testing.T) {
 	}
 }
 
+func TestEDPP_ChunkCap_CapsDeltaPfChunkAtBudget(t *testing.T) {
+	// Verifies the chunk-budget CAP branch in EDPPDecider.Decide (edpp.go ~line 367-369):
+	//   chunk := ap
+	//   if d.cfg.ChunkTokens > 0 && d.cfg.ChunkTokens < chunk { chunk = d.cfg.ChunkTokens }
+	//   deltaPfChunk = coeffs.CPf * float64(chunk)
+	//
+	// With CPf=10:
+	//   capped   (ChunkTokens=256, ap=1000): chunk=256, DeltaPfChunk = 10*256 = 2560
+	//   uncapped (ChunkTokens=0,   ap=1000): chunk=1000, DeltaPfChunk = 10*1000 = 10000
+	state := &RouterState{
+		SelectedInstance: "d0",
+		Snapshots:        []RoutingSnapshot{{ID: "d0", BatchSize: 1}},
+	}
+	req := &Request{ID: "cap-test", InputTokens: make([]int, 1000), SLOClass: ""}
+
+	t.Run("capped", func(t *testing.T) {
+		cfg := defaultTestEDPPConfig()
+		cfg.TraceEnabled = true
+		cfg.ChunkTokens = 256
+		d := NewEDPPDecider(cfg, newTestAffineModel(), nil, func() []RoutingSnapshot { return nil })
+		dec := d.Decide(req, state)
+		if dec.EDPPTrace == nil {
+			t.Fatal("expected non-nil trace")
+		}
+		const want = 10 * 256.0 // CPf * chunk (capped)
+		if math.Abs(dec.EDPPTrace.DeltaPfChunk-want) > 1e-9 {
+			t.Errorf("DeltaPfChunk (capped) = %v, want %v (cap did not fire)", dec.EDPPTrace.DeltaPfChunk, want)
+		}
+	})
+
+	t.Run("uncapped", func(t *testing.T) {
+		cfg := defaultTestEDPPConfig()
+		cfg.TraceEnabled = true
+		cfg.ChunkTokens = 0 // no cap
+		d := NewEDPPDecider(cfg, newTestAffineModel(), nil, func() []RoutingSnapshot { return nil })
+		dec := d.Decide(req, state)
+		if dec.EDPPTrace == nil {
+			t.Fatal("expected non-nil trace")
+		}
+		const want = 10 * 1000.0 // CPf * full ap
+		if math.Abs(dec.EDPPTrace.DeltaPfChunk-want) > 1e-9 {
+			t.Errorf("DeltaPfChunk (uncapped) = %v, want %v", dec.EDPPTrace.DeltaPfChunk, want)
+		}
+	})
+}
+
 // Compile-time interface compliance.
 var (
 	_ DisaggregationDecider = (*EDPPDecider)(nil)
