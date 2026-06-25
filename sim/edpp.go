@@ -67,6 +67,7 @@ type EDPPConfig struct {
 	NomDecodeCtx     int              // L_nom: nominal decode context for the fixed decode normalizer
 	BlockSize        int              // token block size for the prefix-cache a_p computation
 	ChunkTokens      int              // per-step prefill token budget (max_num_batched_tokens); caps δ_pf-chunk. 0 = no cap (whole prefill counts as one chunk)
+	Coeffs           EDPPCoeffs       // frozen E3 latency-law coefficients (design §1.1); required
 	TraceEnabled     bool             // when true, Decide attaches an EDPPDecisionTrace (intermediate rule terms) to each decision. Off ⇒ zero allocation.
 }
 
@@ -114,6 +115,12 @@ type EDPPDecisionTrace struct {
 }
 
 func (c EDPPConfig) validate() {
+	if err := c.Coeffs.validate(); err != nil {
+		panic(fmt.Sprintf("EDPPConfig: %v", err))
+	}
+	if float64(c.TauITLUs) <= c.Coeffs.AlphaD {
+		panic(fmt.Sprintf("EDPPConfig: TauITLUs (%d µs) must exceed decode α (%.1f µs); the ITL SLO is physically unachievable on this hardware", c.TauITLUs, c.Coeffs.AlphaD))
+	}
 	switch {
 	case c.TauTTFTUs <= 0:
 		panic(fmt.Sprintf("EDPPConfig: TauTTFTUs must be > 0, got %d", c.TauTTFTUs))
@@ -221,6 +228,9 @@ type EDPPDecider struct {
 	deltaBarD, deltaBarP int64
 	muPNom               float64 // μ_p^nom = 1 − α_p/T_iter^nom (E11); does not depend on τ
 
+	// Frozen calibrated coefficients stored for use by downstream tasks.
+	coeffs EDPPCoeffs
+
 	// Per-class controller state: virtual queues keyed by SLO class. Lazily created.
 	zByClass map[string]*edppClassState
 }
@@ -243,6 +253,7 @@ func NewEDPPDecider(cfg EDPPConfig, model LatencyModel, cacheQuery map[string]fu
 		cacheQuery:       cacheQuery,
 		prefillSnapshots: prefillSnapshots,
 		zByClass:         make(map[string]*edppClassState),
+		coeffs:           cfg.Coeffs,
 	}
 
 	// Decode coefficients (nominal context) and prefill coefficients (nominal chunk).

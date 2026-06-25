@@ -52,7 +52,18 @@ func defaultTestEDPPConfig() EDPPConfig {
 		NomPrefillTokens: 512,
 		NomDecodeCtx:     2048,
 		BlockSize:        16,
+		Coeffs:           EDPPCoeffs{AlphaD: 1000, AlphaP: 1000, C0: 100, C1: 1, CPf: 10, CAttn: 0},
 	}
+}
+
+func assertPanics(t *testing.T, f func()) {
+	t.Helper()
+	defer func() {
+		if recover() == nil {
+			t.Errorf("expected panic, got none")
+		}
+	}()
+	f()
 }
 
 // --- Coefficient extraction (Task 1) ---
@@ -426,6 +437,19 @@ func TestEDPP_TransferPenalty_FixedTauRef_EngagesAtLooseDefault(t *testing.T) {
 	if !d.Decide(req, state).Disaggregate {
 		t.Errorf("loose-default-τ request must disaggregate under heavy imbalance (fixed τ_ref), got kept-local")
 	}
+}
+
+func TestEDPPConfig_RequiresCoeffsAndTauITLAboveAlpha(t *testing.T) {
+	m := newTestAffineModel()
+	// Missing coeffs (zero value) must panic via cfg.validate().
+	bad := defaultTestEDPPConfig()
+	bad.Coeffs = EDPPCoeffs{}
+	assertPanics(t, func() { _ = NewEDPPDecider(bad, m, nil, nil) })
+
+	// τ_itl <= α_d is physically unachievable ⇒ panic (design §7 guard).
+	tauGuard := defaultTestEDPPConfig()
+	tauGuard.TauITLUs = 500 // < AlphaD=1000
+	assertPanics(t, func() { _ = NewEDPPDecider(tauGuard, m, nil, nil) })
 }
 
 // Compile-time interface compliance.
