@@ -714,8 +714,17 @@ func TestEDPP_Anchor_DisaggPayoffSign(t *testing.T) {
 // so they also scale by k; CAttn is µs/token² so it scales by k). Keep token counts
 // (a_p, B, KV) fixed. Seed identical backlog via OnRoute and identical z via
 // OnComplete (with realized latencies also scaled by k to keep z dimensionless).
-// Assert the two Decide calls return the same Disaggregate bool.
+//
+// Strengthened assertions (Task 10):
+//  1. LHS and RHS must be EQUAL (not merely same-sign) across k within 1e-9: if any
+//     single coefficient fails to scale, LHS or RHS would differ.
+//  2. TTFT term is exercised: the OnComplete seed also breaches TTFT
+//     (realizedTTFTUs = τ_ttft + 50_000*k) so zTTFT > 0 and ttftTerm is non-zero.
+//  3. A second sub-test exercises the TRUE (disaggregate) side of the boundary to
+//     prove invariance straddles both directions.
 func TestEDPP_Anchor_UnitsDimensionless(t *testing.T) {
+	// mk builds a decider with all µs quantities scaled by k, seeds decode backlog and
+	// z_itl+z_ttft, and returns the full DisaggregationDecision with trace attached.
 	mk := func(k int64) DisaggregationDecision {
 		cfg := defaultTestEDPPConfig()
 		kf := float64(k)
@@ -723,6 +732,7 @@ func TestEDPP_Anchor_UnitsDimensionless(t *testing.T) {
 		cfg.TauITLUs *= k
 		cfg.TauRefUs *= k
 		cfg.CXferUs *= k
+		cfg.TraceEnabled = true
 		cfg.Coeffs = EDPPCoeffs{
 			AlphaD: 1000 * kf,
 			AlphaP: 1000 * kf,
@@ -737,10 +747,13 @@ func TestEDPP_Anchor_UnitsDimensionless(t *testing.T) {
 		seed := &Request{ID: "s", SLOClass: ""}
 		d.OnRoute(seed, seed.ID, false, 200)
 
-		// Seed z_itl via OnComplete; realized latencies scaled by k to keep z dimensionless.
-		// realized ITL = τ_itl + 50_000*k ensures z_itl = 50_000*k/τ_itl = constant.
+		// Seed z_itl AND z_ttft via OnComplete; realized latencies scaled by k to keep
+		// z values dimensionless-invariant.
+		//   z_itl = (τ_itl + 50_000*k − τ_itl) / τ_itl = 50_000/50_000 = 1  (constant across k)
+		//   z_ttft = (τ_ttft + 50_000*k − τ_ttft) / τ_ttft = 50_000*k / (100_000*k) = 0.5 (constant)
+		// Both ttftTerm and itlTerm are now non-zero and must scale invariantly.
 		breach := &Request{ID: "b", SLOClass: "", OutputTokens: []int{1}}
-		d.OnComplete(breach, breach.ID, 0, cfg.TauITLUs+50_000*k)
+		d.OnComplete(breach, breach.ID, cfg.TauTTFTUs+50_000*k, cfg.TauITLUs+50_000*k)
 
 		return d.Decide(
 			&Request{ID: "u", InputTokens: make([]int, 200)},
@@ -751,7 +764,102 @@ func TestEDPP_Anchor_UnitsDimensionless(t *testing.T) {
 	dec1 := mk(1)
 	dec3 := mk(3)
 
+	// Bool equality (existing check preserved).
 	if dec1.Disaggregate != dec3.Disaggregate {
 		t.Errorf("decision not scale-invariant under k=1 vs k=3 rescaling: k=1 → Disaggregate=%v, k=3 → Disaggregate=%v (dimensionality bug in §8 rule)", dec1.Disaggregate, dec3.Disaggregate)
+	}
+
+	// Strong invariance: LHS and RHS must be numerically equal across k within 1e-9.
+	// Any single unscaled µs coefficient would cause LHS or RHS to differ between k=1 and k=3.
+	tr1 := dec1.EDPPTrace
+	tr3 := dec3.EDPPTrace
+	if tr1 == nil || tr3 == nil {
+		t.Fatal("expected non-nil EDPPTrace for both k=1 and k=3 (TraceEnabled=true)")
+	}
+	if math.Abs(tr1.LHS-tr3.LHS) > 1e-9 {
+		t.Errorf("LHS not invariant under k rescaling: k=1 LHS=%v, k=3 LHS=%v (diff=%v > 1e-9); dimensionality bug in §8 rule",
+			tr1.LHS, tr3.LHS, math.Abs(tr1.LHS-tr3.LHS))
+	}
+	if math.Abs(tr1.RHS-tr3.RHS) > 1e-9 {
+		t.Errorf("RHS not invariant under k rescaling: k=1 RHS=%v, k=3 RHS=%v (diff=%v > 1e-9); dimensionality bug in §8 rule",
+			tr1.RHS, tr3.RHS, math.Abs(tr1.RHS-tr3.RHS))
+	}
+
+	// TTFT term must be non-zero (exercised by the TTFT breach seed above).
+	if tr1.TTFTTerm == 0 {
+		t.Errorf("TTFTTerm is 0 at k=1 — TTFT term not exercised (seeding may have failed)")
+	}
+	if tr3.TTFTTerm == 0 {
+		t.Errorf("TTFTTerm is 0 at k=3 — TTFT term not exercised (seeding may have failed)")
+	}
+}
+
+// TestEDPP_Anchor_UnitsDimensionless_DecidesTrueInvariant proves scale-invariance
+// on the TRUE (disaggregate=true) side of the decision boundary. Config: large decode
+// backlog (10 D-path OnRoute seeds of ap=500) + small c_xfer (500µs), low V=0.1 to
+// suppress the transfer penalty. This pushes LHS >> RHS so Disaggregate=true at k=1;
+// k=3 must also give true and LHS/RHS must match within 1e-9.
+func TestEDPP_Anchor_UnitsDimensionless_DecidesTrueInvariant(t *testing.T) {
+	mkTrue := func(k int64) DisaggregationDecision {
+		cfg := defaultTestEDPPConfig()
+		kf := float64(k)
+		cfg.TauTTFTUs *= k
+		cfg.TauITLUs *= k
+		cfg.TauRefUs *= k
+		// Small transfer cost so disaggregation benefit (large decode backlog) wins.
+		cfg.CXferUs = 500 * k
+		cfg.V = 0.1
+		cfg.TraceEnabled = true
+		cfg.Coeffs = EDPPCoeffs{
+			AlphaD: 1000 * kf,
+			AlphaP: 1000 * kf,
+			C0:     100 * kf,
+			C1:     1 * kf,
+			CPf:    10 * kf,
+			CAttn:  0,
+		}
+		d := NewEDPPDecider(cfg, newTestAffineModel(), nil, func() []RoutingSnapshot { return nil })
+
+		// Seed large decode backlog: 10 D-path OnRoute calls (ap=500 each).
+		// qdWork grows substantially, making Q_d/W*_d >> Q_p/W*_p (Q_p=0).
+		for i := 0; i < 10; i++ {
+			r := &Request{ID: fmt.Sprintf("ds%d_%d", k, i), SLOClass: ""}
+			d.OnRoute(r, r.ID, false /*D-path*/, 500)
+		}
+
+		// Also seed z_ttft and z_itl to exercise both terms.
+		breach := &Request{ID: fmt.Sprintf("bt%d", k), SLOClass: "", OutputTokens: []int{1}}
+		d.OnComplete(breach, breach.ID, cfg.TauTTFTUs+50_000*k, cfg.TauITLUs+50_000*k)
+
+		return d.Decide(
+			&Request{ID: fmt.Sprintf("u%d", k), InputTokens: make([]int, 200)},
+			&RouterState{Snapshots: []RoutingSnapshot{{ID: "d0", BatchSize: 2, KvTokensInUse: 1024}}},
+		)
+	}
+
+	dec1 := mkTrue(1)
+	dec3 := mkTrue(3)
+
+	if !dec1.Disaggregate {
+		t.Fatalf("k=1 must decide Disaggregate=true (check backlog seeding); got false — LHS=%v RHS=%v",
+			dec1.EDPPTrace.LHS, dec1.EDPPTrace.RHS)
+	}
+	if dec1.Disaggregate != dec3.Disaggregate {
+		t.Errorf("decision not scale-invariant (true side): k=1 → Disaggregate=%v, k=3 → Disaggregate=%v",
+			dec1.Disaggregate, dec3.Disaggregate)
+	}
+
+	tr1 := dec1.EDPPTrace
+	tr3 := dec3.EDPPTrace
+	if tr1 == nil || tr3 == nil {
+		t.Fatal("expected non-nil EDPPTrace for both k=1 and k=3 (TraceEnabled=true)")
+	}
+	if math.Abs(tr1.LHS-tr3.LHS) > 1e-9 {
+		t.Errorf("LHS not invariant (true side): k=1 LHS=%v, k=3 LHS=%v (diff=%v > 1e-9)",
+			tr1.LHS, tr3.LHS, math.Abs(tr1.LHS-tr3.LHS))
+	}
+	if math.Abs(tr1.RHS-tr3.RHS) > 1e-9 {
+		t.Errorf("RHS not invariant (true side): k=1 RHS=%v, k=3 RHS=%v (diff=%v > 1e-9)",
+			tr1.RHS, tr3.RHS, math.Abs(tr1.RHS-tr3.RHS))
 	}
 }
