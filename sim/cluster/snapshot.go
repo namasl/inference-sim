@@ -155,6 +155,7 @@ func (p *CachedSnapshotProvider) Snapshot(id InstanceID, clock int64) sim.Routin
 	}
 	if p.shouldRefresh(p.config.BatchSize, lr.BatchSize, clock) {
 		snap.BatchSize = inst.BatchSize()
+		snap.ResidentPrefillTokens = inst.ResidentPrefillTokens()
 		lr.BatchSize = clock
 	}
 	if p.shouldRefresh(p.config.KVUtilization, lr.KVUtilization, clock) {
@@ -178,6 +179,7 @@ func (p *CachedSnapshotProvider) RefreshAll(clock int64) {
 		snap.PreemptionCount = inst.PreemptionCount()
 		snap.QueueDepth = inst.QueueDepth()
 		snap.BatchSize = inst.BatchSize()
+		snap.ResidentPrefillTokens = inst.ResidentPrefillTokens()
 		snap.KVUtilization = inst.KVUtilization()
 		snap.FreeKVBlocks = inst.FreeKVBlocks()
 		snap.CacheHitRate = inst.CacheHitRate()

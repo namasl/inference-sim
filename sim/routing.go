@@ -26,6 +26,7 @@ type RoutingSnapshot struct {
 	CostPerHour           float64 // Node pool cost in $/hr; populated by buildRouterState() from NodePool.CostPerHour
 	TotalKvCapacityTokens int64   // Total KV cache capacity in tokens (TotalBlocks × BlockSizeTokens); used by V2SaturationAnalyzer
 	KvTokensInUse         int64   // Current KV cache occupancy in tokens (UsedBlocks × BlockSizeTokens); used by V2SaturationAnalyzer
+	ResidentPrefillTokens int64   // Σ NumNewTokens over requests currently in prefill phase (S_pf for the EDPP E3 law); 0 if not yet available
 	TTFT                  float64 // μs; 0 if not yet available
 	ITL                   float64 // μs; 0 if not yet available
 	DispatchRate          float64 // req/s completed by this instance; 0 if not yet available

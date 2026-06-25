@@ -198,6 +198,23 @@ func (i *InstanceSimulator) KvTokensInUse() int64 {
 	return i.sim.KVCache.UsedBlocks() * i.sim.KVCache.BlockSize()
 }
 
+// ResidentPrefillTokens returns the number of prompt tokens being prefilled this
+// step across all scheduled requests still in their prefill phase (ProgressIndex
+// < len(InputTokens)). This is S_pf in the EDPP E3 latency law; it mirrors the
+// per-step recorder's s_pf accumulation (sim/simulator.go).
+func (i *InstanceSimulator) ResidentPrefillTokens() int64 {
+	if i.sim == nil || i.sim.RunningBatch == nil {
+		return 0
+	}
+	var s int64
+	for _, req := range i.sim.RunningBatch.Requests {
+		if req.ProgressIndex < int64(len(req.InputTokens)) {
+			s += int64(req.NumNewTokens)
+		}
+	}
+	return s
+}
+
 // TotalKVBlocks returns the total number of KV cache blocks for this instance.
 func (i *InstanceSimulator) TotalKVBlocks() int64 {
 	if i.sim == nil || i.sim.KVCache == nil {

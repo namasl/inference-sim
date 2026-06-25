@@ -784,3 +784,43 @@ func TestCluster_CacheSignalDelay_Zero_OracleBehavior(t *testing.T) {
 	m := cs.aggregateMetrics()
 	assert.Greater(t, m.CompletedRequests, 0, "requests should complete")
 }
+
+// TestSnapshot_ResidentPrefillTokens_PopulatedUnderBatchGate verifies that
+// ResidentPrefillTokens is populated in the snapshot under the BatchSize refresh gate.
+//
+// GIVEN an instance whose RunningBatch contains a request in prefill phase
+// (ProgressIndex < len(InputTokens)) with NumNewTokens = 128
+// WHEN a snapshot is taken with Immediate BatchSize config
+// THEN snap.ResidentPrefillTokens == 128
+func TestSnapshot_ResidentPrefillTokens_PopulatedUnderBatchGate(t *testing.T) {
+	inst := newTestInstance("pf-test", 100)
+
+	// Directly inject a prefill-phase request into RunningBatch (ProgressIndex < len(InputTokens)).
+	// This mirrors the s_pf accumulation in sim/simulator.go:758-763.
+	inputTokens := make([]int, 256) // 256 input tokens
+	req := &sim.Request{
+		ID:            "pf-req",
+		ArrivalTime:   0,
+		InputTokens:   inputTokens,
+		OutputTokens:  []int{1},
+		State:         sim.StateRunning,
+		ProgressIndex: 0,          // in prefill phase: ProgressIndex < len(InputTokens)
+		NumNewTokens:  128,        // the value ResidentPrefillTokens should sum
+	}
+	inst.sim.RunningBatch = &sim.Batch{Requests: []*sim.Request{req}}
+
+	instances := map[InstanceID]*InstanceSimulator{"pf-test": inst}
+	// Use Immediate BatchSize mode so the BatchSize gate fires on every Snapshot call.
+	config := ObservabilityConfig{
+		QueueDepth:    FieldConfig{Mode: Immediate},
+		BatchSize:     FieldConfig{Mode: Immediate},
+		KVUtilization: FieldConfig{Mode: Immediate},
+		CacheBlocks:   FieldConfig{Mode: Immediate},
+	}
+	provider := NewCachedSnapshotProvider(instances, config)
+
+	snap := provider.Snapshot("pf-test", 0)
+	if snap.ResidentPrefillTokens != 128 {
+		t.Errorf("ResidentPrefillTokens = %d, want 128", snap.ResidentPrefillTokens)
+	}
+}
