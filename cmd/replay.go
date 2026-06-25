@@ -718,7 +718,7 @@ Example:
 
 		// Write SimResult JSON for calibrate consumption (BC-2)
 		if resultsPath != "" {
-			simResults := extractSimResults(cs.AggregatedMetrics())
+			simResults := extractSimResults(cs.AggregatedMetrics(), cs.ParentRequests())
 			data, err := json.MarshalIndent(simResults, "", "  ")
 			if err != nil {
 				logrus.Fatalf("Failed to marshal SimResults: %v", err)
@@ -850,7 +850,11 @@ func computeReplayHorizon(requests []*sim.Request) int64 {
 // Results are sorted by RequestID for deterministic output (R2, INV-6).
 // Returns an initialized empty slice (not nil) so JSON marshaling produces [] not null.
 // Exclusions are logged at Debug level for observability (R1: no silent data loss).
-func extractSimResults(m *sim.Metrics) []workload.SimResult {
+func extractSimResults(m *sim.Metrics, parents []*cluster.ParentRequest) []workload.SimResult {
+	parentByID := make(map[string]*cluster.ParentRequest, len(parents))
+	for _, pr := range parents {
+		parentByID[pr.ID] = pr
+	}
 	results := make([]workload.SimResult, 0, len(m.RequestTTFTs))
 	var noE2ECount, noReqCount, nonNumericCount int
 	for reqID, ttftUs := range m.RequestTTFTs {
@@ -871,7 +875,7 @@ func extractSimResults(m *sim.Metrics) []workload.SimResult {
 			nonNumericCount++ // session follow-ups or other non-numeric IDs
 			continue
 		}
-		results = append(results, workload.SimResult{
+		sr := workload.SimResult{
 			RequestID:    id,
 			TTFT:         ttftUs,
 			E2E:          e2eUs,
@@ -880,7 +884,15 @@ func extractSimResults(m *sim.Metrics) []workload.SimResult {
 			SLOClass:     rm.SLOClass,
 			Model:        rm.Model,
 			ITLMeanUs:    m.RequestITLs[reqID], // already in ticks (µs), same as TTFT/E2E; 0 if not computed
-		})
+		}
+		if pr := parentByID[reqID]; pr != nil {
+			sr.PrefillInstanceID = string(pr.PrefillInstanceID)
+			sr.DecodeInstanceID = string(pr.DecodeInstanceID)
+			sr.WasDisaggregated = pr.PrefillInstanceID != "" &&
+				pr.DecodeInstanceID != "" &&
+				pr.PrefillInstanceID != pr.DecodeInstanceID
+		}
+		results = append(results, sr)
 	}
 	// Log all exclusions at Debug level for observability (R1: no silent data loss)
 	if noE2ECount > 0 {

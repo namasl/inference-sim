@@ -217,6 +217,28 @@ func TestSimResult_JSONRoundTrip(t *testing.T) {
 	}
 }
 
+func TestExtractSimResults_Disaggregation(t *testing.T) {
+	m := &sim.Metrics{
+		Requests:     map[string]sim.RequestMetrics{"request_7": {NumPrefillTokens: 100, NumDecodeTokens: 20}},
+		RequestTTFTs: map[string]float64{"request_7": 111.0},
+		RequestE2Es:  map[string]float64{"request_7": 999.0},
+		RequestITLs:  map[string]float64{},
+	}
+	parents := []*cluster.ParentRequest{
+		{ID: "request_7", PrefillInstanceID: "prefill-0", DecodeInstanceID: "decode-1"},
+	}
+	got := extractSimResults(m, parents)
+	if len(got) != 1 {
+		t.Fatalf("got %d results, want 1", len(got))
+	}
+	if !got[0].WasDisaggregated {
+		t.Errorf("WasDisaggregated: got false, want true (prefill-0 != decode-1)")
+	}
+	if got[0].PrefillInstanceID != "prefill-0" || got[0].DecodeInstanceID != "decode-1" {
+		t.Errorf("instance ids not mapped: %+v", got[0])
+	}
+}
+
 func TestExtractSimResults_SortsAndConverts(t *testing.T) {
 	// GIVEN a Metrics struct with 3 completed requests
 	m := sim.NewMetrics()
@@ -232,7 +254,7 @@ func TestExtractSimResults_SortsAndConverts(t *testing.T) {
 	m.Requests["request_2"] = sim.RequestMetrics{NumPrefillTokens: 300, NumDecodeTokens: 70}
 
 	// WHEN extractSimResults is called
-	results := extractSimResults(m) // returns []workload.SimResult
+	results := extractSimResults(m, nil) // returns []workload.SimResult
 
 	// THEN 3 results are returned in ascending request_id order (BC-5: determinism, R2)
 	if len(results) != 3 {
@@ -265,7 +287,7 @@ func TestExtractSimResults_SkipsNonNumericIDs(t *testing.T) {
 	m.Requests["session_follow_abc"] = sim.RequestMetrics{NumPrefillTokens: 200, NumDecodeTokens: 60}
 
 	// WHEN extractSimResults is called
-	results := extractSimResults(m)
+	results := extractSimResults(m, nil)
 
 	// THEN only the numeric-ID request is included (BC-7)
 	if len(results) != 1 {
@@ -284,7 +306,7 @@ func TestExtractSimResults_ExcludesPartialTTFT(t *testing.T) {
 	m.Requests["request_0"] = sim.RequestMetrics{NumPrefillTokens: 100, NumDecodeTokens: 0}
 
 	// WHEN extractSimResults is called
-	results := extractSimResults(m)
+	results := extractSimResults(m, nil)
 
 	// THEN the incomplete request is excluded (no E2E = timeout after prefill)
 	if len(results) != 0 {
@@ -297,7 +319,7 @@ func TestExtractSimResults_EmptyMetrics_ReturnsEmptySlice(t *testing.T) {
 	m := sim.NewMetrics()
 
 	// WHEN extractSimResults is called
-	results := extractSimResults(m)
+	results := extractSimResults(m, nil)
 
 	// THEN an initialized empty slice is returned (not nil)
 	// A nil slice marshals to JSON "null"; an empty slice marshals to "[]"
@@ -329,7 +351,7 @@ func TestExtractSimResults_MixedRequests_OnlyCompletedIncluded(t *testing.T) {
 	m.Requests["session_followup_abc"] = sim.RequestMetrics{NumPrefillTokens: 100, NumDecodeTokens: 50}
 
 	// WHEN extractSimResults is called
-	results := extractSimResults(m)
+	results := extractSimResults(m, nil)
 
 	// THEN only the fully-completed numeric-ID request is included
 	if len(results) != 1 {
@@ -353,8 +375,8 @@ func TestExtractSimResults_DeterminismInvariant(t *testing.T) {
 	}
 
 	// WHEN extractSimResults is called twice
-	r1 := extractSimResults(makeMetrics())
-	r2 := extractSimResults(makeMetrics())
+	r1 := extractSimResults(makeMetrics(), nil)
+	r2 := extractSimResults(makeMetrics(), nil)
 
 	// THEN the output is identical (INV-6: determinism)
 	if len(r1) != len(r2) {
@@ -2509,7 +2531,7 @@ func TestExtractSimResults_PropagatesSLOClassModelITL(t *testing.T) {
 	}
 
 	// WHEN extractSimResults is called
-	results := extractSimResults(m)
+	results := extractSimResults(m, nil)
 
 	// THEN SLOClass, Model, and ITLMeanUs are populated correctly (BC-1)
 	if len(results) != 1 {
