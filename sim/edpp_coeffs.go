@@ -58,6 +58,39 @@ func LoadEDPPCoeffs(path string) (EDPPCoeffs, error) {
 	return c, nil
 }
 
+// Wp is the prefill demand of a_p uncached tokens (design §3, E6), in µs.
+func (c EDPPCoeffs) Wp(ap int) float64 {
+	a := float64(ap)
+	return c.CPf*a + (c.CAttn/2.0)*a*a
+}
+
+// tIterDecode is the E3 decode iteration time (µs) at the given batch state.
+func (c EDPPCoeffs) tIterDecode(bDec int, kv, sPf int64) float64 {
+	return c.AlphaD + c.C0*float64(bDec) + c.C1*float64(kv) + c.CPf*float64(sPf)
+}
+
+// tIterPrefill is the E3 prefill iteration time (µs); a dedicated prefill server
+// runs no decode work (B_dec = 0, KV = 0).
+func (c EDPPCoeffs) tIterPrefill(sPf int64) float64 {
+	return c.AlphaP + c.CPf*float64(sPf)
+}
+
+// muDecode / muPrefill are the live drain rates μ = 1 − α/T_iter (design §4),
+// clamped to [edppMinMu, 1] so predictor denominators never collapse.
+func (c EDPPCoeffs) muDecode(bDec int, kv, sPf int64) float64 {
+	return clampMu(1.0 - c.AlphaD/c.tIterDecode(bDec, kv, sPf))
+}
+
+func (c EDPPCoeffs) muPrefill(sPf int64) float64 {
+	return clampMu(1.0 - c.AlphaP/c.tIterPrefill(sPf))
+}
+
+// deltaBarDecode is the marginal decode work per step at context length ctxLen
+// (design §6.3: δ̄_dec = c0 + c1·L̄), in µs.
+func (c EDPPCoeffs) deltaBarDecode(ctxLen float64) float64 {
+	return c.C0 + c.C1*ctxLen
+}
+
 // validate enforces positivity of the fixed costs and non-negativity of the
 // per-token coefficients, plus an α ≈ α_p sanity bound (design §1.1: prefill and
 // decode share the same per-iteration intercept; > 10% divergence means the JSON

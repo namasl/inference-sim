@@ -35,6 +35,47 @@ func TestLoadEDPPCoeffs_FrozenLlama70b(t *testing.T) {
 	}
 }
 
+func TestEDPPCoeffs_Wp(t *testing.T) {
+	c := EDPPCoeffs{CPf: 10, CAttn: 0}
+	// linear-only (test model): W_p(300) = 10·300 = 3000
+	if got := c.Wp(300); math.Abs(got-3000) > 1e-9 {
+		t.Errorf("Wp(300) = %v, want 3000", got)
+	}
+	// with attention curvature: W_p(100) = 6·100 + (0.5/2)·100² = 600 + 0.25·10000 = 3100
+	c2 := EDPPCoeffs{CPf: 6, CAttn: 0.5}
+	if got := c2.Wp(100); math.Abs(got-3100) > 1e-9 {
+		t.Errorf("Wp(100) = %v, want 3100", got)
+	}
+}
+
+func TestEDPPCoeffs_IterTimeAndMu(t *testing.T) {
+	c := EDPPCoeffs{AlphaD: 1000, AlphaP: 1000, C0: 100, C1: 1, CPf: 10}
+	// T_iter decode at B=2, KV=2048, S_pf=0: 1000 + 100·2 + 1·2048 = 3248
+	if got := c.tIterDecode(2, 2048, 0); math.Abs(got-3248) > 1e-9 {
+		t.Errorf("tIterDecode = %v, want 3248", got)
+	}
+	// μ_dec = 1 − 1000/3248
+	if got := c.muDecode(2, 2048, 0); math.Abs(got-(1-1000.0/3248)) > 1e-9 {
+		t.Errorf("muDecode = %v, want %v", got, 1-1000.0/3248)
+	}
+	// T_iter prefill at S_pf=512: 1000 + 10·512 = 6120; μ_pf = 1 − 1000/6120
+	if got := c.muPrefill(512); math.Abs(got-(1-1000.0/6120)) > 1e-9 {
+		t.Errorf("muPrefill = %v, want %v", got, 1-1000.0/6120)
+	}
+	// deltaBarDecode(2048) = 100 + 1·2048 = 2148
+	if got := c.deltaBarDecode(2048); math.Abs(got-2148) > 1e-9 {
+		t.Errorf("deltaBarDecode = %v, want 2148", got)
+	}
+}
+
+func TestEDPPCoeffs_MuClamped(t *testing.T) {
+	// Degenerate α ≥ T_iter ⇒ μ floored at edppMinMu, never <= 0.
+	c := EDPPCoeffs{AlphaD: 10_000, AlphaP: 10_000, C0: 0, C1: 0, CPf: 1}
+	if got := c.muDecode(0, 0, 0); got < edppMinMu-1e-12 || got > 1.0 {
+		t.Errorf("muDecode clamp = %v, want in [%v,1]", got, edppMinMu)
+	}
+}
+
 func TestEDPPCoeffs_Validate(t *testing.T) {
 	good := EDPPCoeffs{AlphaD: 1000, AlphaP: 1000, C0: 100, C1: 1, CPf: 10, CAttn: 0}
 	if err := good.validate(); err != nil {
