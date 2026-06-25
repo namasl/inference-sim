@@ -863,3 +863,27 @@ func TestEDPP_Anchor_UnitsDimensionless_DecidesTrueInvariant(t *testing.T) {
 			tr1.RHS, tr3.RHS, math.Abs(tr1.RHS-tr3.RHS))
 	}
 }
+
+func TestEDPP_TTFTP_UsesPrefillCoResidency(t *testing.T) {
+	// §5.1: TTFT_P co-residency overhead is T_pf(B−1)=α_p+c_pf·S_pf, NOT bare α_p.
+	// With prefill-pool S_pf>0, ttftP must exceed the old α_p-only value by
+	// nChunks·c_pf·S_pf. We observe ttftP via the decision trace.
+	cfg := defaultTestEDPPConfig()
+	cfg.TraceEnabled = true
+	cfg.ChunkTokens = 0 // chunk = ap ⇒ nChunks = 1
+	// Prefill pool reports a busy running batch: S_pf = 400 resident prefill tokens.
+	prefill := func() []RoutingSnapshot {
+		return []RoutingSnapshot{{ID: "p0", ResidentPrefillTokens: 400}}
+	}
+	d := NewEDPPDecider(cfg, newTestAffineModel(), nil, prefill)
+	req := &Request{ID: "q", InputTokens: make([]int, 300)}
+	state := &RouterState{SelectedInstance: "d0", Snapshots: []RoutingSnapshot{{ID: "d0", BatchSize: 1}}}
+	tr := d.Decide(req, state).EDPPTrace
+	// μ_pf = 1 − α_p/(α_p + c_pf·S_pf) = 1 − 1000/(1000+10·400) = 1 − 1000/5000 = 0.8
+	// qP = 0 (no OnRoute). nChunks=1, deltaPfChunk = c_pf·chunk = 10·300 = 3000.
+	// T_pf(B−1) = α_p + c_pf·S_pf = 1000 + 10·400 = 5000.
+	// ttftP = 0/0.8 + 1·(5000 + 3000) + c_xfer(5000) = 8000 + 5000 = 13000.
+	if math.Abs(tr.TTFTP-13000) > 1e-6 {
+		t.Errorf("ttftP = %v, want 13000 (uses T_pf(B−1)=5000, not α_p=1000)", tr.TTFTP)
+	}
+}

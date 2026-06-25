@@ -384,7 +384,7 @@ func (d *EDPPDecider) Decide(req *Request, state *RouterState) DisaggregationDec
 	}
 	nChunks := math.Ceil(float64(ap) / float64(chunk))
 	deltaPfChunk := d.coeffs.CPf * float64(chunk)
-	ttftP := qP/muPf + nChunks*(d.coeffs.AlphaP+deltaPfChunk) + float64(d.cfg.CXferUs)
+	ttftP := qP/muPf + nChunks*(d.coeffs.tIterPrefill(sPfPrefill)+deltaPfChunk) + float64(d.cfg.CXferUs)
 	ttftD := qD/muDec + nChunks*(tBminus1+deltaPfChunk)
 
 	// Per-class virtual queues.
