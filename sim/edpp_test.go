@@ -105,18 +105,12 @@ func TestEDPP_AlphaZero_YieldsConservingRate(t *testing.T) {
 	// construction — the test verifies behavior at the mathematical limit α→0.
 	// We construct the decider directly to skip validate(), exercising clampMu.
 	d := &EDPPDecider{
-		cfg:    cfg,
-		model:  m,
-		coeffs: cfg.Coeffs,
+		cfg:      cfg,
+		model:    m,
+		coeffs:   cfg.Coeffs,
 		zByClass: make(map[string]*edppClassState),
 	}
-	d.alphaD = 0
-	d.alphaP = 0
-	tIterPNom := float64(m.StepTime([]*Request{edppPrefillProbe(cfg.NomPrefillTokens)}))
-	_ = tIterPNom // not used in coeff path
 	d.muPNom = d.coeffs.muPNom(cfg.NomPrefillTokens)
-	d.deltaBarD = edppMarginalDelta(m, edppDecodeProbe(cfg.NomDecodeCtx))
-	d.deltaBarP = edppMarginalDelta(m, edppPrefillProbe(cfg.NomPrefillTokens))
 	n := d.normFor("") // default class
 	if math.Abs(n.muDNom-1.0) > 1e-9 {
 		t.Errorf("α=0 ⇒ μ_d^nom = %v, want 1.0", n.muDNom)
