@@ -8,7 +8,7 @@ BASE = {
 RATES = [0.5, 1.0, 1.5, 2.0, 2.5, 3.0]  # provisional; Task 5 fixes final points around the knee
 OUT = pathlib.Path("campaigns/edpp-study/specs"); OUT.mkdir(parents=True, exist_ok=True)
 
-def rewrite(text, rate, nreq=20000):
+def rewrite(text, rate, nreq=5000):
     text = re.sub(r"^aggregate_rate:.*$", f"aggregate_rate: {rate}", text, flags=re.M)
     text = re.sub(r"^num_requests:.*$", f"num_requests: {nreq}", text, flags=re.M)
     return text

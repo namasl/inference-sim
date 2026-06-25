@@ -711,6 +711,26 @@ Example:
 			fmt.Printf("Max Regret: %.6f\n", traceSummary.MaxRegret)
 		}
 
+		// Write per-decision EDPP rule-term CSV if requested (mirrors root.go runCmd; INV-13 parity).
+		if edppDecisionTracePath != "" {
+			tr := cs.Trace()
+			if tr == nil || len(tr.EDPPDecisions) == 0 {
+				logrus.Warnf("--edpp-decision-trace: no EDPP decision records to write (need --trace-level decisions and --pd-decider edpp)")
+			} else if f, err := os.Create(edppDecisionTracePath); err != nil {
+				logrus.Errorf("--edpp-decision-trace: could not create %q: %v", edppDecisionTracePath, err)
+			} else {
+				werr := trace.WriteEDPPDecisionCSV(f, tr.EDPPDecisions)
+				cerr := f.Close()
+				if werr != nil {
+					logrus.Errorf("--edpp-decision-trace: write failed: %v", werr)
+				} else if cerr != nil {
+					logrus.Errorf("--edpp-decision-trace: close failed: %v", cerr)
+				} else {
+					logrus.Infof("Wrote %d EDPP decision records to %s", len(tr.EDPPDecisions), edppDecisionTracePath)
+				}
+			}
+		}
+
 		// Warn if --fitness-weights is set (not supported in replay mode per R1)
 		if fitnessWeights != "" {
 			logrus.Warnf("--fitness-weights has no effect in replay mode (fitness evaluation not supported for replay)")
