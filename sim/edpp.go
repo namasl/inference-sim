@@ -26,12 +26,15 @@ import (
 //
 // # Backlog accounting
 //
-// Q_p/Q_d are maintained by conservation: OnRoute adds a committed request's work,
-// OnComplete removes it. There is no continuous μ·Δt drain (deferred — needs a
-// sim-clock tick the decider does not yet receive); a P-routed request's prefill
-// work is held until decode completes (bounded over-hold). Decode work uses the
-// per-class running-mean output length N̂_out (INV-9: realized length read only at
-// completion). Forget() releases work on terminal non-completion (timeout/drop).
+// Q_p/Q_d are the WAITING backlog (design §1.2, §6.1): work of requests routed to a
+// server but not yet admitted to its running batch. OnRoute adds a request's work;
+// OnAdmit removes the admitted side's share (Q_p when the prefill sub-request enters
+// the prefill batch, Q_d when the decode/normal request enters the decode batch);
+// OnComplete updates only z and N̂_out (the running batch is captured by T(B−1)/μ in
+// the predictors, not by Q). Forget releases any still-waiting share on terminal
+// non-completion (timeout/drop). Decode work uses the per-class running-mean output
+// length N̂_out (INV-9: realized length read only at completion). The TTFT predictors
+// are symmetric co-residency: TTFT_x = Q_x^wait/μ_x + n·(T_x(B−1)+δ_pf-chunk) [+c_xfer].
 //
 // # Oracle safety (INV-9)
 //
@@ -50,9 +53,6 @@ import (
 //     with B via nEff; exact for dense models.
 //   - Optimistic in-flight backlog increments (§8.1) are omitted in the base
 //     implementation; the z-feedback half of the rule is immune to scrape staleness.
-//   - The continuous μ·Δt backlog drain and per-token decode drain (§6.2/6.3) are
-//     deferred; conservation bookkeeping (add-at-route, remove-at-complete) is the
-//     shipped approximation.
 
 // EDPPConfig holds the controller's fixed knobs. All durations are microseconds.
 //
