@@ -88,7 +88,7 @@ type Simulator struct {
 	// Requests are ordered by First-Come-First-Served in WaitQ, and the same order is maintained
 	// while adding requests to RunningBatch
 	RunningBatch *Batch
-	Metrics *Metrics
+	Metrics      *Metrics
 	// max number of requests RunningBatch can hold
 	maxRunningReqs int64
 	// max total number of new tokens across all requests in RunningBatch
@@ -99,20 +99,26 @@ type Simulator struct {
 	// map of request IDs to total num computed tokens (including cached tokens)
 	reqNumComputedTokens map[string]int64
 	batchFormation       BatchFormation
-	model                  string
-	gpu                    string
-	maxModelLen            int64 // max total sequence length (0 = unlimited)
-	rng                    *PartitionedRNG // partitioned RNG for deterministic multi-subsystem simulation
-	sloMap *SLOPriorityMap // vLLM-convention priority mapping for instance-level scheduling
-	scheduler      InstanceScheduler
-	latencyModel           LatencyModel
-	seqCounter             int64 // monotonic counter for event queue seqID (deterministic ordering)
+	model                string
+	gpu                  string
+	maxModelLen          int64           // max total sequence length (0 = unlimited)
+	rng                  *PartitionedRNG // partitioned RNG for deterministic multi-subsystem simulation
+	sloMap               *SLOPriorityMap // vLLM-convention priority mapping for instance-level scheduling
+	scheduler            InstanceScheduler
+	latencyModel         LatencyModel
+	seqCounter           int64 // monotonic counter for event queue seqID (deterministic ordering)
 	// OnRequestDone is an optional callback invoked when a request reaches a terminal
 	// state (completed, length-capped, or timed out). Returns follow-up requests to inject.
 	// Set by the caller (cmd/root.go or ClusterSimulator). Nil = no callback.
 	OnRequestDone func(req *Request, tick int64) []*Request
+	// OnAdmit is an optional callback invoked once when a request first transitions
+	// from the wait queue into the running batch (i.e. for each BatchResult.NewlyScheduled
+	// entry). Used by control-plane deciders that track a *waiting* backlog and must
+	// remove a request's work when it is admitted (EDPP waiting-only backlog, design §6.2).
+	// nil ⇒ no-op. Fired inside the deterministic event loop (INV-6 safe).
+	OnAdmit func(req *Request, tick int64)
 
-	progressHook                ProgressHook
+	progressHook               ProgressHook
 	simClockProgressIntervalUs int64
 	nextSnapshotClockUs        int64
 
@@ -715,6 +721,9 @@ func (sim *Simulator) scheduleBatch(now int64) {
 
 	// Schedule events for newly scheduled requests and record scheduling metrics
 	for _, s := range batchResult.NewlyScheduled {
+		if sim.OnAdmit != nil {
+			sim.OnAdmit(s.Request, now)
+		}
 		sim.Schedule(&ScheduledEvent{
 			time:    now,
 			Request: s.Request,
