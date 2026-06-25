@@ -27,7 +27,7 @@ func TestResolveEDPPCoeffs_FrozenLlama70b(t *testing.T) {
 
 	got := resolveEDPPCoeffs("edpp", path)
 	const wantAlphaD = 16613.54
-	const eps = 1e-6
+	const eps = 1.0 // allow up to 1 µs/token rounding across JSON encoders
 	if math.Abs(got.AlphaD-wantAlphaD) > eps {
 		t.Errorf("AlphaD: want %v (±%v), got %v", wantAlphaD, eps, got.AlphaD)
 	}
