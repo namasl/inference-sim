@@ -132,3 +132,6 @@ docs/plans/
 # Nous campaign orchestration (experiment worktrees + state, not committed)
 .nous-experiments/
 .nous/
+
+# EDPP study: generated per-load specs (reproducible from make_specs.py)
+campaigns/edpp-study/specs/
