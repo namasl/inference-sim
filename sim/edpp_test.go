@@ -458,13 +458,21 @@ func TestEDPP_BookkeepingConservation(t *testing.T) {
 	if math.Abs(qpAfterRoute-2000) > 1e-9 {
 		t.Errorf("qpWork = %v, want 2000 (W_p(200))", qpAfterRoute)
 	}
-	// Completion removes the request's work: Q returns to ~0 (conservation).
+	// Admission drains the work (§6.2): prefill side drains Q_p, decode side drains Q_d.
+	// For a P-routed request, prefill admission fires first, then decode admission.
+	d.OnAdmit(r1.ID, true /*prefillSide*/)
+	if math.Abs(d.qpWork) > 1e-9 {
+		t.Errorf("qpWork after prefill OnAdmit = %v, want 0", d.qpWork)
+	}
+	d.OnAdmit(r1.ID, false /*decodeSide*/)
+	_, qdAfterAdmit, pendingAfterAdmit := d.BacklogForTest()
+	if math.Abs(qdAfterAdmit) > 1e-9 || pendingAfterAdmit != 0 {
+		t.Errorf("after both OnAdmit: qd=%v pending=%d, want 0,0", qdAfterAdmit, pendingAfterAdmit)
+	}
+	// OnComplete updates N̂_out and virtual queues (backlog already drained).
 	r1.ITL = []int64{40_000}
 	r1.OutputTokens = []int{1, 2, 3} // realized N_out=3 (post-completion read; INV-9 OK)
 	d.OnComplete(r1, r1.ID, 90_000, 40_000)
-	if math.Abs(d.qpWork) > 1e-9 {
-		t.Errorf("qpWork after completion = %v, want 0", d.qpWork)
-	}
 	// N̂_out updated from the realized length.
 	if m := d.nHatOut[""]; m == nil || m.mean() != 3 {
 		t.Errorf("N̂_out not updated to 3, got %+v", m)
@@ -861,6 +869,78 @@ func TestEDPP_Anchor_UnitsDimensionless_DecidesTrueInvariant(t *testing.T) {
 	if math.Abs(tr1.RHS-tr3.RHS) > 1e-9 {
 		t.Errorf("RHS not invariant (true side): k=1 RHS=%v, k=3 RHS=%v (diff=%v > 1e-9)",
 			tr1.RHS, tr3.RHS, math.Abs(tr1.RHS-tr3.RHS))
+	}
+}
+
+// --- Task 3: waiting-only backlog migration tests ---
+
+func TestEDPP_WaitingOnly_DrainsAtAdmissionNotCompletion(t *testing.T) {
+	d := NewEDPPDecider(defaultTestEDPPConfig(), newTestAffineModel(), nil, nil)
+	// D-routed request: OnRoute adds wp+wd to qdWork.
+	r := &Request{ID: "d1", SLOClass: ""}
+	d.OnRoute(r, r.ID, false, 200) // Wp(200)=2000; wd=N̂_out(=1)·deltaBarDecode(2048)=2148 ⇒ qd=4148
+	_, qd0, n0 := d.BacklogForTest()
+	if qd0 <= 0 || n0 != 1 {
+		t.Fatalf("after OnRoute: qd=%v pending=%d, want qd>0 pending=1", qd0, n0)
+	}
+	// OnComplete must NOT drain the backlog (waiting work already left at admission)...
+	r.OutputTokens = []int{1, 2}
+	d.OnComplete(r, r.ID, 90_000, 40_000)
+	_, qdAfterComplete, nAfterComplete := d.BacklogForTest()
+	if qdAfterComplete != qd0 {
+		t.Errorf("OnComplete drained backlog (%v→%v); it must not — admission drains", qd0, qdAfterComplete)
+	}
+	if nAfterComplete != 1 {
+		t.Errorf("OnComplete deleted pending; it must not — admission deletes")
+	}
+	// ...OnAdmit (decode side) drains it and clears pending.
+	d.OnAdmit(r.ID, false)
+	_, qdAfterAdmit, nAfterAdmit := d.BacklogForTest()
+	if math.Abs(qdAfterAdmit) > 1e-9 || nAfterAdmit != 0 {
+		t.Errorf("after OnAdmit: qd=%v pending=%d, want 0 and 0", qdAfterAdmit, nAfterAdmit)
+	}
+}
+
+func TestEDPP_WaitingOnly_PDTwoSidedAdmission(t *testing.T) {
+	d := NewEDPPDecider(defaultTestEDPPConfig(), newTestAffineModel(), nil, nil)
+	// P-routed: OnRoute adds wp→qp, wd→qd.
+	r := &Request{ID: "p1", SLOClass: ""}
+	d.OnRoute(r, r.ID, true, 200) // qp += Wp(200)=2000 ; qd += wd=2148
+	qp0, qd0, _ := d.BacklogForTest()
+	if math.Abs(qp0-2000) > 1e-9 || qd0 <= 0 {
+		t.Fatalf("after P OnRoute: qp=%v qd=%v", qp0, qd0)
+	}
+	// Prefill admission drains ONLY the Q_p share; pending survives (decode share remains).
+	d.OnAdmit(r.ID, true)
+	qpA, qdA, nA := d.BacklogForTest()
+	if math.Abs(qpA) > 1e-9 {
+		t.Errorf("prefill admit: qp=%v, want 0", qpA)
+	}
+	if math.Abs(qdA-qd0) > 1e-9 || nA != 1 {
+		t.Errorf("prefill admit must not touch qd or delete pending; qd=%v pending=%d", qdA, nA)
+	}
+	// Decode admission drains the Q_d share and clears pending.
+	d.OnAdmit(r.ID, false)
+	qpB, qdB, nB := d.BacklogForTest()
+	if math.Abs(qpB) > 1e-9 || math.Abs(qdB) > 1e-9 || nB != 0 {
+		t.Errorf("decode admit: qp=%v qd=%v pending=%d, want 0,0,0", qpB, qdB, nB)
+	}
+}
+
+func TestEDPP_Anchor_WaitingVsRunning(t *testing.T) {
+	// §11 new anchor: an admitted (running) request must NOT contribute to the
+	// normalized waiting backlog q_d that drives the rule's LHS.
+	cfg := defaultTestEDPPConfig()
+	cfg.TraceEnabled = true
+	d := NewEDPPDecider(cfg, newTestAffineModel(), nil, func() []RoutingSnapshot { return nil })
+	probe := &Request{ID: "x", InputTokens: make([]int, 200)}
+	state := &RouterState{SelectedInstance: "d0", Snapshots: []RoutingSnapshot{{ID: "d0", BatchSize: 2, KvTokensInUse: 1024}}}
+	d.OnRoute(&Request{ID: "w1", SLOClass: ""}, "w1", false, 500) // waiting work present
+	lhsWaiting := d.Decide(probe, state).EDPPTrace.LHS
+	d.OnAdmit("w1", false) // w1 now running, not waiting
+	lhsRunning := d.Decide(probe, state).EDPPTrace.LHS
+	if lhsRunning >= lhsWaiting {
+		t.Errorf("admitting w1 did not reduce waiting-backlog LHS (%v → %v); running work must leave q_d", lhsWaiting, lhsRunning)
 	}
 }
 

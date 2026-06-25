@@ -595,6 +595,11 @@ func NewClusterSimulator(config DeploymentConfig, requests []*sim.Request, onReq
 				}
 				return nil // don't inject locally — route through cluster pipeline
 			}
+			if cs.sloFeedback != nil {
+				inst.sim.OnAdmit = func(req *sim.Request, tick int64) {
+					cs.feedAdmission(req)
+				}
+			}
 		}
 	}
 
@@ -1114,6 +1119,11 @@ func (cs *ClusterSimulator) addLiveInstance(
 			}
 			return nil // don't inject locally — route through cluster pipeline
 		}
+		if cs.sloFeedback != nil {
+			inst.sim.OnAdmit = func(req *sim.Request, tick int64) {
+				cs.feedAdmission(req)
+			}
+		}
 	}
 
 	return true
@@ -1244,6 +1254,38 @@ func (c *ClusterSimulator) edppConservationKey(req *sim.Request) string {
 		}
 	}
 	return req.ID
+}
+
+// admissionConservationKey resolves a just-admitted request to the OnRoute key
+// (the parent/original request ID) and which backlog share its admission drains.
+// prefillSide=true ⇒ this is the prefill sub-request of a P-routed request
+// (drains Q_p); prefillSide=false ⇒ a decode sub-request or a normal D-routed
+// request (drains Q_d). known=false ⇒ the request was not routed under EDPP
+// bookkeeping (skip).
+func (cs *ClusterSimulator) admissionConservationKey(req *sim.Request) (key string, prefillSide bool, known bool) {
+	if req.IsDecodeSubRequest {
+		if parent, ok := cs.pendingDecodeCompletions[req.ID]; ok {
+			return parent, false, true
+		}
+		return "", false, false
+	}
+	if parent, ok := cs.pendingPrefillCompletions[req.ID]; ok {
+		return parent, true, true // prefill sub-request of a disaggregated request
+	}
+	return req.ID, false, true // normal (D-routed) request: key is its own ID
+}
+
+// feedAdmission notifies an SLO-feedback decider that a routed request entered a
+// running batch, so it can drain the waiting backlog (EDPP waiting-only, §6.2).
+func (cs *ClusterSimulator) feedAdmission(req *sim.Request) {
+	if cs.sloFeedback == nil {
+		return
+	}
+	key, prefillSide, known := cs.admissionConservationKey(req)
+	if !known {
+		return
+	}
+	cs.sloFeedback.OnAdmit(key, prefillSide)
 }
 
 func (c *ClusterSimulator) detectPrefillCompletions(inst *InstanceSimulator) {

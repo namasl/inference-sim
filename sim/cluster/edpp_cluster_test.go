@@ -131,6 +131,48 @@ func TestEDPP_Cluster_ConservationAfterDisaggregatedCompletion(t *testing.T) {
 	}
 }
 
+// TestEDPP_Cluster_WaitingBacklogDrainsAtAdmission verifies that after a full run
+// the waiting backlog is zero (drained at admission, not at completion). It reuses
+// the same forced-disaggregation setup as ConservationAfterDisaggregatedCompletion to
+// exercise the P-routed (prefill+decode) admission path, then asserts qp≈0, qd≈0,
+// pending==0 via BacklogForTest(). Conservation now holds via ADMISSION drain, not
+// via OnComplete.
+func TestEDPP_Cluster_WaitingBacklogDrainsAtAdmission(t *testing.T) {
+	config := newTestEDPPDeploymentConfig(4, 2, 2)
+	config.EDPPV = 0
+	config.EDPPCXferUs = 0
+	config.LatencyCoeffs = sim.NewLatencyCoeffs(
+		[]float64{1000, 0, 0, 0, 0, 0, 0},
+		[]float64{100, 1, 100},
+	)
+	cs := NewClusterSimulator(config, newTestRequests(10), nil)
+
+	dec, ok := cs.disaggregationDecider.(*sim.EDPPDecider)
+	if !ok {
+		t.Fatalf("disaggregationDecider = %T, want *sim.EDPPDecider", cs.disaggregationDecider)
+	}
+	// Seed standing ITL-SLO pressure so requests actually disaggregate (P-routed).
+	for i := 0; i < 200; i++ {
+		dec.OnComplete(&sim.Request{ID: "seed", SLOClass: ""}, "seed", 0, 500_000)
+	}
+
+	mustRun(t, cs)
+
+	if len(cs.ParentRequests()) == 0 {
+		t.Fatalf("no requests were disaggregated; test does not exercise the P-routed admission path")
+	}
+
+	// Conservation via admission drain: all waiting work must be drained by now.
+	qp, qd, pendingLen := dec.BacklogForTest()
+	const eps = 1e-6
+	if qp > eps || qd > eps {
+		t.Errorf("waiting backlog not drained at admission: qp=%v qd=%v pending=%d (want ~0)", qp, qd, pendingLen)
+	}
+	if pendingLen != 0 {
+		t.Errorf("pending entries remain after all admissions: %d (want 0)", pendingLen)
+	}
+}
+
 // TestEDPP_Cluster_ConservationOnNonCompletionTerminal asserts the Defect-2 cleanup:
 // a routed request that reaches a terminal state WITHOUT a usable completion signal
 // still releases its conservation backlog. Single-token outputs produce a TTFT but no
