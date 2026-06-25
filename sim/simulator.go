@@ -115,6 +115,11 @@ type Simulator struct {
 	progressHook                ProgressHook
 	simClockProgressIntervalUs int64
 	nextSnapshotClockUs        int64
+
+	// stepRec, when non-nil (enabled via BLIS_STEP_CSV), streams per-step E3
+	// latency-law regressors to a CSV for offline coefficient calibration.
+	// nil by default — no effect on the deterministic result channel.
+	stepRec *stepRecorder
 }
 
 // NewSimulator creates a Simulator from a SimConfig struct and pre-built dependencies.
@@ -177,6 +182,7 @@ func NewSimulator(cfg SimConfig, kvStore KVStore, latencyModel LatencyModel) (*S
 	}
 	s.rng = NewPartitionedRNG(NewSimulationKey(cfg.Seed))
 	s.scheduler = NewScheduler(cfg.Scheduler)
+	s.stepRec = newStepRecorderFromEnv()
 
 	return s, nil
 }
@@ -247,6 +253,7 @@ func (sim *Simulator) Finalize() {
 		sim.Metrics.StillRunning = len(sim.RunningBatch.Requests)
 	}
 	sim.Metrics.SimEndedTime = min(sim.Clock, sim.Horizon)
+	sim.stepRec.close() // nil-safe; flushes and closes the calibration CSV
 	logrus.Infof("[tick %07d] Simulation ended", sim.Clock)
 }
 
@@ -738,6 +745,29 @@ func (sim *Simulator) executeBatchStep(now int64) int64 {
 		}
 	}
 	currStepAdvance := sim.latencyModel.StepTime(scheduled)
+
+	// Calibration tap (off unless BLIS_STEP_CSV is set): record the E3
+	// latency-law regressors for this step. We classify scheduled with the
+	// same rule StepTime uses (ProgressIndex<InputLen → prefill, else decode
+	// when output exists) so the recorded (B_dec, KV, S_pf) are exactly the
+	// ones that produced currStepAdvance. Recorded before the CPU-transfer
+	// addition below, so t_iter is the pure GPU step the E3 law models.
+	if sim.stepRec != nil {
+		var bDec int
+		var kv, sPf, pfCtx int64
+		for _, req := range scheduled {
+			si := util.Len64(req.InputTokens)
+			if req.ProgressIndex < si {
+				nt := int64(req.NumNewTokens)
+				sPf += nt
+				pfCtx += nt * (si + nt/2)
+			} else if len(req.OutputTokens) > 0 {
+				bDec++
+				kv += req.ProgressIndex
+			}
+		}
+		sim.stepRec.record(sim.stepCount, currStepAdvance, bDec, kv, sPf, pfCtx, len(scheduled))
+	}
 
 	// Add transfer latency from CPU→GPU reloads (0 for single-tier)
 	currStepAdvance += sim.KVCache.ConsumePendingTransferLatency()
