@@ -191,11 +191,21 @@ func edppMarginalDelta(m LatencyModel, probe *Request) int64 {
 // SLOFeedbackDecider is the lifecycle hook. OnRoute fires once when a request is
 // committed to a pool (increments the work backlog Q). OnComplete fires at the
 // request's terminal completion (decrements Q, bumps the virtual queues, and
-// updates the per-class output-length estimate N̂_out). Call sites discover it via
-// a type assertion, so adding it does not break DisaggregationDecider.
+// updates the per-class output-length estimate N̂_out). Forget releases the backlog
+// for a routed request that reaches a terminal state WITHOUT a normal completion
+// (timeout/drop) — no z bump, no N̂_out update. Call sites discover it via a type
+// assertion, so adding it does not break DisaggregationDecider.
+//
+// key is an explicit, stable correlation id chosen by the caller: it MUST be the
+// same value at OnRoute and at the matching OnComplete/Forget, so the conservation
+// bookkeeping decrements exactly the work the route added. For PD-disaggregated
+// requests the routed request and the completing decode sub-request have different
+// Request.IDs, so the cluster passes the parent identity here (see the cluster's
+// feedSLOFeedback). The decider never parses the key; it only uses it as a map key.
 type SLOFeedbackDecider interface {
-	OnRoute(req *Request, toPrefill bool, apTokens int)                             // increment Q at admission
-	OnComplete(req *Request, realizedTTFTUs, realizedMeanITLUs int64) // decrement Q, bump z, update N̂_out
+	OnRoute(req *Request, key string, toPrefill bool, apTokens int)               // increment Q at admission
+	OnComplete(req *Request, key string, realizedTTFTUs, realizedMeanITLUs int64) // decrement Q, bump z, update N̂_out
+	Forget(key string)                                                            // release Q for a terminally non-completed routed request
 }
 
 // edppPendingWork records the work a routed request contributed, so OnComplete can
@@ -255,8 +265,8 @@ type EDPPDecider struct {
 	zByClass map[string]*edppClassState
 
 	// Conservation bookkeeping (design §6 conservation form).
-	qpWork, qdWork float64                    // running work-µs backlogs
-	pending        map[string]edppPendingWork // per-request work, keyed by Request.ID
+	qpWork, qdWork float64                     // running work-µs backlogs
+	pending        map[string]edppPendingWork  // per-request work, keyed by Request.ID
 	nHatOut        map[string]*edppRunningMean // per-class realized output-length estimate
 }
 
@@ -513,7 +523,7 @@ func (d *EDPPDecider) nHatFor(class string) *edppRunningMean {
 // OnRoute increments the work backlog for a committed request (design §6.1,
 // conservation form). apTokens is the uncached prompt token count (input-only; INV-9
 // safe). W_d uses the class N̂_out estimate at the nominal decode context.
-func (d *EDPPDecider) OnRoute(req *Request, toPrefill bool, apTokens int) {
+func (d *EDPPDecider) OnRoute(req *Request, key string, toPrefill bool, apTokens int) {
 	if apTokens <= 0 {
 		return
 	}
@@ -529,14 +539,14 @@ func (d *EDPPDecider) OnRoute(req *Request, toPrefill bool, apTokens int) {
 		pw.wd = wp + wd // mixed prefill+decode on the decode pool
 		d.qdWork += wp + wd
 	}
-	d.pending[req.ID] = pw
+	d.pending[key] = pw
 }
 
 // OnComplete removes the request's work (conservation), bumps the per-class
 // virtual queues from realized latencies (E8), and updates N̂_out. Reading the
 // realized output length here is post-completion and INV-9-permitted (§6.3).
-func (d *EDPPDecider) OnComplete(req *Request, realizedTTFTUs, realizedMeanITLUs int64) {
-	if pw, ok := d.pending[req.ID]; ok {
+func (d *EDPPDecider) OnComplete(req *Request, key string, realizedTTFTUs, realizedMeanITLUs int64) {
+	if pw, ok := d.pending[key]; ok {
 		d.qpWork -= pw.wp
 		d.qdWork -= pw.wd
 		if d.qpWork < 0 {
@@ -545,7 +555,7 @@ func (d *EDPPDecider) OnComplete(req *Request, realizedTTFTUs, realizedMeanITLUs
 		if d.qdWork < 0 {
 			d.qdWork = 0
 		}
-		delete(d.pending, req.ID)
+		delete(d.pending, key)
 	}
 	d.nHatFor(req.SLOClass).update(float64(len(req.OutputTokens)))
 
@@ -557,6 +567,38 @@ func (d *EDPPDecider) OnComplete(req *Request, realizedTTFTUs, realizedMeanITLUs
 	}
 	z.zTTFT = math.Max(z.zTTFT+float64(realizedTTFTUs-tauTTFTUs), 0)
 	z.zITL = math.Max(z.zITL+float64(realizedMeanITLUs-tauITLUs), 0)
+}
+
+// Forget releases the conservation backlog a routed request contributed when that
+// request reaches a terminal state WITHOUT a normal completion (timeout/drop): it
+// removes pending[key] and decrements qp/qd by the stored amounts (0-clamped). It
+// deliberately does NOT bump the virtual queues z or touch N̂_out — a request that
+// never completed carries no realized SLO signal and no realized output length. It
+// is idempotent: forgetting an unknown key is a no-op. This is the conservation
+// counterpart to OnComplete for the non-completion terminal paths (design §6).
+func (d *EDPPDecider) Forget(key string) {
+	pw, ok := d.pending[key]
+	if !ok {
+		return
+	}
+	d.qpWork -= pw.wp
+	d.qdWork -= pw.wd
+	if d.qpWork < 0 {
+		d.qpWork = 0
+	}
+	if d.qdWork < 0 {
+		d.qdWork = 0
+	}
+	delete(d.pending, key)
+}
+
+// BacklogForTest exposes the conservation bookkeeping state for tests only: the
+// running prefill/decode work backlogs and the number of still-pending routed
+// requests. It lets cluster-package tests assert observable conservation (Q→0,
+// pending empty) without reaching into unexported fields. Not part of any contract;
+// do not use outside tests.
+func (d *EDPPDecider) BacklogForTest() (qp, qd float64, pendingLen int) {
+	return d.qpWork, d.qdWork, len(d.pending)
 }
 
 // Compile-time interface compliance checks.

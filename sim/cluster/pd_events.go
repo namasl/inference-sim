@@ -199,6 +199,11 @@ func (e *KVTransferStartedEvent) dropAtStart(cs *ClusterSimulator) {
 	cs.transfersInitiated++
 	e.parentReq.TransferStartTime = e.time
 	e.parentReq.CompletionTime = e.time
+	// Conservation cleanup (Defect 2): this disaggregated request was OnRoute'd
+	// under the parent ID but is now dropped without completing — release its backlog.
+	if cs.sloFeedback != nil {
+		cs.sloFeedback.Forget(e.parentReq.ID)
+	}
 	heap.Push(&cs.clusterEvents, clusterEventEntry{
 		event: &KVTransferCompletedEvent{
 			time:      e.time,
@@ -363,6 +368,9 @@ func (e *KVTransferCompletedEvent) Execute(cs *ClusterSimulator) {
 		cs.droppedAtDecodeKV++
 		e.parentReq.CompletionTime = e.time
 		e.parentReq.DecodeSubReq = nil
+		if cs.sloFeedback != nil {
+			cs.sloFeedback.Forget(e.parentReq.ID) // Defect 2: release backlog on drop
+		}
 		return
 	}
 	if !decodeInst.IsRoutable() {
@@ -374,6 +382,9 @@ func (e *KVTransferCompletedEvent) Execute(cs *ClusterSimulator) {
 		cs.droppedAtDecodeKV++
 		e.parentReq.CompletionTime = e.time
 		e.parentReq.DecodeSubReq = nil
+		if cs.sloFeedback != nil {
+			cs.sloFeedback.Forget(e.parentReq.ID) // Defect 2: release backlog on drop
+		}
 		return
 	}
 

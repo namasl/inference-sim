@@ -258,7 +258,8 @@ func TestEDPP_DisaggregationPayoffSign(t *testing.T) {
 
 	// Drive z_itl large via realized ITL misses (E8), prefill stays idle.
 	for i := 0; i < 50; i++ {
-		d.OnComplete(&Request{ID: fmt.Sprintf("r%d", i), SLOClass: ""}, 0, 200_000) // realized ITL = 200ms >> τ_itl, default class
+		rid := fmt.Sprintf("r%d", i)
+		d.OnComplete(&Request{ID: rid, SLOClass: ""}, rid, 0, 200_000) // realized ITL = 200ms >> τ_itl, default class
 	}
 	if !d.Decide(req, state).Disaggregate {
 		t.Errorf("expected P (disaggregate) under z_itl breach with idle prefill")
@@ -268,7 +269,7 @@ func TestEDPP_DisaggregationPayoffSign(t *testing.T) {
 func TestEDPP_OnComplete_UpdatesVirtualQueues(t *testing.T) {
 	// E8: Z_ttft and Z_itl accumulate positive violations and floor at 0.
 	d := NewEDPPDecider(defaultTestEDPPConfig(), newTestAffineModel(), nil, nil)
-	d.OnComplete(&Request{ID: "r2", SLOClass: ""}, 150_000, 80_000) // TTFT 150ms (τ=100ms), ITL 80ms (τ=50ms)
+	d.OnComplete(&Request{ID: "r2", SLOClass: ""}, "r2", 150_000, 80_000) // TTFT 150ms (τ=100ms), ITL 80ms (τ=50ms)
 	z := d.zByClass[""]
 	if z == nil || z.zTTFT != 50_000 {
 		t.Errorf("Z_ttft = %v, want 50000", z)
@@ -277,7 +278,7 @@ func TestEDPP_OnComplete_UpdatesVirtualQueues(t *testing.T) {
 		t.Errorf("Z_itl = %v, want 30000", z.zITL)
 	}
 	// A large under-target completion must floor each queue at 0, not go negative.
-	d.OnComplete(&Request{ID: "r3", SLOClass: ""}, 0, 0)
+	d.OnComplete(&Request{ID: "r3", SLOClass: ""}, "r3", 0, 0)
 	if z.zTTFT != 0 || z.zITL != 0 {
 		t.Errorf("virtual queues not floored at 0: zTTFT=%v zITL=%v", z.zTTFT, z.zITL)
 	}
@@ -309,7 +310,8 @@ func TestEDPP_PerClass_IndependentVirtualQueues(t *testing.T) {
 	d := NewEDPPDecider(cfg, newTestAffineModel(), nil, func() []RoutingSnapshot { return nil })
 
 	for i := 0; i < 50; i++ {
-		d.OnComplete(&Request{ID: fmt.Sprintf("r%d", i), SLOClass: "critical"}, 0, 200_000) // breach only the critical class
+		rid := fmt.Sprintf("r%d", i)
+		d.OnComplete(&Request{ID: rid, SLOClass: "critical"}, rid, 0, 200_000) // breach only the critical class
 	}
 	if d.zByClass["critical"] == nil || d.zByClass["critical"].zITL == 0 {
 		t.Fatalf("critical z_itl did not accumulate")
@@ -503,7 +505,7 @@ func TestEDPP_BookkeepingConservation(t *testing.T) {
 	r1 := &Request{ID: "r1", SLOClass: "", InputTokens: make([]int, 200), OutputTokens: []int{0}}
 	// First completion seeds N̂_out (no prior estimate ⇒ use a 1-token default), so
 	// route adds W_p only for the decode side until N̂_out is known.
-	d.OnRoute(r1, true /*toPrefill*/, 200)
+	d.OnRoute(r1, r1.ID, true /*toPrefill*/, 200)
 	if d.qpWork <= 0 {
 		t.Fatalf("qpWork must be > 0 after routing P, got %v", d.qpWork)
 	}
@@ -515,13 +517,46 @@ func TestEDPP_BookkeepingConservation(t *testing.T) {
 	// Completion removes the request's work: Q returns to ~0 (conservation).
 	r1.ITL = []int64{40_000}
 	r1.OutputTokens = []int{1, 2, 3} // realized N_out=3 (post-completion read; INV-9 OK)
-	d.OnComplete(r1, 90_000, 40_000)
+	d.OnComplete(r1, r1.ID, 90_000, 40_000)
 	if math.Abs(d.qpWork) > 1e-9 {
 		t.Errorf("qpWork after completion = %v, want 0", d.qpWork)
 	}
 	// N̂_out updated from the realized length.
 	if m := d.nHatOut[""]; m == nil || m.mean() != 3 {
 		t.Errorf("N̂_out not updated to 3, got %+v", m)
+	}
+}
+
+func TestEDPP_Forget_ReleasesBacklogWithoutZBump(t *testing.T) {
+	// A routed request that reaches a terminal state without completing must have its
+	// backlog released by Forget — Q returns to baseline, pending empties, but the
+	// virtual queues and N̂_out are untouched (no realized SLO signal).
+	cfg := defaultTestEDPPConfig()
+	d := NewEDPPDecider(cfg, newTestAffineModel(), nil, nil)
+	r := &Request{ID: "drop1", SLOClass: "", InputTokens: make([]int, 200)}
+	d.OnRoute(r, r.ID, false /*toPrefill: D path, all work on decode*/, 200)
+	qp, qd, n := d.BacklogForTest()
+	if (qp == 0 && qd == 0) || n != 1 {
+		t.Fatalf("after OnRoute: qp=%v qd=%v pending=%d; want nonzero backlog and 1 pending", qp, qd, n)
+	}
+	// N̂_out is lazily seeded by OnRoute (to estimate W_d); snapshot its sample count so
+	// we can assert Forget does not feed it a (nonexistent) realized output length.
+	nHatSamplesBefore := d.nHatFor(r.SLOClass).n
+	d.Forget(r.ID)
+	qp, qd, n = d.BacklogForTest()
+	if math.Abs(qp) > 1e-9 || math.Abs(qd) > 1e-9 || n != 0 {
+		t.Errorf("after Forget: qp=%v qd=%v pending=%d; want 0,0,0", qp, qd, n)
+	}
+	if len(d.zByClass) != 0 {
+		t.Errorf("Forget bumped virtual queues: %+v", d.zByClass)
+	}
+	if d.nHatFor(r.SLOClass).n != nHatSamplesBefore {
+		t.Errorf("Forget updated N̂_out sample count: %d → %d", nHatSamplesBefore, d.nHatFor(r.SLOClass).n)
+	}
+	// Idempotent: forgetting again is a no-op.
+	d.Forget(r.ID)
+	if qp, qd, n = d.BacklogForTest(); n != 0 || math.Abs(qp) > 1e-9 || math.Abs(qd) > 1e-9 {
+		t.Errorf("second Forget changed state: qp=%v qd=%v pending=%d", qp, qd, n)
 	}
 }
 

@@ -1195,18 +1195,55 @@ func (c *ClusterSimulator) buildPoolFilteredSnapshots(role PoolRole) []sim.Routi
 // and the ITL signal that drives the disaggregation-payoff term is exact regardless of
 // where it is measured.
 func (c *ClusterSimulator) feedSLOFeedback(req *sim.Request) {
-	if c.sloFeedback == nil || !req.TTFTSet || len(req.ITL) == 0 {
+	if c.sloFeedback == nil {
 		return
 	}
+	// Conservation key: the ID OnRoute used (Defect 1). For a PD-disaggregated request
+	// this completion fires for the decode sub-request (ID == parent.ID+"_decode"), so
+	// resolve back to the parent identity. Non-disaggregated requests complete under
+	// their own ID (key == req.ID).
+	key := c.edppConservationKey(req)
+
+	// Conservation must hold for EVERY terminal state of a routed request, but the
+	// virtual-queue feedback (z) needs a usable realized signal. A request that
+	// produced a first token AND at least one ITL sample carries that signal and gets
+	// the full OnComplete (decrement Q + bump z + update N̂_out). A request that
+	// reached completion without a usable latency signal (e.g. a single-token output
+	// has TTFT but no inter-token latency, or a timed-out/zero-output request) must
+	// still release its backlog — Forget decrements Q without polluting z (Defect 2:
+	// the guarded early-return used to leak this work).
 	ttftUs := req.FirstTokenTime - req.ArrivalTime
-	if ttftUs < 0 {
+	if !req.TTFTSet || len(req.ITL) == 0 || ttftUs < 0 {
+		c.sloFeedback.Forget(key)
 		return
 	}
 	var sum int64
 	for _, v := range req.ITL {
 		sum += v
 	}
-	c.sloFeedback.OnComplete(req, ttftUs, sum/int64(len(req.ITL)))
+	c.sloFeedback.OnComplete(req, key, ttftUs, sum/int64(len(req.ITL)))
+}
+
+// edppConservationKey returns the stable conservation key OnRoute used for req: the
+// original/parent request ID. For a decode sub-request (PD-disaggregated path) the
+// per-instance Request.ID is parent.ID+"_decode", so we map it back to the parent via
+// the persistent parentRequests index. Falls back to req.ID when no parent is found
+// (non-disaggregated request, or a sub-request whose parent record was already pruned).
+func (c *ClusterSimulator) edppConservationKey(req *sim.Request) string {
+	if !req.IsDecodeSubRequest {
+		return req.ID
+	}
+	if parentID, ok := c.pendingDecodeCompletions[req.ID]; ok {
+		return parentID
+	}
+	// pendingDecodeCompletions may already be drained; fall back to scanning the
+	// persistent parent index by DecodeSubReqID.
+	for parentID, parent := range c.parentRequests {
+		if parent != nil && parent.DecodeSubReqID == req.ID {
+			return parentID
+		}
+	}
+	return req.ID
 }
 
 func (c *ClusterSimulator) detectPrefillCompletions(inst *InstanceSimulator) {
@@ -1303,10 +1340,18 @@ func (c *ClusterSimulator) detectDecodeCompletions(inst *InstanceSimulator) {
 	// Non-PD equivalent: TimeoutEvent.Execute calls OnRequestDone with StateTimedOut →
 	// SessionManager cancels the session. The PD path needs the same treatment.
 	for _, subReqID := range timedOutIDs {
-		parent := c.parentRequests[c.pendingDecodeCompletions[subReqID]]
+		parentID := c.pendingDecodeCompletions[subReqID]
+		parent := c.parentRequests[parentID]
 		parent.CompletionTime = c.clock
 		delete(c.pendingDecodeCompletions, subReqID)
 		c.pdDecodeTimedOutCount++
+
+		// Conservation cleanup (Defect 2): a timed-out decode sub-request never reaches
+		// a normal completion, so release the backlog the parent's OnRoute added. No z
+		// bump / N̂_out update — there is no realized SLO signal. Keyed by parent ID.
+		if c.sloFeedback != nil {
+			c.sloFeedback.Forget(parentID)
+		}
 
 		if c.sessionCallback != nil {
 			origCopy := *parent.OriginalRequest
@@ -1975,12 +2020,15 @@ func (cs *ClusterSimulator) executeDisaggregatedRouting(req *sim.Request, time i
 		}
 	}
 
-	// Fire OnRoute exactly once at the routing-commit point (same reasoning as in
-	// DisaggregationDecisionEvent.Execute): both the D-path and P-path below are
-	// terminal dispatch points, so a single call here guarantees exactly-once semantics.
+	// Fire OnRoute exactly once at the routing-commit point. This is the single live
+	// OnRoute call: both the D-path and P-path below are terminal dispatch points, so
+	// one call here guarantees exactly-once semantics. The conservation key is the
+	// original request ID (req.ID); for a disaggregated request the completing decode
+	// sub-request has a different ID (req.ID+"_decode"), so the completion side must
+	// correlate back to req.ID — see feedSLOFeedback / edppConservationKey.
 	if cs.sloFeedback != nil {
 		ap := len(req.InputTokens) // uncached-prompt upper bound; INV-9 safe
-		cs.sloFeedback.OnRoute(req, disaggDecision.Disaggregate, ap)
+		cs.sloFeedback.OnRoute(req, req.ID, disaggDecision.Disaggregate, ap)
 	}
 
 	// Find the target decode instance object (used in both paths below).
