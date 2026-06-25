@@ -74,6 +74,12 @@ func TestEDPPCoeffs_MuClamped(t *testing.T) {
 	if got := c.muDecode(0, 0, 0); got < edppMinMu-1e-12 || got > 1.0 {
 		t.Errorf("muDecode clamp = %v, want in [%v,1]", got, edppMinMu)
 	}
+	// Symmetric clamp for prefill: AlphaP=10_000, CPf=1 ⇒ tIterPrefill(0)=10_000,
+	// 1 - AlphaP/tIterPrefill = 0 ⇒ floored at edppMinMu.
+	cPf := EDPPCoeffs{AlphaP: 10_000, CPf: 1}
+	if got := cPf.muPrefill(0); got < edppMinMu-1e-12 || got > 1.0 {
+		t.Errorf("muPrefill clamp = %v, want in [%v,1]", got, edppMinMu)
+	}
 }
 
 func TestEDPPCoeffs_Validate(t *testing.T) {
@@ -82,10 +88,13 @@ func TestEDPPCoeffs_Validate(t *testing.T) {
 		t.Fatalf("good coeffs rejected: %v", err)
 	}
 	bad := []EDPPCoeffs{
-		{AlphaD: 0, AlphaP: 1000, C0: 100, C1: 1, CPf: 10},      // AlphaD must be > 0
-		{AlphaD: 1000, AlphaP: 1000, C0: -1, C1: 1, CPf: 10},    // C0 must be >= 0
+		{AlphaD: 0, AlphaP: 1000, C0: 100, C1: 1, CPf: 10},               // AlphaD must be > 0
+		{AlphaD: 1000, AlphaP: 1000, C0: -1, C1: 1, CPf: 10},             // C0 must be >= 0
 		{AlphaD: 1000, AlphaP: 1000, C0: 100, C1: 1, CPf: 10, CAttn: -1}, // CAttn must be >= 0
-		{AlphaD: 1000, AlphaP: 2000, C0: 100, C1: 1, CPf: 10},   // AlphaD/AlphaP diverge > 10%
+		{AlphaD: 1000, AlphaP: 2000, C0: 100, C1: 1, CPf: 10},            // AlphaD/AlphaP diverge > 10%
+		{AlphaD: 1000, AlphaP: 0, C0: 100, C1: 1, CPf: 10},               // AlphaP must be > 0 (also trips divergence check)
+		{AlphaD: 1000, AlphaP: 1000, C0: 100, C1: -1, CPf: 10},           // C1 must be >= 0
+		{AlphaD: 1000, AlphaP: 1000, C0: 100, C1: 1, CPf: 0},             // CPf must be > 0
 	}
 	for i, c := range bad {
 		if err := c.validate(); err == nil {

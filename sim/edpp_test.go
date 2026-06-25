@@ -439,7 +439,7 @@ func TestEDPPConfig_RequiresCoeffsAndTauITLAboveAlpha(t *testing.T) {
 
 	// τ_itl <= α_d is physically unachievable ⇒ panic (design §7 guard).
 	tauGuard := defaultTestEDPPConfig()
-	tauGuard.TauITLUs = 500 // < AlphaD=1000
+	tauGuard.TauITLUs = 500 // TauITLUs=500 <= AlphaD=1000 ⇒ ITL SLO unachievable
 	assertPanics(t, func() { _ = NewEDPPDecider(tauGuard, m, nil, nil) })
 }
 
