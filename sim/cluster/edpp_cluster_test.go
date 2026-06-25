@@ -173,6 +173,67 @@ func TestEDPP_Cluster_WaitingBacklogDrainsAtAdmission(t *testing.T) {
 	}
 }
 
+// TestEDPP_Cluster_ConservationViaAdmission_NormalCompletion closes the coverage gap
+// that the two forced-disaggregation conservation tests above DON'T cover. In the
+// forced-disaggregation harness every decode sub-request reaches feedSLOFeedback with
+// no usable latency signal (!TTFTSet || len(ITL)==0) and routes to Forget(key), which
+// zeroes the backlog regardless of whether OnAdmit is wired. So those tests PASS even
+// if the OnAdmit drain is removed entirely.
+//
+// This test instead drives requests that EDPP decides NOT to disaggregate
+// (Disaggregate=false, D-routed) using the DEFAULT config (V=0.1, no pre-seeded z ⇒
+// LHS<RHS ⇒ no disaggregation). Such requests run to NORMAL completion on the
+// decode/shared pool with TTFT set and ≥1 ITL sample, so feedSLOFeedback calls
+// OnComplete (NOT Forget). For these requests:
+//   - OnRoute adds their work to qdWork,
+//   - OnAdmit (entry into the running batch) is the ONLY thing that drains qdWork,
+//   - OnComplete does NOT drain (it only bumps z + N̂_out).
+//
+// Therefore post-run qdWork≈0 holds ONLY if OnAdmit is wired. With the OnAdmit wiring
+// removed, Forget never fires for a normally-completed request, so qdWork LEAKS and
+// pending stays non-empty — this test fails, which is the whole point (revert-verified).
+func TestEDPP_Cluster_ConservationViaAdmission_NormalCompletion(t *testing.T) {
+	config := newTestEDPPDeploymentConfig(4, 2, 2)
+	// Default V/c_xfer and NO pre-seeded z ⇒ the E14 rule keeps Disaggregate=false, so
+	// every request is D-routed and completes normally (TTFT + multiple ITL samples
+	// from newTestRequests' multi-token outputs ⇒ OnComplete, not Forget).
+	cs := NewClusterSimulator(config, newTestRequests(10), nil)
+
+	dec, ok := cs.disaggregationDecider.(*sim.EDPPDecider)
+	if !ok {
+		t.Fatalf("disaggregationDecider = %T, want *sim.EDPPDecider", cs.disaggregationDecider)
+	}
+
+	mustRun(t, cs)
+
+	// Requests must complete via the OnComplete path, NOT Forget. The observable proxy:
+	// requests completed normally (CompletedRequests>0) and NOTHING disaggregated
+	// (ParentRequests()==0). A disaggregated request would route its decode
+	// sub-request through Forget; a zero-completion run would exercise nothing.
+	if cs.AggregatedMetrics().CompletedRequests == 0 {
+		t.Fatalf("no requests completed; test does not exercise the OnComplete path")
+	}
+	if len(cs.ParentRequests()) != 0 {
+		t.Fatalf("requests were disaggregated (%d parents); their decode sub-requests "+
+			"route through Forget, not OnComplete — test must use the non-disaggregated path",
+			len(cs.ParentRequests()))
+	}
+
+	// Conservation depends entirely on OnAdmit for these normally-completing requests:
+	// OnComplete does not drain, and Forget never fires. If OnAdmit is wired, qd≈0 and
+	// pending is empty; if the OnAdmit wiring is broken, qd leaks and pending>0.
+	qp, qd, pendingLen := dec.BacklogForTest()
+	const eps = 1e-6
+	if qp > eps || qd > eps {
+		t.Errorf("OnAdmit drain not applied for normally-completing requests: "+
+			"residual backlog qp=%v qd=%v (want ~0); pending=%d", qp, qd, pendingLen)
+	}
+	if pendingLen != 0 {
+		t.Errorf("OnAdmit drain not applied: %d entries still pending after all "+
+			"admissions+completions (want 0)", pendingLen)
+	}
+}
+
 // TestEDPP_Cluster_ConservationOnNonCompletionTerminal asserts the Defect-2 cleanup:
 // a routed request that reaches a terminal state WITHOUT a usable completion signal
 // still releases its conservation backlog. Single-token outputs produce a TTFT but no
