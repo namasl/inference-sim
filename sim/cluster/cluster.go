@@ -1217,11 +1217,12 @@ func (c *ClusterSimulator) feedSLOFeedback(req *sim.Request) {
 	// Conservation must hold for EVERY terminal state of a routed request, but the
 	// virtual-queue feedback (z) needs a usable realized signal. A request that
 	// produced a first token AND at least one ITL sample carries that signal and gets
-	// the full OnComplete (decrement Q + bump z + update N̂_out). A request that
-	// reached completion without a usable latency signal (e.g. a single-token output
-	// has TTFT but no inter-token latency, or a timed-out/zero-output request) must
-	// still release its backlog — Forget decrements Q without polluting z (Defect 2:
-	// the guarded early-return used to leak this work).
+	// the full OnComplete (bump z + update N̂_out; the waiting backlog was already
+	// drained at admission via OnAdmit). A request that reached completion without a
+	// usable latency signal (e.g. a single-token output has TTFT but no inter-token
+	// latency, or a timed-out/zero-output request) must still conserve — Forget is
+	// a no-op for the backlog (already drained at admission) but skips polluting z
+	// (Defect 2: the guarded early-return used to leak this work).
 	ttftUs := req.FirstTokenTime - req.ArrivalTime
 	if !req.TTFTSet || len(req.ITL) == 0 || ttftUs < 0 {
 		c.sloFeedback.Forget(key)
