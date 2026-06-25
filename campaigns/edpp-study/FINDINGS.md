@@ -1,6 +1,32 @@
 # EDPP Empirical Study — Findings
 
-Status: TEMPLATE (fill once the full sweep + `report.py` complete).
+## Diagnostic cell #1 — synth (decode-bound), rate 2.0, 2000 reqs, equal 4-node hardware
+
+See `out/diag/SUMMARY.md` for the full table; `out/diag/RUNS.md` for the run registry.
+Deciders compared at this point: never@4, edpp@{1P3D,2P2D}, always@2P2D, prefix-threshold@{1P3D,2P2D}.
+
+KEY RESULTS (corrected — supersede any earlier "EDPP improves TTFT" wording, which was WRONG):
+- Outcome tracks DECODE-CAPABLE NODE COUNT: never@4 > *@1P3D > *@2P2D (monotonic on ITL/E2E).
+  Disaggregation does NOT help this decode-bound workload at this load (equal hardware).
+- At 1P3D (adequate decode): edpp (0% disagg) ≈ prefix-threshold (100% disagg) — disaggregation
+  is NEUTRAL; prefill too cheap to matter where it runs.
+- At 2P2D (starved decode): policies only RELOCATE pain. edpp's PARTIAL 16.6% disagg gives the
+  WORST TTFT (p99 161s) via HOL blocking (local prefill queues behind decode on 2 nodes).
+  always==prefix-threshold (100% disagg) get fast first-token but only 1192/2000 DECODE
+  (throughput collapse) — their "good TTFT" is hollow.
+- EDPP's one genuinely-good behavior: at 1P3D it correctly DECLINES to disaggregate.
+  prefix-threshold (the production default) blindly disaggregates 100% regardless of topology.
+- prefix-threshold disaggregates ~everything on synth (tiny inputs trip threshold-16) ⇒ behaves
+  like `always` here.
+
+OPEN — THE REAL TEST OF EDPP (Experiment 5, not yet run): none of the above is FAVORABLE to
+disaggregation, so "best decider = disaggregate least-harmfully." To see EDPP's *advantage* we
+need a regime where per-request disagg helps SOME requests (mixed prefill sizes + adequate decode
+capacity), so adaptivity beats both always and never.
+
+---
+
+Status (full sweep): TEMPLATE (fill once the full sweep + `report.py` complete).
 Design: `docs/superpowers/specs/2026-06-25-edpp-empirical-study-design.md`.
 Artifacts: `campaigns/edpp-study/out/{summary.csv,regret.csv,*.png}`.
 
