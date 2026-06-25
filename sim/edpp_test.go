@@ -638,3 +638,120 @@ var (
 	_ DisaggregationDecider = (*EDPPDecider)(nil)
 	_ SLOFeedbackDecider    = (*EDPPDecider)(nil)
 )
+
+// --- §11 verification-anchor tests (Task 10) ---
+
+// TestEDPP_Anchor_SignalDirection asserts that increasing the decode backlog via
+// OnRoute (D-path) must NOT decrease the rule's LHS. q_d = Q_d / W*_d; W*_d uses
+// the fixed μ^nom normalizer, so the congestion signal is monotone non-decreasing
+// in Q_d. This exercises the new qpWork/qdWork path (Task 6) via OnRoute, reading
+// LHS from the decision trace.
+func TestEDPP_Anchor_SignalDirection(t *testing.T) {
+	cfg := defaultTestEDPPConfig()
+	cfg.TraceEnabled = true
+	d := NewEDPPDecider(cfg, newTestAffineModel(), nil, func() []RoutingSnapshot { return nil })
+
+	req := &Request{ID: "a", InputTokens: make([]int, 200)}
+	state := &RouterState{
+		SelectedInstance: "d0",
+		Snapshots:        []RoutingSnapshot{{ID: "d0", BatchSize: 2, KvTokensInUse: 1024}},
+	}
+
+	low := d.Decide(req, state).EDPPTrace.LHS
+
+	// Increase decode backlog via D-path OnRoute: qdWork grows, so Q_d / W*_d grows.
+	extra := &Request{ID: "b", SLOClass: ""}
+	d.OnRoute(extra, extra.ID, false /*D-path*/, 500)
+	high := d.Decide(req, state).EDPPTrace.LHS
+
+	if high < low-1e-9 {
+		t.Errorf("LHS decreased as Q_d rose: low=%v high=%v (signal direction inverted)", low, high)
+	}
+	// Concrete: qdWork grew, so high must strictly exceed low (unless already saturated at muD=1).
+	// We assert at minimum non-decrease; if both are 0 the test is vacuous — check that high>0.
+	if high <= 0 {
+		t.Errorf("LHS is non-positive after seeding decode backlog: %v (backlog not wired?)", high)
+	}
+}
+
+// TestEDPP_Anchor_DisaggPayoffSign asserts that under an ITL-SLO breach (large
+// realized ITL via OnComplete), the rule's RHS must FALL. The collapsed ITL term
+// −z_itl·(c_pf·chunk)/τ_itl is strictly negative, pushing toward P.
+func TestEDPP_Anchor_DisaggPayoffSign(t *testing.T) {
+	cfg := defaultTestEDPPConfig()
+	cfg.ChunkTokens = 128
+	cfg.TraceEnabled = true
+	d := NewEDPPDecider(cfg, newTestAffineModel(), nil, func() []RoutingSnapshot { return nil })
+
+	req := &Request{ID: "a", InputTokens: make([]int, 300)}
+	state := &RouterState{
+		SelectedInstance: "d0",
+		Snapshots:        []RoutingSnapshot{{ID: "d0", BatchSize: 2, KvTokensInUse: 1024}},
+	}
+
+	before := d.Decide(req, state).EDPPTrace.RHS
+
+	// Drive z_itl large via a realized ITL breach well above τ_itl.
+	breach := &Request{ID: "x", SLOClass: ""}
+	breach.OutputTokens = []int{1}
+	d.OnComplete(breach, breach.ID, 0, cfg.TauITLUs+50_000)
+
+	after := d.Decide(req, state).EDPPTrace.RHS
+
+	// RHS must strictly fall: the ITL term (−z_itl·c_pf·chunk/τ_itl) is negative.
+	if after >= before {
+		t.Errorf("RHS did not fall under ITL breach: before=%v after=%v (ITL term not wired or wrong sign)", before, after)
+	}
+}
+
+// TestEDPP_Anchor_UnitsDimensionless asserts that scaling ALL µs-dimensioned
+// quantities by a common factor k leaves the P/D decision unchanged. The §8 rule
+// is dimensionless by design: every term scales identically, so LHS > RHS is
+// invariant under uniform rescaling of the µs quantities.
+//
+// Construction: multiply τ_ttft, τ_itl, τ_ref, c_xfer, AND the µs-dimension
+// coefficients (AlphaD, AlphaP scale by k; C0 scales by k; C1 and CPf are µs/token
+// so they also scale by k; CAttn is µs/token² so it scales by k). Keep token counts
+// (a_p, B, KV) fixed. Seed identical backlog via OnRoute and identical z via
+// OnComplete (with realized latencies also scaled by k to keep z dimensionless).
+// Assert the two Decide calls return the same Disaggregate bool.
+func TestEDPP_Anchor_UnitsDimensionless(t *testing.T) {
+	mk := func(k int64) DisaggregationDecision {
+		cfg := defaultTestEDPPConfig()
+		kf := float64(k)
+		cfg.TauTTFTUs *= k
+		cfg.TauITLUs *= k
+		cfg.TauRefUs *= k
+		cfg.CXferUs *= k
+		cfg.Coeffs = EDPPCoeffs{
+			AlphaD: 1000 * kf,
+			AlphaP: 1000 * kf,
+			C0:     100 * kf, // µs/req → scales by k
+			C1:     1 * kf,   // µs/token → scales by k
+			CPf:    10 * kf,  // µs/token → scales by k
+			CAttn:  0,        // µs/token² → 0 * k = 0
+		}
+		d := NewEDPPDecider(cfg, newTestAffineModel(), nil, func() []RoutingSnapshot { return nil })
+
+		// Seed decode backlog via D-path OnRoute; token count fixed.
+		seed := &Request{ID: "s", SLOClass: ""}
+		d.OnRoute(seed, seed.ID, false, 200)
+
+		// Seed z_itl via OnComplete; realized latencies scaled by k to keep z dimensionless.
+		// realized ITL = τ_itl + 50_000*k ensures z_itl = 50_000*k/τ_itl = constant.
+		breach := &Request{ID: "b", SLOClass: "", OutputTokens: []int{1}}
+		d.OnComplete(breach, breach.ID, 0, cfg.TauITLUs+50_000*k)
+
+		return d.Decide(
+			&Request{ID: "u", InputTokens: make([]int, 200)},
+			&RouterState{Snapshots: []RoutingSnapshot{{ID: "d0", BatchSize: 2, KvTokensInUse: 1024}}},
+		)
+	}
+
+	dec1 := mk(1)
+	dec3 := mk(3)
+
+	if dec1.Disaggregate != dec3.Disaggregate {
+		t.Errorf("decision not scale-invariant under k=1 vs k=3 rescaling: k=1 → Disaggregate=%v, k=3 → Disaggregate=%v (dimensionality bug in §8 rule)", dec1.Disaggregate, dec3.Disaggregate)
+	}
+}
