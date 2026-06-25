@@ -494,6 +494,7 @@ Example:
 			EDPPCXferUs:                     edppCXfer.Microseconds(),
 			EDPPNomPrefillTokens:            edppNomPrefillTokens,
 			EDPPNomDecodeCtx:                edppNomDecodeCtx,
+			EDPPCoeffs:                      resolveEDPPCoeffs(pdDecider, edppCoeffsPath),
 			PDTransferBandwidthGBps:         pdTransferBandwidth,
 			PDTransferBaseLatencyMs:         pdTransferBaseLatency,
 			PDTransferContention:            pdTransferContention,

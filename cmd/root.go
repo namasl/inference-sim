@@ -155,6 +155,7 @@ var (
 	edppNomDecodeCtx       int           // EDPP nominal decode context for the fixed decode normalizer
 	edppTauTTFTClasses     string        // EDPP per-class τ_ttft overrides ("critical=100ms,batch=10s")
 	edppTauITLClasses      string        // EDPP per-class τ_itl overrides ("critical=20ms,batch=500ms")
+	edppCoeffsPath         string        // path to frozen EDPP E3 coefficients JSON
 	prefillRoutingScorers  string        // Scorer weights for prefill pool routing
 	decodeRoutingScorers   string        // Scorer weights for decode pool routing
 
@@ -1012,6 +1013,23 @@ func resolvePolicies(cmd *cobra.Command) ([]sim.ScorerConfig, *sim.PolicyBundle)
 	return parsedScorerConfigs, loadedBundle
 }
 
+// resolveEDPPCoeffs loads the frozen EDPP coefficients when the EDPP decider is
+// selected. Returns the zero value for non-EDPP deciders (the field is ignored).
+// The CLI boundary fails loud (R3): a missing path or unreadable/invalid JSON is fatal.
+func resolveEDPPCoeffs(pdDecider, coeffsPath string) sim.EDPPCoeffs {
+	if pdDecider != "edpp" {
+		return sim.EDPPCoeffs{}
+	}
+	if coeffsPath == "" {
+		logrus.Fatalf("--pd-decider edpp requires --edpp-coeffs <path to frozen coefficients JSON> (see scripts/calibration/)")
+	}
+	c, err := sim.LoadEDPPCoeffs(coeffsPath)
+	if err != nil {
+		logrus.Fatalf("--edpp-coeffs: %v", err)
+	}
+	return c
+}
+
 // registerSimConfigFlags registers all simulation-engine configuration flags
 // on the given command. Called by both runCmd and replayCmd to avoid
 // duplicating ~50 flag registrations.
@@ -1100,6 +1118,7 @@ func registerSimConfigFlags(cmd *cobra.Command) {
 	cmd.Flags().IntVar(&edppNomDecodeCtx, "edpp-nom-decode-ctx", 2048, "EDPP nominal decode context length for the fixed decode normalizer (only used with --pd-decider edpp)")
 	cmd.Flags().StringVar(&edppTauTTFTClasses, "edpp-tau-ttft-classes", "", "EDPP per-SLO-class τ_ttft overrides (e.g. \"critical=100ms,batch=10s\"); unlisted classes use --edpp-tau-ttft")
 	cmd.Flags().StringVar(&edppTauITLClasses, "edpp-tau-itl-classes", "", "EDPP per-SLO-class τ_itl overrides (e.g. \"critical=20ms,batch=500ms\"); unlisted classes use --edpp-tau-itl")
+	cmd.Flags().StringVar(&edppCoeffsPath, "edpp-coeffs", "", "Path to frozen EDPP E3 coefficients JSON (required with --pd-decider edpp). See scripts/calibration/.")
 	cmd.Flags().StringVar(&prefillRoutingScorers, "prefill-routing-scorers", "", "Scorer weights for prefill pool routing (e.g., queue-depth:2,kv-utilization:2)")
 	cmd.Flags().StringVar(&decodeRoutingScorers, "decode-routing-scorers", "", "Scorer weights for decode pool routing (e.g., queue-depth:2,kv-utilization:2)")
 
@@ -1720,6 +1739,7 @@ var runCmd = &cobra.Command{
 			EDPPCXferUs:                     edppCXfer.Microseconds(),
 			EDPPNomPrefillTokens:            edppNomPrefillTokens,
 			EDPPNomDecodeCtx:                edppNomDecodeCtx,
+			EDPPCoeffs:                      resolveEDPPCoeffs(pdDecider, edppCoeffsPath),
 			PDTransferBandwidthGBps:         pdTransferBandwidth,
 			PDTransferBaseLatencyMs:         pdTransferBaseLatency,
 			PDTransferContention:            pdTransferContention,
