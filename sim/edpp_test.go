@@ -479,6 +479,13 @@ func TestEDPP_TransferPenalty_FixedTauRef_EngagesAtLooseDefault(t *testing.T) {
 	cfg.TauRefUs = 100_000    // fixed reference (100ms), independent of the loose default
 	d := NewEDPPDecider(cfg, newTestAffineModel(), nil, func() []RoutingSnapshot { return nil })
 
+	// Seed decode backlog via OnRoute so qdWork >> 0 (qpWork stays 0 — idle prefill).
+	// 10 D-path routes of ap=1000: qdWork += (Wp(1000) + wd) each ≈ 121480 µs total.
+	for i := 0; i < 10; i++ {
+		r := &Request{ID: fmt.Sprintf("seed%d", i), SLOClass: "batch"}
+		d.OnRoute(r, r.ID, false /*D-path*/, 1000)
+	}
+
 	state := decodeState("d0", 50, 0, 60_000) // heavy decode backlog, idle prefill
 	req := &Request{ID: "r", InputTokens: make([]int, 800), SLOClass: "batch"}
 	if !d.Decide(req, state).Disaggregate {
@@ -573,6 +580,73 @@ func TestEDPP_NoutDoesNotChangeDecision(t *testing.T) {
 	dec2 := d.Decide(req, state)
 	if dec1.Disaggregate != dec2.Disaggregate {
 		t.Errorf("decision changed with N_out: %v vs %v", dec1.Disaggregate, dec2.Disaggregate)
+	}
+}
+
+func TestEDPP_PredictorsAndITLCollapse(t *testing.T) {
+	// §9 explicit-chunk predictor and collapsed ITL term anchors.
+	//
+	// Setup (affine model, default config):
+	//   α_p = α_d = 1000 µs, c_pf = 10 µs/tok, c_attn = 0, c0 = 100, c1 = 1.
+	//   CXferUs = 5000, τ_ttft = 100_000, τ_itl = 50_000.
+	//   ap = 400, no ChunkTokens cap ⇒ chunk = 400, n_chunks = 1.
+	//   Decode snapshot: B=1, KV=2048, S_pf=0.
+	//   Prefill snapshot: none (idle).
+	//
+	// Expected TTFT predictors (qP=qD=0, no seeded backlog):
+	//   muDec = 1 − α_d/T_iter_dec = 1 − 1000/(1000 + 100·1 + 1·2048 + 0) = 1 − 1000/3148
+	//   muPf  = 1 − α_p/T_iter_pf  = 1 − 1000/(1000 + 10·0) = clamped to 0.001 (sPf=0 ⇒ T_iter_pf = α_p = 1000)
+	//   δ_pf_chunk = c_pf·chunk = 10·400 = 4000
+	//   tBminus1 = T_iter_dec(1, 2048, 0) = 1000 + 100 + 2048 = 3148
+	//   ttftP = 0/muPf + 1·(1000 + 4000) + 5000 = 10000  (qP=0)
+	//   ttftD = 0/muDec + 1·(3148 + 4000) = 7148        (qD=0)
+	//
+	// ITL collapsed form: itlTerm = −z_itl·(c_pf·chunk)/τ_itl = −z_itl·4000/50000.
+	// With z_itl raised via 20 completions each with realized ITL = 200_000 µs:
+	//   each adds (200000 − 50000) = 150000 → z_itl_raw = 20·150000 = 3_000_000
+	//   zITL = 3_000_000 / 50_000 = 60
+	//   itlTerm = −60 · 4000/50000 = −4.8
+	cfg := defaultTestEDPPConfig()
+	cfg.TraceEnabled = true
+	d := NewEDPPDecider(cfg, newTestAffineModel(), nil, func() []RoutingSnapshot { return nil })
+
+	for i := 0; i < 20; i++ {
+		rid := fmt.Sprintf("q%d", i)
+		d.OnComplete(&Request{ID: rid, SLOClass: ""}, rid, 0, 200_000)
+	}
+
+	req := &Request{ID: "t", InputTokens: make([]int, 400), SLOClass: ""}
+	// Decode snapshot: B=1, KV=2048, S_pf=0.
+	state := &RouterState{
+		SelectedInstance: "d0",
+		Snapshots:        []RoutingSnapshot{{ID: "d0", BatchSize: 1, KvTokensInUse: 2048}},
+	}
+	dec := d.Decide(req, state)
+	tr := dec.EDPPTrace
+	if tr == nil {
+		t.Fatal("expected non-nil trace")
+	}
+
+	// TTFT predictor anchors.
+	wantTTFTP := 10000.0
+	if math.Abs(tr.TTFTP-wantTTFTP) > 1e-6 {
+		t.Errorf("TTFTP = %v, want %v", tr.TTFTP, wantTTFTP)
+	}
+	wantTTFTD := 7148.0
+	if math.Abs(tr.TTFTD-wantTTFTD) > 1e-6 {
+		t.Errorf("TTFTD = %v, want %v", tr.TTFTD, wantTTFTD)
+	}
+
+	// Collapsed ITL term anchor: itlTerm = −zITL·(c_pf·chunk)/τ_itl = −60·4000/50000 = −4.8
+	wantITLTerm := -4.8
+	if math.Abs(tr.ITLTerm-wantITLTerm) > 1e-9 {
+		t.Errorf("ITLTerm = %v, want %v (collapsed form)", tr.ITLTerm, wantITLTerm)
+	}
+
+	// Composition invariant: RHS = TransferTerm + TTFTTerm + ITLTerm.
+	if math.Abs(tr.RHS-(tr.TransferTerm+tr.TTFTTerm+tr.ITLTerm)) > 1e-9 {
+		t.Errorf("RHS composition violated: %v != %v + %v + %v",
+			tr.RHS, tr.TransferTerm, tr.TTFTTerm, tr.ITLTerm)
 	}
 }
 

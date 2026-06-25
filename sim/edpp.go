@@ -399,71 +399,62 @@ func (d *EDPPDecider) Decide(req *Request, state *RouterState) DisaggregationDec
 		return keepD // fully cached: no prefill work to disaggregate
 	}
 
-	// W_p = full prefill demand of this request (E6): all a_p uncached tokens. Drives
-	// the backlog (Q) and TTFT terms — the whole prefill must finish before first token.
-	wp := float64(edppMarginalDelta(d.model, edppPrefillProbe(ap)))
+	// W_p = full prefill demand of this request (E6), from frozen coeffs.
+	wp := d.coeffs.Wp(ap)
 
-	// δ_pf-chunk = marginal work of ONE prefill chunk (§3.2/§6, E15). Only one chunk of
-	// min(a_p, ChunkTokens) tokens co-schedules per decode iteration, so this — not the
-	// whole W_p — is what inflates the decode batch's ITL on that iteration.
-	deltaPfChunk := d.chunkInflation(ap)
+	// Live decode-server state from the pre-selected decode snapshot (the pod this
+	// request would land on); fall back to the first snapshot, else nominal.
+	bDec, kv, sPf := d.selectedDecodeState(state)
+	muDec := d.coeffs.muDecode(bDec, kv, sPf)
+	tBminus1 := d.coeffs.tIterDecode(bDec, kv, sPf)
 
-	var decodeSnaps []RoutingSnapshot
-	if state != nil {
-		decodeSnaps = state.Snapshots
-	}
+	// Prefill-server live state: S_pf summed over prefill snapshots.
+	var sPfPrefill int64
 	var prefillSnaps []RoutingSnapshot
 	if d.prefillSnapshots != nil {
 		prefillSnaps = d.prefillSnapshots()
+		for _, s := range prefillSnaps {
+			sPfPrefill += s.ResidentPrefillTokens
+		}
 	}
+	muPf := d.coeffs.muPrefill(sPfPrefill)
 
-	// Resolve this request's class normalizers/targets — the rule is evaluated from
-	// the perspective of the request's own SLO.
 	n := d.normFor(req.SLOClass)
 
-	// Backlogs in work-seconds (for the §6 predictors) and normalized (for the LHS).
-	var qD float64
-	for _, s := range decodeSnaps {
-		qD += float64(s.QueueDepth+s.BatchSize) * float64(d.deltaBarD)
-	}
-	var qP float64
-	for _, s := range prefillSnaps {
-		qP += float64(s.QueueDepth+s.BatchSize) * float64(d.deltaBarP)
-	}
+	// Conservation-bookkept backlogs (Task 6), in work-µs.
+	qP := d.qpWork
+	qD := d.qdWork
 	qd := qD / n.wStarD
 	qp := qP / n.wStarP
 
-	// Current decode ITL (protected under P): measured if available, else nominal.
-	itlP := d.selectedDecodeITL(decodeSnaps, state)
+	// Explicit-chunk predictors (§5.1, divergence §9.1). chunk = decode batched-token
+	// budget; n_chunks = ⌈a_p/chunk⌉; δ_pf-chunk = c_pf·chunk.
+	chunk := ap
+	if d.cfg.ChunkTokens > 0 && d.cfg.ChunkTokens < chunk {
+		chunk = d.cfg.ChunkTokens
+	}
+	nChunks := math.Ceil(float64(ap) / float64(chunk))
+	deltaPfChunk := d.coeffs.CPf * float64(chunk)
+	ttftP := qP/muPf + nChunks*(d.coeffs.AlphaP+deltaPfChunk) + float64(d.cfg.CXferUs)
+	ttftD := qD/muDec + nChunks*(tBminus1+deltaPfChunk)
 
-	// Counterfactual predictors (§6, E15), all µs.
-	ttftP := (qP+wp)/n.muPNom + float64(d.cfg.CXferUs)
-	ttftD := (qD + wp) / n.muDNom
-	itlD := itlP + deltaPfChunk // E15: prefill chunk inflates this decode iteration's ITL
-
-	// Per-class virtual queues (zero when this class has not yet completed a request).
+	// Per-class virtual queues.
 	var zTTFT, zITL float64
 	if z := d.zByClass[req.SLOClass]; z != nil {
 		zTTFT = z.zTTFT / n.tauTTFT
 		zITL = z.zITL / n.tauITL
 	}
 
-	// E14: choose P ⟺ LHS > RHS. Every term is dimensionless. Decomposed into named
-	// components so the trace can expose each intermediate; the arithmetic is unchanged.
+	// E14, with the ITL term in collapsed closed form (§5.2/§9.2):
+	//   z_itl·(ITL_P − ITL_D)/τ_itl = − z_itl·(c_pf·chunk)/τ_itl
 	balanceTermD := qd * (wp / n.wStarD)
 	balanceTermP := qp * (wp / n.wStarP)
 	lhs := balanceTermD - balanceTermP
 
-	// Transfer penalty, normalized consistently with the balance and SLO terms (all ∝
-	// 1/τ_ttft²). The extra τ_ref/τ_ttft factor corrects the lone 1/τ_ttft outlier that
-	// let a loose τ_ttft (which heavy workloads need) shrink the load-balancing benefit
-	// faster than the penalty, locking out disaggregation. τ_ref (TauRefUs) is a FIXED
-	// reference independent of the operating τ_ttft, so loosening τ_ttft genuinely
-	// attenuates the penalty; at τ_ttft == τ_ref the factor is 1 (byte-for-byte unchanged).
 	tauRef := float64(d.cfg.TauRefUs)
 	transferTerm := d.cfg.V * (float64(d.cfg.CXferUs) / n.tauTTFT) * (tauRef / n.tauTTFT)
 	ttftTerm := zTTFT * (ttftP - ttftD) / n.tauTTFT
-	itlTerm := zITL * (itlP - itlD) / n.tauITL
+	itlTerm := -zITL * (d.coeffs.CPf * float64(chunk)) / n.tauITL
 	rhs := transferTerm + ttftTerm + itlTerm
 
 	dec := DisaggregationDecision{Disaggregate: lhs > rhs}
@@ -473,7 +464,7 @@ func (d *EDPPDecider) Decide(req *Request, state *RouterState) DisaggregationDec
 			QdRaw: qD, QpRaw: qP, Qd: qd, Qp: qp,
 			MuDNom: n.muDNom, MuPNom: n.muPNom, WStarD: n.wStarD, WStarP: n.wStarP,
 			TauTTFT: n.tauTTFT, TauITL: n.tauITL,
-			TTFTP: ttftP, TTFTD: ttftD, ITLP: itlP, ITLD: itlD,
+			TTFTP: ttftP, TTFTD: ttftD,
 			ZTTFT: zTTFT, ZITL: zITL,
 			BalanceTermD: balanceTermD, BalanceTermP: balanceTermP,
 			TransferTerm: transferTerm, TTFTTerm: ttftTerm, ITLTerm: itlTerm,
@@ -481,6 +472,27 @@ func (d *EDPPDecider) Decide(req *Request, state *RouterState) DisaggregationDec
 		}
 	}
 	return dec
+}
+
+// selectedDecodeState returns (B_dec, KV, S_pf) for the decode pod this request
+// would land on (state.SelectedInstance), falling back to the first decode
+// snapshot, then to a nominal single-request decode batch.
+func (d *EDPPDecider) selectedDecodeState(state *RouterState) (bDec int, kv, sPf int64) {
+	if state != nil {
+		snaps := state.Snapshots
+		if state.SelectedInstance != "" {
+			for _, s := range snaps {
+				if s.ID == state.SelectedInstance {
+					return s.BatchSize, s.KvTokensInUse, s.ResidentPrefillTokens
+				}
+			}
+		}
+		if len(snaps) > 0 {
+			s := snaps[0]
+			return s.BatchSize, s.KvTokensInUse, s.ResidentPrefillTokens
+		}
+	}
+	return 1, int64(d.cfg.NomDecodeCtx), 0
 }
 
 // chunkInflation returns δ_pf-chunk: the marginal work [µs] of co-scheduling one
