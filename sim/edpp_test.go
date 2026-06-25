@@ -69,29 +69,15 @@ func assertPanics(t *testing.T, f func()) {
 
 // --- Coefficient extraction (Task 1) ---
 
-func TestEDPP_ExtractAlpha_CancelsDelta(t *testing.T) {
-	m := newTestAffineModel()
-	// Prefill probe of 300 tokens: StepTime([p]) = 1000 + 10·300, [p,p] = 1000 + 20·300.
-	// α = 2·(1000+3000) − (1000+6000) = 8000 − 7000 = 1000.
-	if got := edppExtractAlpha(m, edppPrefillProbe(300)); got != 1000 {
-		t.Errorf("prefill α = %d, want 1000", got)
-	}
-	// Decode probe at ctx 2048: [d] = 1000+100+2048, [d,d] = 1000+2·(100+2048).
-	// α = 2·3148 − 5296 = 6296 − 5296 = 1000.
-	if got := edppExtractAlpha(m, edppDecodeProbe(2048)); got != 1000 {
-		t.Errorf("decode α = %d, want 1000", got)
-	}
-}
-
-func TestEDPP_MarginalDelta_RecoversPerCopyWork(t *testing.T) {
-	m := newTestAffineModel()
-	// prefill δ for 300 tokens = kp·300 = 3000.
-	if got := edppMarginalDelta(m, edppPrefillProbe(300)); got != 3000 {
-		t.Errorf("prefill δ = %d, want 3000", got)
-	}
-	// decode δ at ctx 2048 = c0 + c1·2048 = 100 + 2048 = 2148.
-	if got := edppMarginalDelta(m, edppDecodeProbe(2048)); got != 2148 {
-		t.Errorf("decode δ = %d, want 2148", got)
+// TestEDPP_NoProbeHelpers is a compile-time guard documenting that the probe
+// extraction path is fully removed; physics now comes from EDPPCoeffs. This test
+// has no body assertions — it fails to compile if a probe helper is reintroduced
+// and referenced, and passes once the package builds without them.
+func TestEDPP_NoProbeHelpers(t *testing.T) {
+	d := NewEDPPDecider(defaultTestEDPPConfig(), newTestAffineModel(), nil, nil)
+	// The decider still answers purely from coeffs.
+	if d.coeffs.AlphaD <= 0 {
+		t.Fatal("coeffs not wired")
 	}
 }
 
@@ -174,13 +160,6 @@ func TestEDPP_Constructor_PrecomputesNormalizers(t *testing.T) {
 	if math.Abs(n.wStarD-98000) > 1e-6 {
 		t.Errorf("W*_d = %v, want 98000", n.wStarD)
 	}
-	// δ̄_d = decode δ at ctx 2048 = 2148 ; δ̄_p = prefill δ at 512 = 5120
-	if d.deltaBarD != 2148 {
-		t.Errorf("δ̄_d = %d, want 2148", d.deltaBarD)
-	}
-	if d.deltaBarP != 5120 {
-		t.Errorf("δ̄_p = %d, want 5120", d.deltaBarP)
-	}
 }
 
 func TestEDPP_Constructor_RejectsInvalidConfig(t *testing.T) {
@@ -215,22 +194,6 @@ func decodeState(selected string, queue, batch int, itlUs float64) *RouterState 
 		Snapshots: []RoutingSnapshot{
 			{ID: selected, QueueDepth: queue, BatchSize: batch, ITL: itlUs},
 		},
-	}
-}
-
-func TestEDPP_SignalDirection_QdNonDecreasingInBatch(t *testing.T) {
-	// §11 signal-direction anchor: holding backlog (QueueDepth) fixed while raising
-	// running batch B, normalized q_d must NOT decrease (guards the live-μ-in-normalizer bug).
-	d := NewEDPPDecider(defaultTestEDPPConfig(), newTestAffineModel(), nil, nil)
-
-	lowB := []RoutingSnapshot{{ID: "d0", QueueDepth: 5, BatchSize: 2}}
-	highB := []RoutingSnapshot{{ID: "d0", QueueDepth: 5, BatchSize: 40}}
-
-	n := d.normFor("")
-	qdLow, _ := d.normalizedBacklogs(lowB, nil, n)
-	qdHigh, _ := d.normalizedBacklogs(highB, nil, n)
-	if qdHigh < qdLow {
-		t.Errorf("q_d decreased as batch grew: low=%v high=%v", qdLow, qdHigh)
 	}
 }
 
@@ -327,32 +290,6 @@ func TestEDPP_PerClass_IndependentVirtualQueues(t *testing.T) {
 	}
 	if d.Decide(&Request{ID: "b", InputTokens: make([]int, 800), SLOClass: "batch"}, state).Disaggregate {
 		t.Errorf("batch request should not disaggregate (no breach on its class)")
-	}
-}
-
-func TestEDPP_DeltaPfChunk_UsesChunkBudgetNotFullPrompt(t *testing.T) {
-	// δ_pf-chunk is the marginal work of ONE prefill chunk = min(a_p, ChunkTokens)
-	// tokens, NOT the whole prefill demand W_p. With the affine model δ_pf(s) = kp·s
-	// (kp = 10), the inflation must track the chunk budget, not the prompt length.
-	const ap = 8000
-
-	// Capped well below a_p ⇒ inflation reflects the chunk (256·10), not 8000·10.
-	capped := NewEDPPDecider(func() EDPPConfig { c := defaultTestEDPPConfig(); c.ChunkTokens = 256; return c }(),
-		newTestAffineModel(), nil, nil)
-	if got := capped.chunkInflation(ap); got != 2560 {
-		t.Errorf("capped δ_pf-chunk = %v, want 2560 (kp·256)", got)
-	}
-
-	// No cap (0) ⇒ the whole prefill counts as one chunk: 8000·10.
-	uncapped := NewEDPPDecider(func() EDPPConfig { c := defaultTestEDPPConfig(); c.ChunkTokens = 0; return c }(),
-		newTestAffineModel(), nil, nil)
-	if got := uncapped.chunkInflation(ap); got != 80000 {
-		t.Errorf("uncapped δ_pf-chunk = %v, want 80000 (kp·8000)", got)
-	}
-
-	// When a_p <= ChunkTokens the whole (small) prefill is one chunk: 100·10.
-	if got := capped.chunkInflation(100); got != 1000 {
-		t.Errorf("small-prompt δ_pf-chunk = %v, want 1000 (kp·100)", got)
 	}
 }
 

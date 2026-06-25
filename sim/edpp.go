@@ -16,16 +16,9 @@ import (
 //
 // # BLIS reformulation
 //
-// The design recovers the iteration-time coefficients α (per-step fixed cost) and
-// δ (per-request marginal work) by rolling OLS over scraped vLLM metrics (§3). BLIS
-// has no live server to scrape — the injected LatencyModel *is* the ground-truth
-// physics — so EDPP recovers the same coefficients by finite-difference on StepTime:
-//
-//	α    = 2·StepTime([r]) − StepTime([r, r])   (the per-step intercept)
-//	δ(r) =   StepTime([r, r]) − StepTime([r])   (one copy's marginal work; cancels α)
-//
-// StepTime([]) returns 1 (the LatencyModel contract), never α, so the empty batch
-// cannot be used to read α directly — hence the two-point difference above.
+// Physics coefficients (α, δ, c_pf) come from the frozen EDPPCoeffs in cfg.Coeffs,
+// loaded once at construction. The model parameter is retained for the deferred
+// recalibration-drift watchdog (§4) and is otherwise unused.
 //
 // # Oracle safety (INV-9)
 //
@@ -155,39 +148,6 @@ func (c EDPPConfig) validate() {
 // denominators never collapse to 0 when α ≥ T_iter (a degenerate operating point).
 const edppMinMu = 1e-3
 
-// edppPrefillProbe builds a synthetic prefill request processing n tokens this step.
-// ProgressIndex (0) < len(InputTokens) (n) selects the latency model's prefill branch.
-func edppPrefillProbe(n int) *Request {
-	if n < 1 {
-		n = 1
-	}
-	return &Request{InputTokens: make([]int, n), NumNewTokens: n, ProgressIndex: 0}
-}
-
-// edppDecodeProbe builds a synthetic decode request at context length ctx.
-// ProgressIndex (ctx) >= len(InputTokens) (ctx) and len(OutputTokens) > 0 select
-// the latency model's decode branch with Σ context = ctx.
-func edppDecodeProbe(ctx int) *Request {
-	if ctx < 1 {
-		ctx = 1
-	}
-	return &Request{InputTokens: make([]int, ctx), OutputTokens: []int{0}, NumNewTokens: 1, ProgressIndex: int64(ctx)}
-}
-
-// edppExtractAlpha returns the per-step fixed cost α = 2·StepTime([r]) − StepTime([r,r]).
-func edppExtractAlpha(m LatencyModel, probe *Request) int64 {
-	s1 := m.StepTime([]*Request{probe})
-	s2 := m.StepTime([]*Request{probe, probe})
-	return 2*s1 - s2
-}
-
-// edppMarginalDelta returns one copy's marginal work δ = StepTime([r,r]) − StepTime([r]).
-func edppMarginalDelta(m LatencyModel, probe *Request) int64 {
-	s1 := m.StepTime([]*Request{probe})
-	s2 := m.StepTime([]*Request{probe, probe})
-	return s2 - s1
-}
-
 // SLOFeedbackDecider is the lifecycle hook. OnRoute fires once when a request is
 // committed to a pool (increments the work backlog Q). OnComplete fires at the
 // request's terminal completion (decrements Q, bumps the virtual queues, and
@@ -254,9 +214,7 @@ type EDPPDecider struct {
 	// Physics constants precomputed once at construction (class-independent).
 	// μ_p^nom is fixed: a moving normalizer would break the Lyapunov drift telescoping
 	// and invert the congestion signal (design §4.3).
-	alphaD, alphaP       int64
-	deltaBarD, deltaBarP int64
-	muPNom               float64 // μ_p^nom = 1 − α_p/T_iter^nom (E11); does not depend on τ
+	muPNom float64 // μ_p^nom = 1 − α_p/T_iter^nom (E11); does not depend on τ
 
 	// Frozen calibrated coefficients stored for use by downstream tasks.
 	coeffs EDPPCoeffs
@@ -270,10 +228,11 @@ type EDPPDecider struct {
 	nHatOut        map[string]*edppRunningMean // per-class realized output-length estimate
 }
 
-// NewEDPPDecider constructs the decider and precomputes its class-independent physics
-// constants from the injected latency model. cfg is validated (panics on invalid
-// values, R3). cacheQuery and prefillSnapshots may be nil (e.g. unit tests, or no
-// prefill pool). The per-class target maps are copied defensively.
+// NewEDPPDecider constructs the decider and initializes class-independent physics
+// constants from cfg.Coeffs. cfg is validated (panics on invalid values, R3).
+// model is retained for the deferred recalibration-drift watchdog (§4).
+// cacheQuery and prefillSnapshots may be nil (e.g. unit tests, or no prefill pool).
+// The per-class target maps are copied defensively.
 func NewEDPPDecider(cfg EDPPConfig, model LatencyModel, cacheQuery map[string]func([]int) int, prefillSnapshots func() []RoutingSnapshot) *EDPPDecider {
 	cfg.validate()
 	if model == nil {
@@ -292,14 +251,6 @@ func NewEDPPDecider(cfg EDPPConfig, model LatencyModel, cacheQuery map[string]fu
 		pending:          make(map[string]edppPendingWork),
 		nHatOut:          make(map[string]*edppRunningMean),
 	}
-
-	// Decode coefficients (nominal context) and prefill coefficients (nominal chunk).
-	decodeProbe := edppDecodeProbe(cfg.NomDecodeCtx)
-	prefillProbe := edppPrefillProbe(cfg.NomPrefillTokens)
-	d.alphaD = edppExtractAlpha(model, decodeProbe)
-	d.alphaP = edppExtractAlpha(model, prefillProbe)
-	d.deltaBarD = edppMarginalDelta(model, decodeProbe)
-	d.deltaBarP = edppMarginalDelta(model, prefillProbe)
 
 	// μ_p^nom = 1 − α_p/(α_p + c_pf·S_pf^nom) (design §7): from frozen coefficients.
 	d.muPNom = d.coeffs.muPNom(cfg.NomPrefillTokens)
@@ -354,22 +305,6 @@ func (d *EDPPDecider) normFor(class string) edppNorm {
 		tauTTFT: float64(tauTTFTUs),
 		tauITL:  float64(tauITLUs),
 	}
-}
-
-// normalizedBacklogs returns the dimensionless decode/prefill backlogs q_d, q_p (E9)
-// under the given class normalizers. Q = (QueueDepth + BatchSize) · δ̄ per pool [µs];
-// q = Q / W*. Q grows with batch size, and W* uses fixed μ^nom, so q_d cannot decrease
-// as B rises (§11 signal-direction).
-func (d *EDPPDecider) normalizedBacklogs(decodeSnaps, prefillSnaps []RoutingSnapshot, n edppNorm) (qd, qp float64) {
-	var qD float64
-	for _, s := range decodeSnaps {
-		qD += float64(s.QueueDepth+s.BatchSize) * float64(d.deltaBarD)
-	}
-	var qP float64
-	for _, s := range prefillSnaps {
-		qP += float64(s.QueueDepth+s.BatchSize) * float64(d.deltaBarP)
-	}
-	return qD / n.wStarD, qP / n.wStarP
 }
 
 // Decide evaluates the E14 rule and returns Disaggregate=true (route P) when the
@@ -493,33 +428,6 @@ func (d *EDPPDecider) selectedDecodeState(state *RouterState) (bDec int, kv, sPf
 		}
 	}
 	return 1, int64(d.cfg.NomDecodeCtx), 0
-}
-
-// chunkInflation returns δ_pf-chunk: the marginal work [µs] of co-scheduling one
-// prefill chunk of min(a_p, ChunkTokens) tokens onto a decode iteration (§3.2 §6).
-// ChunkTokens == 0 means "no cap" — the whole a_p-token prefill counts as one chunk.
-func (d *EDPPDecider) chunkInflation(ap int) float64 {
-	chunk := ap
-	if d.cfg.ChunkTokens > 0 && d.cfg.ChunkTokens < chunk {
-		chunk = d.cfg.ChunkTokens
-	}
-	return float64(edppMarginalDelta(d.model, edppPrefillProbe(chunk)))
-}
-
-// selectedDecodeITL returns the measured ITL of the pre-selected decode pod, falling
-// back to the nominal iteration time (α_d + δ̄_d) when no measurement is available.
-func (d *EDPPDecider) selectedDecodeITL(decodeSnaps []RoutingSnapshot, state *RouterState) float64 {
-	if state != nil && state.SelectedInstance != "" {
-		for _, s := range decodeSnaps {
-			if s.ID == state.SelectedInstance {
-				if s.ITL > 0 {
-					return s.ITL
-				}
-				break
-			}
-		}
-	}
-	return float64(d.alphaD + d.deltaBarD)
 }
 
 // nHatFor returns the per-class running-mean output length, lazily created.
