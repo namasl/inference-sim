@@ -14,31 +14,45 @@ import (
 // balancing and SLO pressure, where the SLO weights are virtual-queue states
 // (z_ttft, z_itl) rather than hand-tuned constants.
 //
-// # BLIS reformulation
+// # Physics source
 //
-// Physics coefficients (α, δ, c_pf) come from the frozen EDPPCoeffs in cfg.Coeffs,
-// loaded once at construction. The model parameter is retained for the deferred
+// EDPP's iteration-time coefficients {α, α_p, c0, c1, c_pf, c_attn} are FROZEN,
+// loaded from a calibration JSON (scripts/calibration/coeffs-*.json) via
+// LoadEDPPCoeffs and carried in EDPPConfig.Coeffs. They feed the demand W_p (§3),
+// the live drain rates μ (§4), the normalizers W* (§7), and the counterfactual
+// predictors (§5). See docs/superpowers/specs/2026-06-24-edpp-rule-coeffs-wiring-design.md.
+// The model parameter on NewEDPPDecider is retained for the deferred
 // recalibration-drift watchdog (§4) and is otherwise unused.
+//
+// # Backlog accounting
+//
+// Q_p/Q_d are maintained by conservation: OnRoute adds a committed request's work,
+// OnComplete removes it. There is no continuous μ·Δt drain (deferred — needs a
+// sim-clock tick the decider does not yet receive); a P-routed request's prefill
+// work is held until decode completes (bounded over-hold). Decode work uses the
+// per-class running-mean output length N̂_out (INV-9: realized length read only at
+// completion). Forget() releases work on terminal non-completion (timeout/drop).
 //
 // # Oracle safety (INV-9)
 //
 // Decide reads only input-side quantities: len(req.InputTokens) and the prefix-cache
-// hit (via cacheQuery), never req.OutputTokens. The probe Requests built here are
-// synthetic fixtures used to query the latency model's physics; fabricating a probe
-// with OutputTokens set does NOT read the real request's hidden output length.
+// hit (via cacheQuery), never req.OutputTokens. Per-class N̂_out is updated only at
+// completion from realized output length — not used for servability decisions, so
+// INV-9 is not violated.
 //
 // # Modeling residuals (carried from design §10)
 //
-//   - Backlog Q is estimated as (QueueDepth + BatchSize) · δ̄ per pool — monotone in
-//     batch size B, so the §11 signal-direction anchor holds by construction.
 //   - δ_pf-chunk (ITL inflation from prefill-on-decode) is the marginal work of ONE
 //     prefill chunk — min(a_p, ChunkTokens) tokens, since only one chunk co-schedules
 //     per decode iteration (§3.2: δ_pf(s)=c_pf·s, s = chunk tokens). It is distinct
 //     from the full prefill demand W_p, which lands on the backlog/TTFT terms instead.
-//   - For MoE models, finite-difference α slightly under-counts because weight-load
-//     grows weakly with B via nEff; exact for dense models.
+//   - For MoE models, c0/c1 slightly under-count because weight-load grows weakly
+//     with B via nEff; exact for dense models.
 //   - Optimistic in-flight backlog increments (§8.1) are omitted in the base
 //     implementation; the z-feedback half of the rule is immune to scrape staleness.
+//   - The continuous μ·Δt backlog drain and per-token decode drain (§6.2/6.3) are
+//     deferred; conservation bookkeeping (add-at-route, remove-at-complete) is the
+//     shipped approximation.
 
 // EDPPConfig holds the controller's fixed knobs. All durations are microseconds.
 //
@@ -93,8 +107,8 @@ type EDPPDecisionTrace struct {
 	TauITL       float64 // τ_itl for this class (µs)
 	TTFTP        float64 // predicted TTFT under P (µs)
 	TTFTD        float64 // predicted TTFT under D (µs)
-	ITLP         float64 // predicted ITL under P (µs)
-	ITLD         float64 // predicted ITL under D (µs)
+	ITLP         float64 // retained for compatibility; always 0 — ITL pressure is now the collapsed ITLTerm (Task 7 design); Decide no longer sets this field
+	ITLD         float64 // retained for compatibility; always 0 — ITL pressure is now the collapsed ITLTerm (Task 7 design); Decide no longer sets this field
 	ZTTFT        float64 // normalized TTFT virtual queue (z_ttft = Z_ttft / τ_ttft)
 	ZITL         float64 // normalized ITL virtual queue (z_itl = Z_itl / τ_itl)
 	BalanceTermD float64 // q_d·(W_p/W*_d)
