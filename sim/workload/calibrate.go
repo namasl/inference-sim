@@ -119,6 +119,12 @@ type SimResult struct {
 	SLOClass     string  `json:"slo_class,omitempty"` // SLO tier (e.g., "standard", "batch"); empty if not set
 	Model        string  `json:"model,omitempty"`     // model tag; empty if not set
 	ITLMeanUs    float64 `json:"itl_mean_us,omitempty"` // mean ITL in microseconds; 0 if not recorded
+	// Disaggregation status (EDPP study). Disaggregated iff prefill and decode
+	// ran on different instances. Omitted from JSON when unset/false so existing
+	// calibrate consumers are unaffected (backward-compatible).
+	WasDisaggregated  bool   `json:"was_disaggregated,omitempty"`
+	PrefillInstanceID string `json:"prefill_instance_id,omitempty"`
+	DecodeInstanceID  string `json:"decode_instance_id,omitempty"`
 }
 
 // LatencyPair holds matched real-vs-sim latency vectors.

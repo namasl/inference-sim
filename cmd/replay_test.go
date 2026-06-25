@@ -156,11 +156,14 @@ func TestSimResult_JSONRoundTrip(t *testing.T) {
 	// GIVEN a workload.SimResult with known values
 	// workload.SimResult is in sim/workload/calibrate.go — JSON tags added by Task 2.
 	sr := workload.SimResult{
-		RequestID:    42,
-		TTFT:         12345.0,
-		E2E:          98765.0,
-		InputTokens:  256,
-		OutputTokens: 128,
+		RequestID:         42,
+		TTFT:              12345.0,
+		E2E:               98765.0,
+		InputTokens:       256,
+		OutputTokens:      128,
+		WasDisaggregated:  true,
+		PrefillInstanceID: "prefill-0",
+		DecodeInstanceID:  "decode-1",
 	}
 
 	// WHEN marshaled to JSON and back
@@ -189,6 +192,15 @@ func TestSimResult_JSONRoundTrip(t *testing.T) {
 	if got.OutputTokens != 128 {
 		t.Errorf("OutputTokens: got %d, want 128", got.OutputTokens)
 	}
+	if !got.WasDisaggregated {
+		t.Errorf("WasDisaggregated: got false, want true")
+	}
+	if got.PrefillInstanceID != "prefill-0" {
+		t.Errorf("PrefillInstanceID: got %q, want prefill-0", got.PrefillInstanceID)
+	}
+	if got.DecodeInstanceID != "decode-1" {
+		t.Errorf("DecodeInstanceID: got %q, want decode-1", got.DecodeInstanceID)
+	}
 
 	// THEN JSON keys match the calibrate contract
 	if !strings.Contains(string(data), `"request_id":42`) {
@@ -199,6 +211,9 @@ func TestSimResult_JSONRoundTrip(t *testing.T) {
 	}
 	if !strings.Contains(string(data), `"e2e_us"`) {
 		t.Errorf("JSON must contain e2e_us key, got: %s", data)
+	}
+	if !strings.Contains(string(data), `"was_disaggregated":true`) {
+		t.Errorf("JSON must contain was_disaggregated, got: %s", data)
 	}
 }
 
