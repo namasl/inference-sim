@@ -3,6 +3,8 @@ package cluster
 import (
 	"math"
 	"testing"
+
+	"github.com/inference-sim/inference-sim/sim"
 )
 
 // edppTraceConfig builds a 2P+2D disagg config driving the EDPP decider, with the
@@ -19,6 +21,7 @@ func edppTraceConfig(traceLevel string) DeploymentConfig {
 	config.EDPPCXferUs = 5_000
 	config.EDPPNomPrefillTokens = 512
 	config.EDPPNomDecodeCtx = 2048
+	config.EDPPCoeffs = sim.EDPPCoeffs{AlphaD: 1000, AlphaP: 1000, C0: 100, C1: 1, CPf: 10, CAttn: 0}
 	return config
 }
 

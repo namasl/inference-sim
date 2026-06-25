@@ -425,6 +425,17 @@ func (e *DisaggregationDecisionEvent) Execute(cs *ClusterSimulator) {
 		})
 	}
 
+	// Fire OnRoute exactly once at the routing-commit point, before the request is
+	// dispatched to either the local D-path or the disaggregated P-path. This is
+	// the single point after which the request is irrevocably committed to a pool,
+	// so exactly-once semantics are guaranteed: every request that reaches this
+	// point is either injected locally (non-disagg) or becomes a ParentRequest
+	// (disagg), and both paths lead to a terminal feedSLOFeedback call.
+	if cs.sloFeedback != nil {
+		ap := len(e.request.InputTokens) // uncached-prompt upper bound; INV-9 safe
+		cs.sloFeedback.OnRoute(e.request, disaggDecision.Disaggregate, ap)
+	}
+
 	// Find the target decode instance object (used in both paths below).
 	var decodeInst *InstanceSimulator
 	for _, inst := range cs.instances {

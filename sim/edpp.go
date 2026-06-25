@@ -188,15 +188,35 @@ func edppMarginalDelta(m LatencyModel, probe *Request) int64 {
 	return s2 - s1
 }
 
-// SLOFeedbackDecider is the optional completion-feedback hook. Deciders that
-// implement it receive each request's realized TTFT and mean ITL so they can
-// update SLO-tracking state. Call sites discover it via a type assertion, so
-// adding it does not break the DisaggregationDecider interface.
+// SLOFeedbackDecider is the lifecycle hook. OnRoute fires once when a request is
+// committed to a pool (increments the work backlog Q). OnComplete fires at the
+// request's terminal completion (decrements Q, bumps the virtual queues, and
+// updates the per-class output-length estimate N̂_out). Call sites discover it via
+// a type assertion, so adding it does not break DisaggregationDecider.
 type SLOFeedbackDecider interface {
-	// OnComplete reports a completed request's SLO class and its realized end-to-end
-	// TTFT and mean inter-token latency (both microseconds). The class lets the decider
-	// attribute the violation to the correct per-class SLO accumulator.
-	OnComplete(sloClass string, realizedTTFTUs, realizedMeanITLUs int64)
+	OnRoute(req *Request, toPrefill bool, apTokens int)                             // increment Q at admission
+	OnComplete(req *Request, realizedTTFTUs, realizedMeanITLUs int64) // decrement Q, bump z, update N̂_out
+}
+
+// edppPendingWork records the work a routed request contributed, so OnComplete can
+// remove exactly that amount (conservation; design §6 conservation form).
+type edppPendingWork struct {
+	toPrefill bool
+	wp, wd    float64 // µs added to qp/qd respectively
+}
+
+// edppRunningMean is a per-class running mean of realized output lengths (N̂_out).
+type edppRunningMean struct {
+	n   int64
+	sum float64
+}
+
+func (r *edppRunningMean) update(v float64) { r.n++; r.sum += v }
+func (r *edppRunningMean) mean() float64 {
+	if r.n == 0 {
+		return 1 // no completions yet: 1-token decode estimate (conservative seed)
+	}
+	return r.sum / float64(r.n)
 }
 
 // edppClassState is the per-SLO-class virtual-queue state (accumulated SLO
@@ -233,6 +253,11 @@ type EDPPDecider struct {
 
 	// Per-class controller state: virtual queues keyed by SLO class. Lazily created.
 	zByClass map[string]*edppClassState
+
+	// Conservation bookkeeping (design §6 conservation form).
+	qpWork, qdWork float64                    // running work-µs backlogs
+	pending        map[string]edppPendingWork // per-request work, keyed by Request.ID
+	nHatOut        map[string]*edppRunningMean // per-class realized output-length estimate
 }
 
 // NewEDPPDecider constructs the decider and precomputes its class-independent physics
@@ -254,6 +279,8 @@ func NewEDPPDecider(cfg EDPPConfig, model LatencyModel, cacheQuery map[string]fu
 		prefillSnapshots: prefillSnapshots,
 		zByClass:         make(map[string]*edppClassState),
 		coeffs:           cfg.Coeffs,
+		pending:          make(map[string]edppPendingWork),
+		nHatOut:          make(map[string]*edppRunningMean),
 	}
 
 	// Decode coefficients (nominal context) and prefill coefficients (nominal chunk).
@@ -473,15 +500,60 @@ func (d *EDPPDecider) selectedDecodeITL(decodeSnaps []RoutingSnapshot, state *Ro
 	return float64(d.alphaD + d.deltaBarD)
 }
 
-// OnComplete bumps the completing request's per-class virtual queues from its realized
-// latencies (E8). Stabilizing Z enforces the time-average SLO for that class; the
-// max(·, 0) floor is the standard Neely update. The class's queues are created lazily.
-func (d *EDPPDecider) OnComplete(sloClass string, realizedTTFTUs, realizedMeanITLUs int64) {
-	tauTTFTUs, tauITLUs := d.targetsFor(sloClass)
-	z := d.zByClass[sloClass]
+// nHatFor returns the per-class running-mean output length, lazily created.
+func (d *EDPPDecider) nHatFor(class string) *edppRunningMean {
+	m := d.nHatOut[class]
+	if m == nil {
+		m = &edppRunningMean{}
+		d.nHatOut[class] = m
+	}
+	return m
+}
+
+// OnRoute increments the work backlog for a committed request (design §6.1,
+// conservation form). apTokens is the uncached prompt token count (input-only; INV-9
+// safe). W_d uses the class N̂_out estimate at the nominal decode context.
+func (d *EDPPDecider) OnRoute(req *Request, toPrefill bool, apTokens int) {
+	if apTokens <= 0 {
+		return
+	}
+	wp := d.coeffs.Wp(apTokens)
+	wd := d.nHatFor(req.SLOClass).mean() * d.coeffs.deltaBarDecode(float64(d.cfg.NomDecodeCtx))
+	pw := edppPendingWork{toPrefill: toPrefill}
+	if toPrefill {
+		pw.wp = wp // prefill work lands on the prefill pool
+		pw.wd = wd // decode-only work lands on the decode pool
+		d.qpWork += wp
+		d.qdWork += wd
+	} else {
+		pw.wd = wp + wd // mixed prefill+decode on the decode pool
+		d.qdWork += wp + wd
+	}
+	d.pending[req.ID] = pw
+}
+
+// OnComplete removes the request's work (conservation), bumps the per-class
+// virtual queues from realized latencies (E8), and updates N̂_out. Reading the
+// realized output length here is post-completion and INV-9-permitted (§6.3).
+func (d *EDPPDecider) OnComplete(req *Request, realizedTTFTUs, realizedMeanITLUs int64) {
+	if pw, ok := d.pending[req.ID]; ok {
+		d.qpWork -= pw.wp
+		d.qdWork -= pw.wd
+		if d.qpWork < 0 {
+			d.qpWork = 0
+		}
+		if d.qdWork < 0 {
+			d.qdWork = 0
+		}
+		delete(d.pending, req.ID)
+	}
+	d.nHatFor(req.SLOClass).update(float64(len(req.OutputTokens)))
+
+	tauTTFTUs, tauITLUs := d.targetsFor(req.SLOClass)
+	z := d.zByClass[req.SLOClass]
 	if z == nil {
 		z = &edppClassState{}
-		d.zByClass[sloClass] = z
+		d.zByClass[req.SLOClass] = z
 	}
 	z.zTTFT = math.Max(z.zTTFT+float64(realizedTTFTUs-tauTTFTUs), 0)
 	z.zITL = math.Max(z.zITL+float64(realizedMeanITLUs-tauITLUs), 0)

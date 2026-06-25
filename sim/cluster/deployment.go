@@ -81,6 +81,7 @@ type DeploymentConfig struct {
 	EDPPCXferUs          int64            // c_xfer: KV-transfer cost paid when routing P (µs)
 	EDPPNomPrefillTokens int              // S_nom: nominal prefill chunk for the fixed prefill normalizer
 	EDPPNomDecodeCtx     int              // L_nom: nominal decode context for the fixed decode normalizer
+	EDPPCoeffs           sim.EDPPCoeffs  // frozen E3 latency-law coefficients; required when PDDecider == "edpp"
 
 	// E/P/D disaggregation configuration (GAP-4, issue #1264).
 	// When EncodeInstances == 0 (default), the encode stage is disabled and the

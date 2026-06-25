@@ -423,6 +423,7 @@ func NewClusterSimulator(config DeploymentConfig, requests []*sim.Request, onReq
 				BlockSize:        int(config.BlockSizeTokens),
 				ChunkTokens:      int(config.BatchConfig.MaxScheduledTokens),
 				TraceEnabled:     trace.TraceLevel(config.TraceLevel) == trace.TraceLevelDecisions,
+				Coeffs:           config.EDPPCoeffs,
 			}, lm, cs.cacheQueryFn, prefillSnapshots)
 		default:
 			cs.disaggregationDecider = sim.NewDisaggregationDecider(config.PDDecider)
@@ -1205,7 +1206,7 @@ func (c *ClusterSimulator) feedSLOFeedback(req *sim.Request) {
 	for _, v := range req.ITL {
 		sum += v
 	}
-	c.sloFeedback.OnComplete(req.SLOClass, ttftUs, sum/int64(len(req.ITL)))
+	c.sloFeedback.OnComplete(req, ttftUs, sum/int64(len(req.ITL)))
 }
 
 func (c *ClusterSimulator) detectPrefillCompletions(inst *InstanceSimulator) {
@@ -1972,6 +1973,14 @@ func (cs *ClusterSimulator) executeDisaggregatedRouting(req *sim.Request, time i
 				LHS: et.LHS, RHS: et.RHS, Disaggregate: et.Disaggregate,
 			})
 		}
+	}
+
+	// Fire OnRoute exactly once at the routing-commit point (same reasoning as in
+	// DisaggregationDecisionEvent.Execute): both the D-path and P-path below are
+	// terminal dispatch points, so a single call here guarantees exactly-once semantics.
+	if cs.sloFeedback != nil {
+		ap := len(req.InputTokens) // uncached-prompt upper bound; INV-9 safe
+		cs.sloFeedback.OnRoute(req, disaggDecision.Disaggregate, ap)
 	}
 
 	// Find the target decode instance object (used in both paths below).

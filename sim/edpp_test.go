@@ -1,6 +1,7 @@
 package sim
 
 import (
+	"fmt"
 	"math"
 	"testing"
 )
@@ -257,7 +258,7 @@ func TestEDPP_DisaggregationPayoffSign(t *testing.T) {
 
 	// Drive z_itl large via realized ITL misses (E8), prefill stays idle.
 	for i := 0; i < 50; i++ {
-		d.OnComplete("", 0, 200_000) // realized ITL = 200ms >> τ_itl, default class
+		d.OnComplete(&Request{ID: fmt.Sprintf("r%d", i), SLOClass: ""}, 0, 200_000) // realized ITL = 200ms >> τ_itl, default class
 	}
 	if !d.Decide(req, state).Disaggregate {
 		t.Errorf("expected P (disaggregate) under z_itl breach with idle prefill")
@@ -267,7 +268,7 @@ func TestEDPP_DisaggregationPayoffSign(t *testing.T) {
 func TestEDPP_OnComplete_UpdatesVirtualQueues(t *testing.T) {
 	// E8: Z_ttft and Z_itl accumulate positive violations and floor at 0.
 	d := NewEDPPDecider(defaultTestEDPPConfig(), newTestAffineModel(), nil, nil)
-	d.OnComplete("", 150_000, 80_000) // TTFT 150ms (τ=100ms), ITL 80ms (τ=50ms)
+	d.OnComplete(&Request{ID: "r2", SLOClass: ""}, 150_000, 80_000) // TTFT 150ms (τ=100ms), ITL 80ms (τ=50ms)
 	z := d.zByClass[""]
 	if z == nil || z.zTTFT != 50_000 {
 		t.Errorf("Z_ttft = %v, want 50000", z)
@@ -276,7 +277,7 @@ func TestEDPP_OnComplete_UpdatesVirtualQueues(t *testing.T) {
 		t.Errorf("Z_itl = %v, want 30000", z.zITL)
 	}
 	// A large under-target completion must floor each queue at 0, not go negative.
-	d.OnComplete("", 0, 0)
+	d.OnComplete(&Request{ID: "r3", SLOClass: ""}, 0, 0)
 	if z.zTTFT != 0 || z.zITL != 0 {
 		t.Errorf("virtual queues not floored at 0: zTTFT=%v zITL=%v", z.zTTFT, z.zITL)
 	}
@@ -308,7 +309,7 @@ func TestEDPP_PerClass_IndependentVirtualQueues(t *testing.T) {
 	d := NewEDPPDecider(cfg, newTestAffineModel(), nil, func() []RoutingSnapshot { return nil })
 
 	for i := 0; i < 50; i++ {
-		d.OnComplete("critical", 0, 200_000) // breach only the critical class
+		d.OnComplete(&Request{ID: fmt.Sprintf("r%d", i), SLOClass: "critical"}, 0, 200_000) // breach only the critical class
 	}
 	if d.zByClass["critical"] == nil || d.zByClass["critical"].zITL == 0 {
 		t.Fatalf("critical z_itl did not accumulate")
@@ -494,6 +495,50 @@ func TestEDPPConfig_RequiresCoeffsAndTauITLAboveAlpha(t *testing.T) {
 	tauGuard := defaultTestEDPPConfig()
 	tauGuard.TauITLUs = 500 // < AlphaD=1000
 	assertPanics(t, func() { _ = NewEDPPDecider(tauGuard, m, nil, nil) })
+}
+
+func TestEDPP_BookkeepingConservation(t *testing.T) {
+	cfg := defaultTestEDPPConfig()
+	d := NewEDPPDecider(cfg, newTestAffineModel(), nil, nil)
+	r1 := &Request{ID: "r1", SLOClass: "", InputTokens: make([]int, 200), OutputTokens: []int{0}}
+	// First completion seeds N̂_out (no prior estimate ⇒ use a 1-token default), so
+	// route adds W_p only for the decode side until N̂_out is known.
+	d.OnRoute(r1, true /*toPrefill*/, 200)
+	if d.qpWork <= 0 {
+		t.Fatalf("qpWork must be > 0 after routing P, got %v", d.qpWork)
+	}
+	qpAfterRoute := d.qpWork
+	// W_p(200) with test coeffs (CPf=10, CAttn=0) = 2000.
+	if math.Abs(qpAfterRoute-2000) > 1e-9 {
+		t.Errorf("qpWork = %v, want 2000 (W_p(200))", qpAfterRoute)
+	}
+	// Completion removes the request's work: Q returns to ~0 (conservation).
+	r1.ITL = []int64{40_000}
+	r1.OutputTokens = []int{1, 2, 3} // realized N_out=3 (post-completion read; INV-9 OK)
+	d.OnComplete(r1, 90_000, 40_000)
+	if math.Abs(d.qpWork) > 1e-9 {
+		t.Errorf("qpWork after completion = %v, want 0", d.qpWork)
+	}
+	// N̂_out updated from the realized length.
+	if m := d.nHatOut[""]; m == nil || m.mean() != 3 {
+		t.Errorf("N̂_out not updated to 3, got %+v", m)
+	}
+}
+
+func TestEDPP_NoutDoesNotChangeDecision(t *testing.T) {
+	// §11 N_out-independence: the realized N_out of a request must not change the
+	// P/D decision (it only affects Q_d accounting magnitude, never the rule's
+	// admission read which uses input-only a_p + the class N̂_out estimate).
+	cfg := defaultTestEDPPConfig()
+	d := NewEDPPDecider(cfg, newTestAffineModel(), nil, func() []RoutingSnapshot { return nil })
+	req := &Request{ID: "x", InputTokens: make([]int, 300)}
+	state := &RouterState{Snapshots: []RoutingSnapshot{{ID: "d0", QueueDepth: 1, BatchSize: 2, ResidentPrefillTokens: 0}}}
+	dec1 := d.Decide(req, state)
+	req.OutputTokens = []int{1, 2, 3, 4, 5} // would-be large N_out; decision path must ignore it
+	dec2 := d.Decide(req, state)
+	if dec1.Disaggregate != dec2.Disaggregate {
+		t.Errorf("decision changed with N_out: %v vs %v", dec1.Disaggregate, dec2.Disaggregate)
+	}
 }
 
 // Compile-time interface compliance.

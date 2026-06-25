@@ -41,6 +41,7 @@ func newTestEDPPDeploymentConfig(numInstances, prefill, decode int) DeploymentCo
 		EDPPCXferUs:             1_000,
 		EDPPNomPrefillTokens:    512,
 		EDPPNomDecodeCtx:        2048,
+		EDPPCoeffs:              sim.EDPPCoeffs{AlphaD: 1000, AlphaP: 1000, C0: 100, C1: 1, CPf: 10, CAttn: 0},
 		RoutingPolicy:           "round-robin",
 		PDTransferBandwidthGBps: 25.0,
 		PDTransferBaseLatencyMs: 0.05,
