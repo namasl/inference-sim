@@ -6,9 +6,30 @@ decisions_<wl>_rate<R>_edpp_<tag>.csv, where tag in {agg,1P3D,2P2D,3P1D}.
 Decider names contain hyphens, tags do not, so split on the LAST underscore.
 """
 import json, glob, csv, re, os
-
-TAU_TTFT_US, TAU_ITL_US = 500_000, 100_000  # match --edpp-tau-ttft / --edpp-tau-itl defaults
 from window import steady_window, offered_work
+
+# Per-(workload, slo_class) SLO targets in microseconds — must match the
+# --slo-ttft / --edpp-tau-ttft-classes values passed in sweep.sh.
+SLO_TTFT_US = {
+    ("rag", "standard"): 500_000, ("rag", "batch"): 5_000_000,
+    ("synth", "batch"): 2_000_000,
+}
+SLO_ITL_US = {
+    ("rag", "standard"): 150_000, ("rag", "batch"): 200_000,
+    ("synth", "batch"): 150_000,
+}
+DEFAULT_TTFT_US = 500_000  # fallback for unknown (workload,class)
+
+
+DEFAULT_ITL_US = 150_000
+
+
+def ttft_target(wl, r):
+    return SLO_TTFT_US.get((wl, r.get("slo_class", "")), DEFAULT_TTFT_US)
+
+
+def itl_target(wl, r):
+    return SLO_ITL_US.get((wl, r.get("slo_class", "")), DEFAULT_ITL_US)
 
 
 def pct(xs, p):
@@ -26,15 +47,21 @@ def load_cell(path):
     return trim_tail(rs[start:])  # steady-state head trim + drain tail trim
 
 
-def tier1(rs):
+def tier1(wl, rs):
     ttft = [r["ttft_us"] for r in rs]
     itl = [r.get("itl_mean_us", 0) for r in rs]
     disagg = sum(1 for r in rs if r.get("was_disaggregated"))
+    # SLO attainment uses each request's own per-class target (standard vs batch).
+    ttft_ok = sum(r["ttft_us"] <= ttft_target(wl, r) for r in rs)
+    # ITL attainment counts only requests with a recorded ITL (>0; needs ≥2 output tokens).
+    itl_rs = [r for r in rs if r.get("itl_mean_us", 0) > 0]
+    itl_ok = sum(r["itl_mean_us"] <= itl_target(wl, r) for r in itl_rs)
     return {
         "n": len(rs),
         "ttft_p50": pct(ttft, .50), "ttft_p99": pct(ttft, .99),
         "itl_p99": pct(itl, .99),
-        "slo_ttft_attain": sum(t <= TAU_TTFT_US for t in ttft) / len(ttft) if ttft else 0,
+        "slo_ttft_attain": ttft_ok / len(rs) if rs else 0,
+        "slo_itl_attain": itl_ok / len(itl_rs) if itl_rs else 0,
         "disagg_frac": disagg / len(rs) if rs else 0,
     }
 
@@ -53,7 +80,7 @@ def build_summary():
         rs = load_cell(f)
         work = offered_work(f"../specs/{wl}_rate{rate}.yaml")
         rows.append({"workload": wl, "rate": rate, "decider": dec, "split": split,
-                     **work, **tier1(rs)})
+                     **work, **tier1(wl, rs)})
     if not rows:
         print("build_summary: no results_*.json found — run sweep.sh first"); return
     with open("../out/summary.csv", "w", newline="") as fh:
@@ -77,8 +104,8 @@ def regret_join():
             continue
         for d in csv.DictReader(open(dec_path)):
             r = rs.get(d["request_id"])
-            if not r or r["ttft_us"] <= TAU_TTFT_US:
-                continue  # only SLO misses
+            if not r or r["ttft_us"] <= ttft_target(wl, r):
+                continue  # only per-class SLO misses
             terms = {k: abs(float(d[k])) for k in
                      ("balance_term_d", "balance_term_p", "transfer_term", "ttft_term", "itl_term")
                      if d.get(k)}
