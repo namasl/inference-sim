@@ -792,6 +792,7 @@ func (c *ClusterSimulator) Run() error {
 				role := c.poolMembership[instID]
 				if role.Has(PoolRolePrefill) {
 					c.detectPrefillCompletions(inst)
+					c.detectPrefillTimeouts(inst)
 				}
 				if role.Has(PoolRoleDecode) {
 					c.detectDecodeCompletions(inst)
@@ -1320,6 +1321,66 @@ func (c *ClusterSimulator) detectPrefillCompletions(inst *InstanceSimulator) {
 			},
 			seqID: c.nextSeqID(),
 		})
+	}
+}
+
+// releaseDecodeInFlight releases the decode-pod in-flight reservation taken at
+// disaggregated routing (llm-d parity, see executeDisaggregatedRouting). Used on
+// the paths where the decode sub-request is never injected onto the decode
+// instance — so the per-instance OnRequestDone delta never decrements it: a
+// transfer-start drop, a transfer-complete late drop, or a prefill timeout.
+// Warn-and-clamp on negative mirrors the OnRequestDone decrement: inFlightRequests
+// is a best-effort routing signal (INV-7), not a hard-conservation counter.
+func (c *ClusterSimulator) releaseDecodeInFlight(decodeInstID string) {
+	// Defensive: narrow event-unit tests construct ClusterSimulator as a struct
+	// literal without inFlightRequests (NewClusterSimulator always makes it). With
+	// no map there was no reservation to release.
+	if c.inFlightRequests == nil {
+		return
+	}
+	c.inFlightRequests[decodeInstID]--
+	if c.inFlightRequests[decodeInstID] < 0 {
+		logrus.Warnf("[cluster] inFlightRequests[%s] went negative releasing a decode reservation — bookkeeping bug; clamping to 0",
+			decodeInstID)
+		c.inFlightRequests[decodeInstID] = 0
+	}
+}
+
+// detectPrefillTimeouts releases the decode-pod in-flight reservation for
+// disaggregated requests whose prefill sub-request timed out on this prefill
+// instance. Such a request never reaches KVTransferStartedEvent (no decode
+// sub-request is ever created or injected), so without this its decode
+// reservation — taken at routing in executeDisaggregatedRouting — would leak for
+// the rest of the run, permanently biasing the decode load signal away from that
+// pod. The prefill timeout itself is already counted in the prefill instance's
+// TimedOutRequests (decrementing the prefill-side inFlightRequests via the
+// OnRequestDone delta); this only handles the decode-side reservation. The parent
+// is removed from pendingPrefillCompletions so it is processed at most once.
+// R2/INV-6: collect IDs into a sorted slice before processing for determinism.
+func (c *ClusterSimulator) detectPrefillTimeouts(inst *InstanceSimulator) {
+	instID := string(inst.ID())
+	var timedOutSubReqIDs []string
+	for subReqID, parentID := range c.pendingPrefillCompletions {
+		parent := c.parentRequests[parentID]
+		if parent == nil || string(parent.PrefillInstanceID) != instID {
+			continue
+		}
+		if parent.PrefillSubReq != nil && parent.PrefillSubReq.State == sim.StateTimedOut {
+			timedOutSubReqIDs = append(timedOutSubReqIDs, subReqID)
+		}
+	}
+	sort.Strings(timedOutSubReqIDs)
+
+	for _, subReqID := range timedOutSubReqIDs {
+		parentID := c.pendingPrefillCompletions[subReqID]
+		parent := c.parentRequests[parentID]
+		c.releaseDecodeInFlight(string(parent.DecodeInstanceID))
+		delete(c.pendingPrefillCompletions, subReqID)
+		// Conservation cleanup: the parent never completes, so release any backlog
+		// its OnRoute added (mirrors the decode-timeout path in detectDecodeCompletions).
+		if c.sloFeedback != nil {
+			c.sloFeedback.Forget(parentID)
+		}
 	}
 }
 
@@ -2175,6 +2236,23 @@ func (cs *ClusterSimulator) executeDisaggregatedRouting(req *sim.Request, time i
 	}
 	cs.parentRequests[parent.ID] = parent
 
+	// Reserve the decode pod's in-flight load signal NOW, at selection — llm-d
+	// parity (EPP InFlightLoadProducer.PreRequest increments the decode endpoint's
+	// requestTracker synchronously right after Schedule(), holding it through the
+	// whole prefill+transfer+decode window). The local (non-disaggregated) path
+	// increments inFlightRequests at selection too (Step 3a above); the
+	// disaggregated path used to defer the decode increment to
+	// KVTransferCompletedEvent (after prefill+transfer), leaving the decode load
+	// signal blind for the entire transfer window so a burst of disaggregated
+	// requests all saw every decode pod as empty. This reservation is released
+	// exactly once: normally by the decode sub-request's completion via the
+	// per-instance OnRequestDone delta (the decode sub-request is injected on this
+	// instance at KVTransferCompletedEvent), or — for paths where the decode
+	// sub-request is never injected — explicitly at the transfer-start drop, the
+	// transfer-complete late drop, or a prefill timeout (see pd_events.go and
+	// detectPrefillTimeouts).
+	cs.inFlightRequests[string(parent.DecodeInstanceID)]++
+
 	// Create prefill sub-request: same input, no output (completes after prefill).
 	prefillSubReq := &sim.Request{
 		ID:           parent.PrefillSubReqID,
@@ -2188,6 +2266,9 @@ func (cs *ClusterSimulator) executeDisaggregatedRouting(req *sim.Request, time i
 		SLOClass:     req.SLOClass,
 		Model:        req.Model,
 	}
+	// Retain the prefill sub-request so a prefill timeout can release the decode
+	// reservation above (the decode sub-request is never created in that case).
+	parent.PrefillSubReq = prefillSubReq
 
 	heap.Push(&cs.clusterEvents, clusterEventEntry{
 		event: &PrefillRoutingEvent{

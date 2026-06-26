@@ -197,6 +197,10 @@ func (e *KVTransferStartedEvent) Execute(cs *ClusterSimulator) {
 func (e *KVTransferStartedEvent) dropAtStart(cs *ClusterSimulator) {
 	cs.droppedAtDecodeKV++
 	cs.transfersInitiated++
+	// Release the decode in-flight reservation taken at routing (llm-d parity):
+	// the decode sub-request is never injected on the decode instance, so the
+	// per-instance OnRequestDone delta will never decrement it.
+	cs.releaseDecodeInFlight(string(e.parentReq.DecodeInstanceID))
 	e.parentReq.TransferStartTime = e.time
 	e.parentReq.CompletionTime = e.time
 	// Conservation cleanup (Defect 2): this disaggregated request was OnRoute'd
@@ -366,6 +370,9 @@ func (e *KVTransferCompletedEvent) Execute(cs *ClusterSimulator) {
 		logrus.Errorf("[cluster] decode instance %q for %s not found in cs.instances at transfer complete — routing invariant violated; KV cannot be released",
 			decodeInstID, e.parentReq.ID)
 		cs.droppedAtDecodeKV++
+		// Release the decode in-flight reservation: dropped before the decode
+		// sub-request is injected, so OnRequestDone never decrements it.
+		cs.releaseDecodeInFlight(decodeInstID)
 		e.parentReq.CompletionTime = e.time
 		e.parentReq.DecodeSubReq = nil
 		if cs.sloFeedback != nil {
@@ -380,6 +387,9 @@ func (e *KVTransferCompletedEvent) Execute(cs *ClusterSimulator) {
 			decodeInstID, e.parentReq.ID)
 		decodeInst.ReleaseReservedKV(decodeSubReq)
 		cs.droppedAtDecodeKV++
+		// Release the decode in-flight reservation: the decode sub-request is
+		// dropped before injection, so OnRequestDone never decrements it.
+		cs.releaseDecodeInFlight(decodeInstID)
 		e.parentReq.CompletionTime = e.time
 		e.parentReq.DecodeSubReq = nil
 		if cs.sloFeedback != nil {
@@ -420,7 +430,12 @@ func (e *KVTransferCompletedEvent) Execute(cs *ClusterSimulator) {
 		})
 	}
 
-	cs.inFlightRequests[decodeInstID]++
+	// NOTE: inFlightRequests for this decode pod was already incremented at
+	// routing (executeDisaggregatedRouting, llm-d parity reservation) and is held
+	// across the whole prefill+transfer window. It is NOT incremented here; the
+	// decode sub-request injected just below completes on this instance and the
+	// per-instance OnRequestDone delta decrements it exactly once at completion.
+	//
 	// Phase 1B-2a: track decode slot for fair-share (see PrefillRoutingEvent
 	// comment for PD slot-doubling semantics). OnStart placement here (after
 	// routability re-check) ensures balance: a failed late-drop releases KV

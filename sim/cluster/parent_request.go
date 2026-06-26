@@ -10,6 +10,7 @@ type ParentRequest struct {
 	PrefillSubReqID string
 	DecodeSubReqID  string
 	DecodeSubReq    *sim.Request // Pointer to the decode sub-request. Set by KVTransferStartedEvent on successful ReserveTransferredKV (issue #1343); KVTransferCompletedEvent promotes it from StateWaitingForRemoteKVs to StateQueued and enqueues it on the decode instance. Nil after a late-drop (decode pod unroutable at transfer complete) when reserved KV is released.
+	PrefillSubReq   *sim.Request // Pointer to the prefill sub-request, retained at routing so a prefill timeout can be detected and the decode in-flight reservation (taken at selection) released. See detectPrefillTimeouts.
 	NumKVBlocks     int64        // KV blocks to transfer (ceil(inputLen / blockSize))
 
 	// Phase timestamps (microseconds). Zero means phase not yet reached.

@@ -486,6 +486,116 @@ func TestDisaggregation_PerPoolScorerConfigs(t *testing.T) {
 	}
 }
 
+// TestDisaggregation_DecodeReservationVisibleMidFlight is a regression test for
+// the decode-target reservation gap (llm-d parity). In the fully-disaggregated
+// path the decode instance is SELECTED at routing time (sets
+// parent.DecodeInstanceID), and llm-d's EPP increments the decode endpoint's
+// in-flight request counter synchronously at selection, holding it through the
+// whole prefill+transfer+decode window. BLIS used to defer the decode
+// inFlightRequests increment to KVTransferCompletedEvent — after prefill+transfer
+// — so during that window every disaggregated request observed every decode
+// instance as equally empty. With no synchronous load signal, a competing
+// affinity signal pins all requests to one decode instance.
+//
+// This asserts the root-cause contract directly and deterministically (no
+// tiebreak dependence): after a burst routes at t=0 but BEFORE any prefill
+// completes, the decode pool's routing signal must already reflect every
+// reservation. Pre-fix: summed decode InFlightRequests == 0. Fixed: == burst.
+func TestDisaggregation_DecodeReservationVisibleMidFlight(t *testing.T) {
+	config := newTestDisaggDeploymentConfig(4, 2, 2)
+	// Horizon stops the run after the t=0 routing burst (which selects every
+	// decode target) but before the ~200µs prefill + transfer completes, so we
+	// observe the signal during the reservation window.
+	config.Horizon = 10
+
+	const burst = 8
+	requests := make([]*sim.Request, burst)
+	for i := 0; i < burst; i++ {
+		requests[i] = &sim.Request{
+			ID:           fmt.Sprintf("burst_%d", i),
+			ArrivalTime:  0,
+			InputTokens:  make([]int, 100),
+			OutputTokens: make([]int, 20),
+			State:        sim.StateQueued,
+		}
+	}
+
+	cs := NewClusterSimulator(config, requests, nil)
+	mustRun(t, cs)
+
+	// All requests must have been routed (decode target selected) within the window.
+	if len(cs.parentRequests) != burst {
+		t.Fatalf("parentRequests count = %d, want %d (burst not fully routed in window)", len(cs.parentRequests), burst)
+	}
+
+	// Sum the decode-pool routing signal as the decode router observes it.
+	decodeSnaps := cs.buildPoolFilteredSnapshots(PoolRoleDecode)
+	var totalDecodeInFlight int
+	for _, snap := range decodeSnaps {
+		totalDecodeInFlight += snap.InFlightRequests
+	}
+	if totalDecodeInFlight != burst {
+		t.Errorf("decode-pool routing signal sums to %d in-flight mid-transfer; want %d "+
+			"(every reserved decode target must be visible to the load signal at selection, "+
+			"not deferred to KV-transfer completion)", totalDecodeInFlight, burst)
+	}
+}
+
+// TestDisaggregation_ActiveRequestsBalancesDecodeBurst is the end-to-end cure for
+// the decode reservation gap: with a load-aware decode scorer (active-requests,
+// the BLIS analog of llm-d's ActiveRequest scorer that reads the gateway-side
+// in-flight counter), a burst of disaggregated requests must spread evenly across
+// the decode pool. Each request, routed before any prior transfer completes, sees
+// the in-flight reservations of those ahead of it and picks the least-loaded pod.
+//
+// Before the fix the decode load signal was blind during the prefill+transfer
+// window (every pod read 0 in-flight), so the burst could only spread by the
+// router's random tiebreak — and a competing deterministic affinity signal would
+// instead pin the entire burst to one pod. The even split here is the signature
+// of a working selection-time reservation.
+func TestDisaggregation_ActiveRequestsBalancesDecodeBurst(t *testing.T) {
+	const prefill, decode = 2, 4
+	config := newTestDisaggDeploymentConfig(prefill+decode, prefill, decode)
+	config.RoutingPolicy = "weighted"
+	config.PrefillScorerConfigs = []sim.ScorerConfig{{Name: "queue-depth", Weight: 1.0}}
+	config.DecodeScorerConfigs = []sim.ScorerConfig{{Name: "active-requests", Weight: 1.0}}
+
+	const burst = 40 // evenly divisible by decode pod count
+	requests := make([]*sim.Request, burst)
+	for i := 0; i < burst; i++ {
+		requests[i] = &sim.Request{
+			ID:           fmt.Sprintf("burst_%d", i),
+			ArrivalTime:  0,
+			InputTokens:  make([]int, 100),
+			OutputTokens: make([]int, 50),
+			State:        sim.StateQueued,
+		}
+	}
+
+	cs := NewClusterSimulator(config, requests, nil)
+	mustRun(t, cs)
+
+	decodeTargets := make(map[InstanceID]int)
+	for _, parent := range cs.parentRequests {
+		decodeTargets[parent.DecodeInstanceID]++
+	}
+	if len(decodeTargets) != decode {
+		t.Fatalf("decode targets used %d distinct pods %v, want all %d", len(decodeTargets), decodeTargets, decode)
+	}
+	want := burst / decode
+	for id, n := range decodeTargets {
+		if n != want {
+			t.Errorf("decode pod %s got %d of %d requests, want exactly %d (even spread) — "+
+				"decode reservations not visible to the active-requests load signal", id, n, burst, want)
+		}
+	}
+
+	// Sanity: the cluster did not collapse — every request completed.
+	if got := cs.AggregatedMetrics().CompletedRequests; got != burst {
+		t.Errorf("CompletedRequests = %d, want %d", got, burst)
+	}
+}
+
 func TestReserveTransferredKV_Success(t *testing.T) {
 	cfg := sim.SimConfig{
 		Horizon:             1000000,
