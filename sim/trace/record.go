@@ -149,6 +149,37 @@ type EDPPDecisionRecord struct {
 	Disaggregate bool
 }
 
+// RoutingTraceCandidate is one candidate instance considered during a routing
+// target selection, captured for the --routing-decision-trace CSV.
+type RoutingTraceCandidate struct {
+	InstanceID     string
+	IsChosen       bool
+	CompositeScore float64            // weighted composite (RoutingDecision.Scores); 0 for non-scoring policies
+	ScorerScores   map[string]float64 // scorer name → raw clamped [0,1] score; nil for non-scoring policies
+	QueueDepth     int
+	BatchSize      int
+	// InFlightRequests is the dispatched-but-not-completed count as the router saw
+	// it, INCLUDING decode targets reserved at selection but not yet transferred
+	// (the in-flight reservation, commit 6a97a2f) — so reserved-pending decodes are
+	// reflected here.
+	InFlightRequests int
+	KVUtilization    float64
+	FreeKVBlocks     int64
+}
+
+// RoutingDecisionTraceRecord captures one routing target selection (prefill,
+// decode, standard, or encode) with the full candidate set, for the
+// --routing-decision-trace CSV. One record per selection; the CSV writer emits
+// one row per candidate.
+type RoutingDecisionTraceRecord struct {
+	Clock          int64
+	Stage          string // "standard" | "prefill" | "decode" | "encode"
+	RequestID      string
+	ChosenInstance string
+	Regret         float64 // best composite − chosen composite (≥0); 0 for non-scoring policies
+	Candidates     []RoutingTraceCandidate
+}
+
 // KVTransferRecord captures a KV cache transfer event between prefill and decode instances.
 // TransferDuration is always >= 0; negative values are clamped to 0 with a warning in
 // KVTransferCompletedEvent.Execute() (sim/cluster/pd_events.go) if INV-PD-4 is ever violated.

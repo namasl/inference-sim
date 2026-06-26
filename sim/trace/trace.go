@@ -26,6 +26,10 @@ func IsValidTraceLevel(level string) bool {
 type TraceConfig struct {
 	Level           TraceLevel
 	CounterfactualK int // number of counterfactual candidates per routing decision
+	// RecordRoutingDecisions enables full per-candidate routing-decision capture
+	// (every prefill/decode/standard target selection, all candidates, per-scorer
+	// scores) for the --routing-decision-trace CSV. Independent of CounterfactualK.
+	RecordRoutingDecisions bool
 }
 
 // SimulationTrace collects decision records during a cluster simulation.
@@ -39,6 +43,9 @@ type SimulationTrace struct {
 	EncodeRoutings  []EncodeRoutingRecord // GAP-4 (issue #1264)
 	KVTransfers     []KVTransferRecord
 	EDPPDecisions   []EDPPDecisionRecord // EDPP rule-term traces (when EDPP tracing enabled)
+	// RoutingDecisions holds per-candidate routing-decision traces (every
+	// prefill/decode/standard target selection) when Config.RecordRoutingDecisions.
+	RoutingDecisions []RoutingDecisionTraceRecord
 }
 
 // NewSimulationTrace creates a SimulationTrace ready for recording.
@@ -51,8 +58,9 @@ func NewSimulationTrace(config TraceConfig) *SimulationTrace {
 		PrefillRoutings: make([]PrefillRoutingRecord, 0),
 		DecodeRoutings:  make([]DecodeRoutingRecord, 0),
 		EncodeRoutings:  make([]EncodeRoutingRecord, 0),
-		KVTransfers:     make([]KVTransferRecord, 0),
-		EDPPDecisions:   make([]EDPPDecisionRecord, 0),
+		KVTransfers:      make([]KVTransferRecord, 0),
+		EDPPDecisions:    make([]EDPPDecisionRecord, 0),
+		RoutingDecisions: make([]RoutingDecisionTraceRecord, 0),
 	}
 }
 
@@ -94,4 +102,9 @@ func (st *SimulationTrace) RecordEncodeRouting(record EncodeRoutingRecord) {
 // RecordEDPPDecision appends an EDPP rule-term trace record.
 func (st *SimulationTrace) RecordEDPPDecision(record EDPPDecisionRecord) {
 	st.EDPPDecisions = append(st.EDPPDecisions, record)
+}
+
+// RecordRoutingDecision appends a per-candidate routing-decision trace record.
+func (st *SimulationTrace) RecordRoutingDecision(record RoutingDecisionTraceRecord) {
+	st.RoutingDecisions = append(st.RoutingDecisions, record)
 }

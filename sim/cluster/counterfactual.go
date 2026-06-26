@@ -21,6 +21,58 @@ func copyScores(scores map[string]float64) map[string]float64 {
 	return cp
 }
 
+// buildRoutingTraceCandidates builds the full per-candidate record set for one
+// routing target selection (--routing-decision-trace). Unlike computeCounterfactual
+// it captures ALL candidates (not top-k), in deterministic instance-ID order
+// (INV-6), and surfaces each scorer's per-instance contribution from
+// decision.ScorerBreakdown. The composite score comes from decision.Scores (nil for
+// non-scoring policies → composite 0, no per-scorer columns). Regret is the best
+// composite minus the chosen composite (≥0; 0 when there are no scores).
+func buildRoutingTraceCandidates(chosenID string, decision sim.RoutingDecision, snapshots []sim.RoutingSnapshot) ([]trace.RoutingTraceCandidate, float64) {
+	sorted := make([]sim.RoutingSnapshot, len(snapshots))
+	copy(sorted, snapshots)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].ID < sorted[j].ID })
+
+	cands := make([]trace.RoutingTraceCandidate, 0, len(sorted))
+	var bestScore, chosenScore float64
+	haveBest := false
+	for _, snap := range sorted {
+		comp := decision.Scores[snap.ID] // zero value when Scores is nil
+		if !haveBest || comp > bestScore {
+			bestScore = comp
+			haveBest = true
+		}
+		if snap.ID == chosenID {
+			chosenScore = comp
+		}
+
+		var perScorer map[string]float64
+		if decision.ScorerBreakdown != nil {
+			perScorer = make(map[string]float64, len(decision.ScorerBreakdown))
+			for name, byInst := range decision.ScorerBreakdown {
+				perScorer[name] = byInst[snap.ID]
+			}
+		}
+
+		cands = append(cands, trace.RoutingTraceCandidate{
+			InstanceID:       snap.ID,
+			IsChosen:         snap.ID == chosenID,
+			CompositeScore:   comp,
+			ScorerScores:     perScorer,
+			QueueDepth:       snap.QueueDepth,
+			BatchSize:        snap.BatchSize,
+			InFlightRequests: snap.InFlightRequests,
+			KVUtilization:    snap.KVUtilization,
+			FreeKVBlocks:     snap.FreeKVBlocks,
+		})
+	}
+	regret := bestScore - chosenScore
+	if regret < 0 {
+		regret = 0
+	}
+	return cands, regret
+}
+
 // computeCounterfactual builds a ranked list of candidate instances and computes
 // regret (how much better the best alternative was compared to the chosen instance).
 //

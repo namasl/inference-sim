@@ -466,6 +466,7 @@ Example:
 			RoutingScorerConfigs:            parsedScorerConfigs,
 			TraceLevel:                      traceLevel,
 			CounterfactualK:                 counterfactualK,
+			RecordRoutingDecisions:          routingDecisionTracePath != "",
 			SnapshotRefreshInterval:         snapshotRefreshInterval,
 			CacheSignalDelay:                cacheSignalDelay,
 			PrefillInstances:                prefillInstances,
@@ -720,6 +721,9 @@ Example:
 				}
 			}
 		}
+
+		// Write per-candidate routing-decision CSV if requested (shared with run; INV-13 parity).
+		writeRoutingDecisionTrace(cs.Trace(), routingDecisionTracePath)
 
 		// Warn if --fitness-weights is set (not supported in replay mode per R1)
 		if fitnessWeights != "" {

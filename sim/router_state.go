@@ -28,4 +28,10 @@ type RouterState struct {
 	// and an ID that has no corresponding entry in Snapshots (e.g., the pod
 	// was removed after routing) and guard accordingly.
 	SelectedInstance string
+	// CaptureScorerBreakdown, when true, asks a scoring routing policy
+	// (WeightedScoring) to populate RoutingDecision.ScorerBreakdown with each
+	// scorer's per-instance contribution. Off by default so production routing
+	// allocates nothing extra (BC-1); set only when --routing-decision-trace is
+	// enabled. Non-scoring policies ignore it.
+	CaptureScorerBreakdown bool
 }

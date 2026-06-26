@@ -105,6 +105,66 @@ func TestNewRoutingPolicy_DefaultName(t *testing.T) {
 	}
 }
 
+// TestWeightedScoring_ScorerBreakdown verifies that RouterState.CaptureScorerBreakdown
+// surfaces each scorer's per-instance contribution on RoutingDecision.ScorerBreakdown
+// (for --routing-decision-trace), without changing the composite scores or the choice,
+// and that it is nil by default (BC-1 zero-overhead).
+func TestWeightedScoring_ScorerBreakdown(t *testing.T) {
+	policy := NewRoutingPolicy("weighted", []ScorerConfig{
+		{Name: "queue-depth", Weight: 1},
+		{Name: "kv-utilization", Weight: 1},
+	}, 16, nil) // nil rng → deterministic positional tie-break
+	snapshots := []RoutingSnapshot{
+		{ID: "a", QueueDepth: 0, KVUtilization: 0.0},
+		{ID: "b", QueueDepth: 10, KVUtilization: 1.0},
+	}
+
+	// Off by default → no breakdown.
+	off := policy.Route(&Request{ID: "r1"}, &RouterState{Snapshots: snapshots, Clock: 0})
+	if off.ScorerBreakdown != nil {
+		t.Errorf("ScorerBreakdown = %v, want nil when CaptureScorerBreakdown=false", off.ScorerBreakdown)
+	}
+
+	on := policy.Route(&Request{ID: "r2"}, &RouterState{Snapshots: snapshots, Clock: 0, CaptureScorerBreakdown: true})
+	if on.ScorerBreakdown == nil {
+		t.Fatal("ScorerBreakdown = nil, want populated when CaptureScorerBreakdown=true")
+	}
+	for _, name := range []string{"queue-depth", "kv-utilization"} {
+		per, ok := on.ScorerBreakdown[name]
+		if !ok {
+			t.Errorf("ScorerBreakdown missing scorer %q (have %v)", name, keysOf(on.ScorerBreakdown))
+			continue
+		}
+		for _, id := range []string{"a", "b"} {
+			v, ok := per[id]
+			if !ok {
+				t.Errorf("scorer %q missing instance %q", name, id)
+			} else if v < 0 || v > 1 {
+				t.Errorf("scorer %q instance %q = %v, want clamped to [0,1]", name, id, v)
+			}
+		}
+	}
+	// Instance "a" (empty) must score higher than "b" (loaded) on both scorers.
+	if on.ScorerBreakdown["queue-depth"]["a"] <= on.ScorerBreakdown["queue-depth"]["b"] {
+		t.Errorf("queue-depth: a (%v) should beat b (%v)", on.ScorerBreakdown["queue-depth"]["a"], on.ScorerBreakdown["queue-depth"]["b"])
+	}
+	// Capture must not change the composite scores or the chosen target.
+	if on.TargetInstance != "a" {
+		t.Errorf("chosen = %q, want a (least loaded)", on.TargetInstance)
+	}
+	if on.Scores["a"] != off.Scores["a"] || on.Scores["b"] != off.Scores["b"] {
+		t.Errorf("composite scores changed with capture on: on=%v off=%v", on.Scores, off.Scores)
+	}
+}
+
+func keysOf(m map[string]map[string]float64) []string {
+	ks := make([]string, 0, len(m))
+	for k := range m {
+		ks = append(ks, k)
+	}
+	return ks
+}
+
 // TestLeastLoaded_LoadBasedSelection verifies BC-3.
 func TestLeastLoaded_LoadBasedSelection(t *testing.T) {
 	policy := NewRoutingPolicy("least-loaded", nil, 16, nil)

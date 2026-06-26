@@ -202,10 +202,12 @@ func NewClusterSimulator(config DeploymentConfig, requests []*sim.Request, onReq
 
 	// Initialize trace collector if tracing is enabled (BC-1: nil when none)
 	var simTrace *trace.SimulationTrace
-	if config.TraceLevel != "" && trace.TraceLevel(config.TraceLevel) != trace.TraceLevelNone {
+	tracingEnabled := config.TraceLevel != "" && trace.TraceLevel(config.TraceLevel) != trace.TraceLevelNone
+	if tracingEnabled || config.RecordRoutingDecisions {
 		simTrace = trace.NewSimulationTrace(trace.TraceConfig{
-			Level:           trace.TraceLevel(config.TraceLevel),
-			CounterfactualK: config.CounterfactualK,
+			Level:                  trace.TraceLevel(config.TraceLevel),
+			CounterfactualK:        config.CounterfactualK,
+			RecordRoutingDecisions: config.RecordRoutingDecisions,
 		})
 	}
 
@@ -1982,6 +1984,27 @@ func (c *ClusterSimulator) projectPDMetrics() {
 	}
 }
 
+// routingTraceOn reports whether per-candidate routing-decision tracing
+// (--routing-decision-trace) is active.
+func (cs *ClusterSimulator) routingTraceOn() bool {
+	return cs.trace != nil && cs.trace.Config.RecordRoutingDecisions
+}
+
+// recordRoutingDecisionTrace captures one target selection's full candidate set
+// for the --routing-decision-trace CSV. chosenID is taken from decision.TargetInstance
+// (so a post-Route decode-pod override is reflected). No-op unless routingTraceOn().
+func (cs *ClusterSimulator) recordRoutingDecisionTrace(stage, reqID string, decision sim.RoutingDecision, snapshots []sim.RoutingSnapshot) {
+	cands, regret := buildRoutingTraceCandidates(decision.TargetInstance, decision, snapshots)
+	cs.trace.RecordRoutingDecision(trace.RoutingDecisionTraceRecord{
+		Clock:          cs.clock,
+		Stage:          stage,
+		RequestID:      reqID,
+		ChosenInstance: decision.TargetInstance,
+		Regret:         regret,
+		Candidates:     cands,
+	})
+}
+
 // executeStandardRouting performs non-disaggregated routing: select a target over
 // all routable instances, record the decision, increment in-flight/tenant counters,
 // record warm-up, and inject the request into the target instance. Used when pool
@@ -2002,8 +2025,13 @@ func (cs *ClusterSimulator) executeStandardRouting(req *sim.Request, time int64)
 		return
 	}
 
+	state.CaptureScorerBreakdown = cs.routingTraceOn()
 	decision := cs.routingPolicy.Route(req, state)
 	logrus.Debugf("[cluster] req %s → instance %s (reason=%s)", req.ID, decision.TargetInstance, decision.Reason)
+
+	if cs.routingTraceOn() {
+		cs.recordRoutingDecisionTrace("standard", req.ID, decision, state.Snapshots)
+	}
 
 	// #181: Stamp request with assigned instance for per-request metrics
 	req.AssignedInstance = decision.TargetInstance
@@ -2072,7 +2100,7 @@ func (cs *ClusterSimulator) executeDisaggregatedRouting(req *sim.Request, time i
 		cs.routingRejections++
 		return
 	}
-	state := &sim.RouterState{Snapshots: filteredSnapshots, Clock: cs.clock}
+	state := &sim.RouterState{Snapshots: filteredSnapshots, Clock: cs.clock, CaptureScorerBreakdown: cs.routingTraceOn()}
 	policy := cs.decodeRoutingPolicy
 	if policy == nil {
 		policy = cs.routingPolicy
@@ -2097,6 +2125,12 @@ func (cs *ClusterSimulator) executeDisaggregatedRouting(req *sim.Request, time i
 	// instance lookup panics otherwise (see decodeInst == nil guard below).
 	if disaggDecision.DecodePodOverride != "" {
 		decodeDecision.TargetInstance = disaggDecision.DecodePodOverride
+	}
+
+	// Record the decode target selection for --routing-decision-trace (after any
+	// decider override, so the chosen instance reflects the final decode pod).
+	if cs.routingTraceOn() {
+		cs.recordRoutingDecisionTrace("decode", req.ID, decodeDecision, state.Snapshots)
 	}
 
 	// Record disaggregation decision if tracing is enabled (BC-PD-17).
@@ -2164,12 +2198,16 @@ func (cs *ClusterSimulator) executeDisaggregatedRouting(req *sim.Request, time i
 			cs.encodeRoutingRejections++
 			return
 		}
-		encodeState := &sim.RouterState{Snapshots: encodeSnapshots, Clock: cs.clock}
+		encodeState := &sim.RouterState{Snapshots: encodeSnapshots, Clock: cs.clock, CaptureScorerBreakdown: cs.routingTraceOn()}
 		// Encode routing uses the main routingPolicy in this PR; per-pool scorer
 		// config is a follow-up (design doc D6).
 		encodeDecision := cs.routingPolicy.Route(req, encodeState)
 		encodeInstanceID = encodeDecision.TargetInstance
 		logrus.Debugf("[cluster] req %s: encode pod selected → %s", req.ID, encodeInstanceID)
+
+		if cs.routingTraceOn() {
+			cs.recordRoutingDecisionTrace("encode", req.ID, encodeDecision, encodeState.Snapshots)
+		}
 
 		if cs.trace != nil {
 			record := trace.EncodeRoutingRecord{

@@ -424,6 +424,16 @@ func TestReplayCmd_TraceOutputFlag_Registered(t *testing.T) {
 	}
 }
 
+func TestReplayCmd_RoutingDecisionTraceFlag_Registered(t *testing.T) {
+	f := replayCmd.Flags().Lookup("routing-decision-trace")
+	if f == nil {
+		t.Fatal("replayCmd missing --routing-decision-trace flag")
+	}
+	if f.DefValue != "" {
+		t.Errorf("--routing-decision-trace default must be empty (optional flag), got %q", f.DefValue)
+	}
+}
+
 func TestReplayCmd_TraceHeaderFlag_Registered(t *testing.T) {
 	// GIVEN the replay command
 	// WHEN checking for --trace-header flag

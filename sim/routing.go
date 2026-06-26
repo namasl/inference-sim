@@ -57,6 +57,12 @@ type RoutingDecision struct {
 	TargetInstance string             // Instance ID to route to (must match a snapshot ID)
 	Reason         string             // Human-readable explanation
 	Scores         map[string]float64 // Instance ID → composite score (nil for policies without scoring)
+	// ScorerBreakdown maps scorer name → instance ID → that scorer's raw
+	// per-instance score (clamped to [0,1], BEFORE its weight is applied).
+	// Populated only when RouterState.CaptureScorerBreakdown is true and the
+	// policy is a scoring policy; nil otherwise. Used by --routing-decision-trace
+	// to show each candidate's prefix-cache / queue-depth / … contribution.
+	ScorerBreakdown map[string]map[string]float64
 }
 
 // NewRoutingDecision creates a RoutingDecision with the given target and reason.
@@ -168,10 +174,11 @@ type observerFunc func(req *Request, targetInstance string)
 // Higher scores are preferred. Ties broken randomly when rng is non-nil;
 // by first occurrence (lowest index) when rng is nil.
 type WeightedScoring struct {
-	scorers   []scorerFunc
-	weights   []float64 // normalized to sum to 1.0
-	observers []observerFunc
-	rng       *rand.Rand
+	scorers     []scorerFunc
+	scorerNames []string // parallel to scorers; used for ScorerBreakdown keys (routing-decision trace)
+	weights     []float64 // normalized to sum to 1.0
+	observers   []observerFunc
+	rng         *rand.Rand
 }
 
 // Route implements RoutingPolicy for WeightedScoring.
@@ -181,10 +188,22 @@ func (ws *WeightedScoring) Route(req *Request, state *RouterState) RoutingDecisi
 		panic("WeightedScoring.Route: empty snapshots")
 	}
 
+	// Optional per-scorer breakdown for --routing-decision-trace (off by default,
+	// BC-1 zero-overhead). breakdown[scorerName][instanceID] = clamped raw score.
+	var breakdown map[string]map[string]float64
+	if state != nil && state.CaptureScorerBreakdown {
+		breakdown = make(map[string]map[string]float64, len(ws.scorers))
+	}
+
 	// Compute composite scores from all scorers
 	scores := make(map[string]float64, len(snapshots))
 	for i, scorer := range ws.scorers {
 		dimScores := scorer(req, snapshots)
+		var perScorer map[string]float64
+		if breakdown != nil {
+			perScorer = make(map[string]float64, len(snapshots))
+			breakdown[ws.scorerNames[i]] = perScorer
+		}
 		for _, snap := range snapshots {
 			s := dimScores[snap.ID]
 			// Clamp to [0,1] per scorer contract
@@ -193,6 +212,9 @@ func (ws *WeightedScoring) Route(req *Request, state *RouterState) RoutingDecisi
 			}
 			if s > 1 {
 				s = 1
+			}
+			if perScorer != nil {
+				perScorer[snap.ID] = s
 			}
 			scores[snap.ID] += s * ws.weights[i]
 		}
@@ -229,11 +251,13 @@ func (ws *WeightedScoring) Route(req *Request, state *RouterState) RoutingDecisi
 		obs(req, snapshots[bestIdx].ID)
 	}
 
-	return NewRoutingDecisionWithScores(
+	decision := NewRoutingDecisionWithScores(
 		snapshots[bestIdx].ID,
 		fmt.Sprintf("weighted-scoring (score=%.3f)", bestScore),
 		scores,
 	)
+	decision.ScorerBreakdown = breakdown
+	return decision
 }
 
 // AlwaysBusiest routes requests to the instance with maximum (QueueDepth + BatchSize + InFlightRequests).
@@ -298,16 +322,18 @@ func newRoutingPolicyInternal(name string, scorerConfigs []ScorerConfig, blockSi
 			scorerConfigs = DefaultScorerConfigs()
 		}
 		scorers := make([]scorerFunc, len(scorerConfigs))
+		scorerNames := make([]string, len(scorerConfigs))
 		var observers []observerFunc
 		for i, cfg := range scorerConfigs {
 			scorer, obs := newScorerWithObserver(cfg.Name, int(blockSize), cacheFn)
 			scorers[i] = scorer
+			scorerNames[i] = cfg.Name
 			if obs != nil {
 				observers = append(observers, obs)
 			}
 		}
 		weights := normalizeScorerWeights(scorerConfigs)
-		return &WeightedScoring{scorers: scorers, weights: weights, observers: observers, rng: rng}
+		return &WeightedScoring{scorers: scorers, scorerNames: scorerNames, weights: weights, observers: observers, rng: rng}
 	case "always-busiest":
 		return &AlwaysBusiest{}
 	default:

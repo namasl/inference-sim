@@ -123,7 +123,8 @@ var (
 	traceLevel            string // Trace verbosity level
 	counterfactualK       int    // Number of counterfactual candidates
 	summarizeTrace        bool   // Print trace summary after simulation
-	edppDecisionTracePath string // Path to write EDPP per-decision rule-term CSV (requires --trace-level decisions + --pd-decider edpp)
+	edppDecisionTracePath    string // Path to write EDPP per-decision rule-term CSV (requires --trace-level decisions + --pd-decider edpp)
+	routingDecisionTracePath string // Path to write per-candidate routing-decision CSV (every prefill/decode/standard target selection)
 
 	// Workload spec config (PR10)
 	workloadSpecPath string // Path to YAML workload specification file
@@ -1047,6 +1048,32 @@ func resolvePoolScorerConfigs(flagVal, pool string, pdEnabled bool) []sim.Scorer
 	return cfgs
 }
 
+// writeRoutingDecisionTrace writes the per-candidate routing-decision CSV to path
+// (no-op when path is empty). Shared by run and replay for INV-13 parity.
+func writeRoutingDecisionTrace(tr *trace.SimulationTrace, path string) {
+	if path == "" {
+		return
+	}
+	if tr == nil || len(tr.RoutingDecisions) == 0 {
+		logrus.Warnf("--routing-decision-trace: no routing-decision records to write")
+		return
+	}
+	f, err := os.Create(path)
+	if err != nil {
+		logrus.Errorf("--routing-decision-trace: could not create %q: %v", path, err)
+		return
+	}
+	werr := trace.WriteRoutingDecisionCSV(f, tr.RoutingDecisions)
+	cerr := f.Close()
+	if werr != nil {
+		logrus.Errorf("--routing-decision-trace: write failed: %v", werr)
+	} else if cerr != nil {
+		logrus.Errorf("--routing-decision-trace: close failed: %v", cerr)
+	} else {
+		logrus.Infof("Wrote %d routing-decision records to %s", len(tr.RoutingDecisions), path)
+	}
+}
+
 func resolveEDPPCoeffs(pdDecider, coeffsPath string) sim.EDPPCoeffs {
 	if pdDecider != "edpp" {
 		return sim.EDPPCoeffs{}
@@ -1119,6 +1146,7 @@ func registerSimConfigFlags(cmd *cobra.Command) {
 	cmd.Flags().IntVar(&counterfactualK, "counterfactual-k", 0, "Number of counterfactual candidates per routing decision")
 	cmd.Flags().BoolVar(&summarizeTrace, "summarize-trace", false, "Print trace summary after simulation")
 	cmd.Flags().StringVar(&edppDecisionTracePath, "edpp-decision-trace", "", "Write per-decision EDPP rule-term breakdown to this CSV path (requires --trace-level decisions and --pd-decider edpp)")
+	cmd.Flags().StringVar(&routingDecisionTracePath, "routing-decision-trace", "", "Write per-candidate routing-decision breakdown (every prefill/decode/standard target selection: per-candidate queue/KV/inflight/prefix score) to this CSV path. All deciders.")
 
 	// Tiered KV cache (PR12)
 	cmd.Flags().Int64Var(&kvCPUBlocks, "kv-cpu-blocks", 0, "CPU tier KV cache blocks (0 = disabled, single-tier mode). Typical: 1/3 of --total-kv-blocks")
@@ -1743,6 +1771,7 @@ var runCmd = &cobra.Command{
 			RoutingScorerConfigs:            parsedScorerConfigs,
 			TraceLevel:                      traceLevel,
 			CounterfactualK:                 counterfactualK,
+			RecordRoutingDecisions:          routingDecisionTracePath != "",
 			SnapshotRefreshInterval:         snapshotRefreshInterval,
 			CacheSignalDelay:                cacheSignalDelay,
 			PrefillInstances:                prefillInstances,
@@ -2098,6 +2127,9 @@ var runCmd = &cobra.Command{
 				}
 			}
 		}
+
+		// Write per-candidate routing-decision CSV if requested (shared with replay; INV-13 parity).
+		writeRoutingDecisionTrace(cs.Trace(), routingDecisionTracePath)
 
 		logrus.Info("Simulation complete.")
 	},

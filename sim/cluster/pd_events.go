@@ -31,7 +31,7 @@ func (e *PrefillRoutingEvent) Execute(cs *ClusterSimulator) {
 		cs.routingRejections++
 		return
 	}
-	state := &sim.RouterState{Snapshots: filteredSnapshots, Clock: cs.clock}
+	state := &sim.RouterState{Snapshots: filteredSnapshots, Clock: cs.clock, CaptureScorerBreakdown: cs.routingTraceOn()}
 
 	policy := cs.prefillRoutingPolicy
 	if policy == nil {
@@ -40,6 +40,10 @@ func (e *PrefillRoutingEvent) Execute(cs *ClusterSimulator) {
 	decision := policy.Route(e.request, state)
 
 	logrus.Debugf("[cluster] prefill req %s → instance %s", e.request.ID, decision.TargetInstance)
+
+	if cs.routingTraceOn() {
+		cs.recordRoutingDecisionTrace("prefill", e.parentReq.ID, decision, state.Snapshots)
+	}
 
 	e.request.AssignedInstance = decision.TargetInstance
 	e.parentReq.PrefillInstanceID = InstanceID(decision.TargetInstance)

@@ -30,6 +30,9 @@ type DeploymentConfig struct {
 	// Decision trace configuration (PR13)
 	TraceLevel      string // "none" (default), "decisions"
 	CounterfactualK int    // number of counterfactual candidates, default 0
+	// RecordRoutingDecisions enables per-candidate routing-decision capture for the
+	// --routing-decision-trace CSV (every prefill/decode/standard target selection).
+	RecordRoutingDecisions bool
 
 	// Snapshot staleness configuration (H3 experiment, unified in #463)
 	// When > 0, all Prometheus-sourced signals (QueueDepth, BatchSize, KVUtilization)

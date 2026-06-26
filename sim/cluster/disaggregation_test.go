@@ -596,6 +596,61 @@ func TestDisaggregation_ActiveRequestsBalancesDecodeBurst(t *testing.T) {
 	}
 }
 
+// TestRoutingDecisionTrace_RecordsDecodeAndPrefill verifies that, with
+// RecordRoutingDecisions enabled, a disaggregated run records one routing-decision
+// trace per decode and prefill target selection, enumerating ALL pool candidates
+// with per-scorer scores, exactly one chosen per decision.
+func TestRoutingDecisionTrace_RecordsDecodeAndPrefill(t *testing.T) {
+	config := newTestDisaggDeploymentConfig(4, 2, 2)
+	config.RoutingPolicy = "weighted"
+	config.PrefillScorerConfigs = []sim.ScorerConfig{{Name: "queue-depth", Weight: 1}}
+	config.DecodeScorerConfigs = []sim.ScorerConfig{
+		{Name: "precise-prefix-cache", Weight: 2}, {Name: "queue-depth", Weight: 1},
+	}
+	config.RecordRoutingDecisions = true
+
+	requests := newTestRequests(5)
+	cs := NewClusterSimulator(config, requests, nil)
+	mustRun(t, cs)
+
+	tr := cs.Trace()
+	if tr == nil {
+		t.Fatal("trace is nil despite RecordRoutingDecisions=true")
+	}
+	var decode, prefill int
+	for _, rec := range tr.RoutingDecisions {
+		switch rec.Stage {
+		case "decode":
+			decode++
+			if len(rec.Candidates) != 2 { // both decode pods
+				t.Errorf("decode record %s: %d candidates, want 2", rec.RequestID, len(rec.Candidates))
+			}
+			chosen := 0
+			for _, c := range rec.Candidates {
+				if c.IsChosen {
+					chosen++
+				}
+				if c.ScorerScores == nil {
+					t.Errorf("decode candidate %s: nil ScorerScores", c.InstanceID)
+				} else if _, ok := c.ScorerScores["precise-prefix-cache"]; !ok {
+					t.Errorf("decode candidate %s: missing precise-prefix-cache score", c.InstanceID)
+				}
+			}
+			if chosen != 1 {
+				t.Errorf("decode record %s: %d chosen, want 1", rec.RequestID, chosen)
+			}
+		case "prefill":
+			prefill++
+		}
+	}
+	if decode == 0 {
+		t.Error("no decode routing-decision records captured")
+	}
+	if prefill == 0 {
+		t.Error("no prefill routing-decision records captured (always-disaggregate)")
+	}
+}
+
 func TestReserveTransferredKV_Success(t *testing.T) {
 	cfg := sim.SimConfig{
 		Horizon:             1000000,
