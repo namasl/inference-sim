@@ -429,22 +429,12 @@ Example:
 			}
 		}
 
-		// Parse per-pool scorer configs (same as runCmd).
-		var prefillScorerCfgs, decodeScorerCfgs []sim.ScorerConfig
-		if prefillRoutingScorers != "" {
-			var err error
-			prefillScorerCfgs, err = sim.ParseScorerConfigs(prefillRoutingScorers)
-			if err != nil {
-				logrus.Fatalf("Invalid --prefill-routing-scorers: %v", err)
-			}
-		}
-		if decodeRoutingScorers != "" {
-			var err error
-			decodeScorerCfgs, err = sim.ParseScorerConfigs(decodeRoutingScorers)
-			if err != nil {
-				logrus.Fatalf("Invalid --decode-routing-scorers: %v", err)
-			}
-		}
+		// Parse per-pool scorer configs (same as runCmd). When PD is enabled and the
+		// flags are unset, default to llm-d's PD profile (prefix-cache:2,queue-depth:1)
+		// rather than falling back to the cluster-wide round-robin policy.
+		pdEnabled := prefillInstances > 0
+		prefillScorerCfgs := resolvePoolScorerConfigs(prefillRoutingScorers, "prefill", pdEnabled)
+		decodeScorerCfgs := resolvePoolScorerConfigs(decodeRoutingScorers, "decode", pdEnabled)
 
 		logrus.Infof("Starting replay with %d KV blocks, horizon=%dticks, alphaCoeffs=%v, betaCoeffs=%v",
 			totalKVBlocks, replayHorizon, lr.AlphaCoeffs, lr.BetaCoeffs)

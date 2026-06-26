@@ -5,7 +5,18 @@
 See `out/diag/SUMMARY.md` for the full table; `out/diag/RUNS.md` for the run registry.
 Deciders compared at this point: never@4, edpp@{1P3D,2P2D}, always@2P2D, prefix-threshold@{1P3D,2P2D}.
 
-KEY RESULTS (corrected — supersede any earlier "EDPP improves TTFT" wording, which was WRONG):
+> **⚠️ INVALIDATED 2026-06-26 — instrument audit (the "wrong knob" case the discipline note below
+> warns about).** Every KEY RESULT in this block was produced with BLIS's default `--routing-policy
+> round-robin` and NO per-pool scorer flags, so the decode pool fell back to round-robin and pinned ALL
+> decode to one node — the "1192/2000 collapse" and "161s TTFT" are artifacts of that misconfiguration,
+> NOT properties of the deciders. llm-d's shipped PD profile is weighted `prefix-cache:2 + queue:1`;
+> BLIS now defaults to it in PD mode. Under that routing, all 2P2D/1P3D cells complete 2000/2000 with
+> BALANCED decode (see `out/diag/SESSION_LOG.md` → "CORRECTION 2026-06-26"). The decode-throughput /
+> pin claims below are retracted. The SLO/TTFT/E2E percentile narrative must be re-measured under the
+> new default before any decider comparison is trustworthy. (The "decode-node-count is the real
+> constraint at equal HW" intuition may survive as saturation/queueing — but re-measure, don't assume.)
+
+KEY RESULTS (⚠️ RETRACTED — see banner above; produced under the round-robin routing artifact):
 - Outcome tracks DECODE-CAPABLE NODE COUNT: never@4 > *@1P3D > *@2P2D (monotonic on ITL/E2E).
   Disaggregation does NOT help this decode-bound workload at this load (equal hardware).
 - At 1P3D (adequate decode): edpp (0% disagg) ≈ prefix-threshold (100% disagg) — disaggregation

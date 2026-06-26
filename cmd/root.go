@@ -1016,6 +1016,37 @@ func resolvePolicies(cmd *cobra.Command) ([]sim.ScorerConfig, *sim.PolicyBundle)
 // resolveEDPPCoeffs loads the frozen EDPP coefficients when the EDPP decider is
 // selected. Returns the zero value for non-EDPP deciders (the field is ignored).
 // The CLI boundary fails loud (R3): a missing path or unreadable/invalid JSON is fatal.
+// llmdPDDefaultScorers is llm-d's shipped PD scheduling-profile scorer set
+// (deploy/config/pd-epp-config.yaml in llm-d-router): prefix-cache-scorer weight 2
+// + queue-scorer weight 1, for BOTH the prefill and decode profiles. BLIS's analog
+// scorer names are precise-prefix-cache and queue-depth. Used as the default per-pool
+// routing profile when PD disaggregation is enabled and the user has not supplied
+// --prefill-routing-scorers / --decode-routing-scorers, so PD runs are llm-d-faithful
+// out of the box rather than falling back to the cluster-wide --routing-policy
+// (default round-robin), which does not load-balance the decode pool.
+const llmdPDDefaultScorers = "precise-prefix-cache:2,queue-depth:1"
+
+// resolvePoolScorerConfigs parses a per-pool scorer flag, defaulting to the llm-d
+// PD profile when PD is enabled and the flag is empty. In non-PD mode an empty flag
+// yields nil (preserving the prior fall-back-to-main-routing-policy behavior). pool
+// is "prefill" or "decode" (used only in log/error messages). Shared by run and
+// replay so PD routing defaults are identical across both (INV-13 parity).
+func resolvePoolScorerConfigs(flagVal, pool string, pdEnabled bool) []sim.ScorerConfig {
+	val := flagVal
+	if val == "" {
+		if !pdEnabled {
+			return nil
+		}
+		val = llmdPDDefaultScorers
+		logrus.Infof("[pd] --%s-routing-scorers unset; defaulting to llm-d PD profile %q", pool, val)
+	}
+	cfgs, err := sim.ParseScorerConfigs(val)
+	if err != nil {
+		logrus.Fatalf("Invalid --%s-routing-scorers: %v", pool, err)
+	}
+	return cfgs
+}
+
 func resolveEDPPCoeffs(pdDecider, coeffsPath string) sim.EDPPCoeffs {
 	if pdDecider != "edpp" {
 		return sim.EDPPCoeffs{}
@@ -1674,22 +1705,13 @@ var runCmd = &cobra.Command{
 			}
 		}
 
-		// Parse per-pool scorer configs (PD disaggregation — not in resolvePolicies)
-		var prefillScorerCfgs, decodeScorerCfgs []sim.ScorerConfig
-		if prefillRoutingScorers != "" {
-			var err error
-			prefillScorerCfgs, err = sim.ParseScorerConfigs(prefillRoutingScorers)
-			if err != nil {
-				logrus.Fatalf("Invalid --prefill-routing-scorers: %v", err)
-			}
-		}
-		if decodeRoutingScorers != "" {
-			var err error
-			decodeScorerCfgs, err = sim.ParseScorerConfigs(decodeRoutingScorers)
-			if err != nil {
-				logrus.Fatalf("Invalid --decode-routing-scorers: %v", err)
-			}
-		}
+		// Parse per-pool scorer configs (PD disaggregation — not in resolvePolicies).
+		// When PD is enabled and the flags are unset, default to llm-d's PD profile
+		// (prefix-cache:2,queue-depth:1) rather than falling back to the cluster-wide
+		// round-robin policy, which does not load-balance the decode pool.
+		pdEnabled := prefillInstances > 0
+		prefillScorerCfgs := resolvePoolScorerConfigs(prefillRoutingScorers, "prefill", pdEnabled)
+		decodeScorerCfgs := resolvePoolScorerConfigs(decodeRoutingScorers, "decode", pdEnabled)
 		// Log configuration after all config sources (CLI, workload spec, policy bundle) are resolved
 		logrus.Infof("Starting simulation with %d KV blocks, horizon=%dticks, alphaCoeffs=%v, betaCoeffs=%v",
 			totalKVBlocks, simulationHorizon, lr.AlphaCoeffs, lr.BetaCoeffs)
