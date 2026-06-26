@@ -5,35 +5,39 @@
 See `out/diag/SUMMARY.md` for the full table; `out/diag/RUNS.md` for the run registry.
 Deciders compared at this point: never@4, edpp@{1P3D,2P2D}, always@2P2D, prefix-threshold@{1P3D,2P2D}.
 
-> **⚠️ INVALIDATED 2026-06-26 — instrument audit (the "wrong knob" case the discipline note below
-> warns about).** Every KEY RESULT in this block was produced with BLIS's default `--routing-policy
-> round-robin` and NO per-pool scorer flags, so the decode pool fell back to round-robin and pinned ALL
-> decode to one node — the "1192/2000 collapse" and "161s TTFT" are artifacts of that misconfiguration,
-> NOT properties of the deciders. llm-d's shipped PD profile is weighted `prefix-cache:2 + queue:1`;
-> BLIS now defaults to it in PD mode. Under that routing, all 2P2D/1P3D cells complete 2000/2000 with
-> BALANCED decode (see `out/diag/SESSION_LOG.md` → "CORRECTION 2026-06-26"). The decode-throughput /
-> pin claims below are retracted. The SLO/TTFT/E2E percentile narrative must be re-measured under the
-> new default before any decider comparison is trustworthy. (The "decode-node-count is the real
-> constraint at equal HW" intuition may survive as saturation/queueing — but re-measure, don't assume.)
+> **CORRECTED 2026-06-26 (instrument audit — the "wrong knob" case the discipline note below warns
+> about).** The original KEY RESULTS were produced with BLIS's default `--routing-policy round-robin`
+> and NO per-pool scorer flags, so the decode pool fell back to round-robin and pinned ALL decode to one
+> node — the "1192/2000 collapse" and "161s TTFT" were artifacts of that misconfiguration. llm-d's
+> shipped PD profile is weighted `prefix-cache:2 + queue:1`; BLIS now defaults to it in PD mode. The
+> results below are RE-MEASURED under that default (full table + mechanism in
+> `out/diag/SESSION_LOG.md` → "CORRECTED SLO/TTFT/E2E TABLE 2026-06-26").
 
-KEY RESULTS (⚠️ RETRACTED — see banner above; produced under the round-robin routing artifact):
-- Outcome tracks DECODE-CAPABLE NODE COUNT: never@4 > *@1P3D > *@2P2D (monotonic on ITL/E2E).
-  Disaggregation does NOT help this decode-bound workload at this load (equal hardware).
-- At 1P3D (adequate decode): edpp (0% disagg) ≈ prefix-threshold (100% disagg) — disaggregation
-  is NEUTRAL; prefill too cheap to matter where it runs.
-- At 2P2D (starved decode): policies only RELOCATE pain. edpp's PARTIAL 16.6% disagg gives the
-  WORST TTFT (p99 161s) via HOL blocking (local prefill queues behind decode on 2 nodes).
-  always==prefix-threshold (100% disagg) get fast first-token but only 1192/2000 DECODE
-  (throughput collapse) — their "good TTFT" is hollow.
-- EDPP's one genuinely-good behavior: at 1P3D it correctly DECLINES to disaggregate.
-  prefix-threshold (the production default) blindly disaggregates 100% regardless of topology.
-- prefix-threshold disaggregates ~everything on synth (tiny inputs trip threshold-16) ⇒ behaves
-  like `always` here.
+KEY RESULTS (corrected, under the llm-d weighted default; rate 2.0, 2000 reqs, equal 4-node HW):
+- **No collapse, ZERO preemptions anywhere** — all arms complete 2000/2000 (the round-robin pin's
+  ~10k preemptions + 1192/2000 were the artifact).
+- **never@4 wins** (goodput 1.68 rps, E2E p99 275s). Disaggregation does NOT help this decode-bound
+  workload at equal hardware. Outcome tracks DECODE-CAPABLE NODE COUNT: never@4(4) > *@1P3D(3) >
+  *@2P2D(2) on goodput AND E2E p99.
+- **EDPP is the WORST decider here**: TTFT p99 518s, SLO 0.75, lowest goodput, at BOTH 2P2D and 1P3D.
+  Mechanism (TTFT split by was_disaggregated): disaggregated reqs get fast TTFT (p99 0.2s, prefill on
+  dedicated nodes); the ~48% EDPP keeps LOCAL suffer HOL blocking — their prefill queues behind decode
+  on the saturated decode nodes — giving local TTFT p99 547s. always/prefix-threshold disaggregate
+  100% → no local reqs → fast TTFT (199ms); the decode-queue wait shows up only in E2E. So EDPP's
+  PARTIAL disaggregation actively hurts on this uniform decode-bound workload.
+- **EDPP's decisions shifted a lot** vs the round-robin runs: it now disaggregates 1045@2P2D (was 331)
+  and 1029@1P3D (was 0 — i.e. 1P3D flipped from "stay 100% local / fine" to "51% disagg / TTFT 518s").
+  Sensitive to the routing/load signals; needs decision-trace diagnosis (item below).
+- prefix-threshold ≈ always on synth (tiny inputs trip threshold-16 → ~100% disagg).
 
-OPEN — THE REAL TEST OF EDPP (Experiment 5, not yet run): none of the above is FAVORABLE to
-disaggregation, so "best decider = disaggregate least-harmfully." To see EDPP's *advantage* we
-need a regime where per-request disagg helps SOME requests (mixed prefill sizes + adequate decode
-capacity), so adaptivity beats both always and never.
+OPEN — WHY does EDPP disaggregate partially (and so much)? On a saturated decode pool the right call
+is to disaggregate ~all (like always) so no request's prefill waits behind decode; EDPP's partial
+choice is the thing to explain. Use `--routing-decision-trace` + `--edpp-decision-trace`.
+
+OPEN — THE REAL TEST OF EDPP (Experiment 5, not yet run): uniform synth is not FAVORABLE to
+disaggregation (per-request adaptivity has no signal to exploit and is shown strictly harmful here).
+To see any EDPP *advantage* needs a heterogeneous regime (mixed prefill sizes + adequate decode), so
+adaptivity could beat both always and never.
 
 ---
 
