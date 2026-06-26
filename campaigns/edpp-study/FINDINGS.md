@@ -17,8 +17,12 @@ KEY RESULTS (corrected, under the llm-d weighted default; rate 2.0, 2000 reqs, e
 - **No collapse, ZERO preemptions anywhere** — all arms complete 2000/2000 (the round-robin pin's
   ~10k preemptions + 1192/2000 were the artifact).
 - **never@4 wins** (goodput 1.68 rps, E2E p99 275s). Disaggregation does NOT help this decode-bound
-  workload at equal hardware. Outcome tracks DECODE-CAPABLE NODE COUNT: never@4(4) > *@1P3D(3) >
-  *@2P2D(2) on goodput AND E2E p99.
+  workload at equal hardware. Outcome tracks DECODE-CAPABLE NODE COUNT monotonically across ALL
+  topologies: never@4(4) > *@1P3D(3) > *@2P2D(2) > *@3P1D(1) on goodput AND completion.
+- **3P1D (1 decode node) is the only REAL collapse** (no routing artifact): nothing to balance →
+  KV saturation → always/prefix-thr complete just 1192/2000 with 10,157 preemptions. Those are the
+  EXACT numbers the original round-robin 2P2D "collapse" produced — confirming round-robin had pinned
+  2P2D to one active decode node (2→1 ≡ 3P1D). edpp@3P1D: worst SLO 0.46 / goodput 0.48 (TTFT p99 765s).
 - **EDPP is the WORST decider here**: TTFT p99 518s, SLO 0.75, lowest goodput, at BOTH 2P2D and 1P3D.
   Mechanism (TTFT split by was_disaggregated): disaggregated reqs get fast TTFT (p99 0.2s, prefill on
   dedicated nodes); the ~48% EDPP keeps LOCAL suffer HOL blocking — their prefill queues behind decode
