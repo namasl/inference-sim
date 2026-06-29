@@ -91,9 +91,10 @@ We have `--edpp-decision-trace` and `--routing-decision-trace` but have only loo
     topology (still can't beat never@4 — the Q1 provisioning limit). Design:
     `docs/superpowers/specs/2026-06-29-edpp-responsive-z-ttft-design.md`; archived flaw-driven numbers:
     `out/diag/ARCHIVE_lagged-z-ttft-artifact.md`.
-11. **Re-measure under the fix** (pre-fix numbers retired): the load knee (rates 0.5–3.0), the ITL
-    τ_itl-tightening case, and the time-average MEANS table (SUMMARY.md). All were measured on the
-    lagged-`z_ttft` binary. (1P3D/2P2D/3P1D rate-2.0 cells already re-measured — see FINDINGS.)
+11. **Re-measure under the fix — DONE for synth.** Re-measured: 1P3D/2P2D/3P1D rate-2.0 cells (SUMMARY),
+    the load knee rates 0.5–3.0 (the old "rate-1.0 cliff" is GONE — EDPP healthy through 1.5), and the
+    ITL τ_itl-50ms case (disagg 58→90% but ITL stays 72ms = decode-capacity floored). See FINDINGS.
+    REMAINING: RAG (prefill-bound) re-measure is still pre-fix — folded into TODO 8.
 
 ## Done (for reference)
 - Synth (decode-bound) characterized: out/diag/{SESSION_LOG,FINDINGS,REPRO,SUMMARY}.md. NOTE the

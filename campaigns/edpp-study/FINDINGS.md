@@ -59,12 +59,31 @@ KEY RESULTS (responsive `z_ttft`; pre-fix numbers archived):
   capacity-bound. Q1 limit, not an EDPP defect.
 - `prefix-threshold` ≈ `always` on synth (tiny inputs trip threshold-16 → ~100% disagg).
 
-## NOT yet re-measured under the fix (pre-fix numbers retired)
-The following were measured under the lagged-`z_ttft` binary and need re-running (TODO):
-- **Load-dependence (knee)** across rates 0.5–3.0 (the old "sharp cliff at rate 1.0").
-- **ITL decision path** (tightening τ_itl; `z_itl` activation) — and note `z_itl` has the SAME
-  completion-lag flaw `z_ttft` just had (TODO: apply the responsive-update treatment to `z_itl`).
-- **Time-average MEANS** table in `SUMMARY.md`.
+## Load-dependence (knee) — RE-MEASURED under the fix; the "rate-1.0 cliff" is GONE
+edpp@2P2D across rates (pre-fix → responsive `z_ttft`):
+
+| rate | disagg% | TTFT mean | TTFT p99 | SLO@2s |
+|---|---|---|---|---|
+| 0.5 | 0.0% | 0.07s → 0.07s | 0.2s → 0.2s | 100% (byte-identical; non-saturated ⇒ untouched) |
+| 1.0 | 71.4% | **15.48s → 0.18s** | **162.1s → 0.2s** | 100% (the old sharp cliff is eliminated) |
+| 1.5 | 80.4% | 50.74s → 0.54s | 382.0s → 5.1s | 99% |
+| 2.0 | 81.2% | 56.32s → 3.55s | 518.3s → 180.2s | 98% |
+| 3.0 | 83.2% | 48.29s → 3.46s | 577.4s → 141.0s | 98% |
+
+EDPP now stays healthy through rate 1.5 and degrades gracefully only at 2.0–3.0 (genuine 2-decode-node
+saturation). The pre-fix "harmless only at 0.5; sharp cliff at 1.0" finding is RETIRED.
+
+## ITL decision path — RE-MEASURED; conclusion REINFORCED
+Tightening `τ_itl` 150→50ms (rate 2.0) now makes EDPP disaggregate MORE under the fix (58% → **90%**),
+but **ITL mean stays 72ms** (unchanged; > 50ms target). Disaggregation moves only PREFILL; decode stays
+on the same 2 nodes, so ITL is floored by decode capacity. **EDPP's sole lever (prefill placement) is
+matched to TTFT/HOL but mismatched to ITL/decode-capacity** — the fix sharpens the response but cannot
+beat the capacity floor. NOTE `z_itl` still has the SAME completion-lag flaw `z_ttft` just had
+(TODO 10b: apply the responsive-update treatment), though it won't move this capacity-bound ITL.
+
+## Still pre-fix (lower priority)
+- **RAG (prefill-bound)** under the corrected default + per-class SLOs — never re-measured post-fix
+  (TODO 8). Does the decode-node-count story invert for prefill-bound?
 
 ## Anomalies & instrument audits (kept)
 - The round-robin "collapse/161s/1192" numbers were a harness misconfiguration (default
