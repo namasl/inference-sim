@@ -3,6 +3,7 @@ package sim
 import (
 	"fmt"
 	"math"
+	"sort"
 )
 
 // EDPP (Lyapunov drift-plus-penalty) prefill/decode placement decider.
@@ -182,8 +183,20 @@ const edppMinMu = 1e-3
 type SLOFeedbackDecider interface {
 	OnRoute(req *Request, key string, toPrefill bool, apTokens int)               // increment Q at routing
 	OnAdmit(key string, prefillSide bool)                                         // drain waiting-work share at admission
-	OnComplete(req *Request, key string, realizedTTFTUs, realizedMeanITLUs int64) // bump z, update N̂_out (backlog already drained)
+	OnFirstToken(key string, nowUs int64)                                         // true up z_ttft from the realized first-token time
+	OnComplete(req *Request, key string, realizedTTFTUs, realizedMeanITLUs int64) // bump z_itl, update N̂_out (z_ttft owned by OnFirstToken)
 	Forget(key string)                                                            // release Q for a terminally non-completed routed request
+}
+
+// edppAwaiting tracks a routed request still awaiting its first token, so z_ttft can be
+// credited continuously from its observed elapsed wait (a certain lower bound on its TTFT
+// miss) instead of only once at completion. startUs is the request's arrival time (when
+// the TTFT clock starts); credited is the cumulative amount already applied to z_ttft for
+// this request, so each sweep applies only the increment (no double-count).
+type edppAwaiting struct {
+	startUs  int64
+	class    string
+	credited float64
 }
 
 // edppPendingWork records the remaining waiting-work shares of a routed request.
@@ -246,6 +259,10 @@ type EDPPDecider struct {
 	qpWork, qdWork float64                     // running work-µs backlogs
 	pending        map[string]edppPendingWork  // per-request work, keyed by Request.ID
 	nHatOut        map[string]*edppRunningMean // per-class realized output-length estimate
+
+	// Requests routed but not yet at their first token, keyed by the same conservation
+	// key as pending. Drives the continuous z_ttft credit (design: responsive z_ttft).
+	awaitingFirstToken map[string]*edppAwaiting
 }
 
 // NewEDPPDecider constructs the decider and initializes class-independent physics
@@ -270,6 +287,8 @@ func NewEDPPDecider(cfg EDPPConfig, model LatencyModel, cacheQuery map[string]fu
 		coeffs:           cfg.Coeffs,
 		pending:          make(map[string]edppPendingWork),
 		nHatOut:          make(map[string]*edppRunningMean),
+
+		awaitingFirstToken: make(map[string]*edppAwaiting),
 	}
 
 	// μ_p^nom = 1 − α_p/(α_p + c_pf·S_pf^nom) (design §7): from frozen coefficients.
@@ -332,6 +351,14 @@ func (d *EDPPDecider) normFor(class string) edppNorm {
 // pressure. Conservative fallbacks (Disaggregate=false): empty prompt, or a request
 // whose prompt is fully prefix-cached on the selected decode pod (no prefill to offload).
 func (d *EDPPDecider) Decide(req *Request, state *RouterState) DisaggregationDecision {
+	// Credit z_ttft from the observed elapsed wait of all in-flight requests still
+	// awaiting their first token, so the SLO virtual queue reflects trouble happening
+	// right now (not only past completions). Lazy: runs exactly when z is about to be
+	// read. state.Clock is the current sim time; nil state (unit tests) ⇒ skip.
+	if state != nil {
+		d.creditAwaiting(state.Clock)
+	}
+
 	keepD := DisaggregationDecision{Disaggregate: false}
 	if len(req.InputTokens) == 0 {
 		if d.cfg.TraceEnabled {
@@ -450,6 +477,67 @@ func (d *EDPPDecider) selectedDecodeState(state *RouterState) (bDec int, kv, sPf
 	return 1, int64(d.cfg.NomDecodeCtx), 0
 }
 
+// ensureZ returns the per-class virtual-queue state, lazily creating it.
+func (d *EDPPDecider) ensureZ(class string) *edppClassState {
+	z := d.zByClass[class]
+	if z == nil {
+		z = &edppClassState{}
+		d.zByClass[class] = z
+	}
+	return z
+}
+
+// creditAwaiting credits z_ttft with the certain lower-bound TTFT miss of every in-flight
+// request still awaiting its first token. For a request that arrived at startUs and has no
+// first token by nowUs, max(nowUs−startUs−τ, 0) is a guaranteed lower bound on its eventual
+// miss; we apply only the increment over what was already credited (so repeated sweeps do
+// not double-count). Iteration is in sorted-key order so the floating-point accumulation is
+// byte-identical across runs (INV-6). The full realized miss is reconciled at first token
+// (OnFirstToken) or, as a fallback, at completion (OnComplete) — see the design's
+// faithfulness invariant: same total contribution, credited earlier.
+func (d *EDPPDecider) creditAwaiting(nowUs int64) {
+	if len(d.awaitingFirstToken) == 0 {
+		return
+	}
+	keys := make([]string, 0, len(d.awaitingFirstToken))
+	for k := range d.awaitingFirstToken {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		rec := d.awaitingFirstToken[k]
+		tauTTFTUs, _ := d.targetsFor(rec.class)
+		lb := float64(nowUs - rec.startUs - tauTTFTUs)
+		if lb < 0 {
+			lb = 0
+		}
+		delta := lb - rec.credited
+		if delta == 0 {
+			continue
+		}
+		z := d.ensureZ(rec.class)
+		z.zTTFT = math.Max(z.zTTFT+delta, 0)
+		rec.credited = lb
+	}
+}
+
+// OnFirstToken trues up z_ttft to the realized TTFT (nowUs − startUs) for a request that
+// has just produced its first token, applying the signed delta over what creditAwaiting
+// already credited (which may be negative when the SLO was met), then stops tracking it.
+// Idempotent: a second call for the same key (e.g. the prefill sub-request of a PD request
+// after the decode sub-request already fired) finds no record and no-ops.
+func (d *EDPPDecider) OnFirstToken(key string, nowUs int64) {
+	rec, ok := d.awaitingFirstToken[key]
+	if !ok {
+		return
+	}
+	tauTTFTUs, _ := d.targetsFor(rec.class)
+	target := float64(nowUs-rec.startUs) - float64(tauTTFTUs)
+	z := d.ensureZ(rec.class)
+	z.zTTFT = math.Max(z.zTTFT+(target-rec.credited), 0)
+	delete(d.awaitingFirstToken, key)
+}
+
 // nHatFor returns the per-class running-mean output length, lazily created.
 func (d *EDPPDecider) nHatFor(class string) *edppRunningMean {
 	m := d.nHatOut[class]
@@ -464,6 +552,11 @@ func (d *EDPPDecider) nHatFor(class string) *edppRunningMean {
 // conservation form). apTokens is the uncached prompt token count (input-only; INV-9
 // safe). W_d uses the class N̂_out estimate at the nominal decode context.
 func (d *EDPPDecider) OnRoute(req *Request, key string, toPrefill bool, apTokens int) {
+	// Track every routed request for the continuous z_ttft credit, regardless of apTokens
+	// (a fully-cached request still has a TTFT and can still wait). The TTFT clock starts
+	// at arrival.
+	d.awaitingFirstToken[key] = &edppAwaiting{startUs: req.ArrivalTime, class: req.SLOClass}
+
 	if apTokens <= 0 {
 		return
 	}
@@ -520,13 +613,18 @@ func (d *EDPPDecider) OnAdmit(key string, prefillSide bool) {
 func (d *EDPPDecider) OnComplete(req *Request, key string, realizedTTFTUs, realizedMeanITLUs int64) {
 	d.nHatFor(req.SLOClass).update(float64(len(req.OutputTokens)))
 	tauTTFTUs, tauITLUs := d.targetsFor(req.SLOClass)
-	z := d.zByClass[req.SLOClass]
-	if z == nil {
-		z = &edppClassState{}
-		d.zByClass[req.SLOClass] = z
-	}
-	z.zTTFT = math.Max(z.zTTFT+float64(realizedTTFTUs-tauTTFTUs), 0)
+	z := d.ensureZ(req.SLOClass)
 	z.zITL = math.Max(z.zITL+float64(realizedMeanITLUs-tauITLUs), 0)
+
+	// z_ttft is normally owned by the continuous credit + OnFirstToken true-up. If the
+	// first-token hook never fired for this request (record still present), fall back to
+	// truing up from the realized TTFT here so the signal is never lost — same total
+	// contribution as the pre-change completion-time bump.
+	if rec, ok := d.awaitingFirstToken[key]; ok {
+		target := float64(realizedTTFTUs) - float64(tauTTFTUs)
+		z.zTTFT = math.Max(z.zTTFT+(target-rec.credited), 0)
+		delete(d.awaitingFirstToken, key)
+	}
 }
 
 // Forget releases the conservation backlog a routed request contributed when that
@@ -550,6 +648,10 @@ func (d *EDPPDecider) Forget(key string) {
 		d.qdWork = 0
 	}
 	delete(d.pending, key)
+	// Keep any z_ttft credit already applied: a request that waited past its target and
+	// then dropped/timed-out is a real SLO failure (a censored observation), not a
+	// non-event. Just stop tracking it for further credit.
+	delete(d.awaitingFirstToken, key)
 }
 
 // BacklogForTest exposes the conservation bookkeeping state for tests only: the

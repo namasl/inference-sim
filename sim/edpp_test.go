@@ -232,7 +232,11 @@ func TestEDPP_DisaggregationPayoffSign(t *testing.T) {
 func TestEDPP_OnComplete_UpdatesVirtualQueues(t *testing.T) {
 	// E8: Z_ttft and Z_itl accumulate positive violations and floor at 0.
 	d := NewEDPPDecider(defaultTestEDPPConfig(), newTestAffineModel(), nil, nil)
-	d.OnComplete(&Request{ID: "r2", SLOClass: ""}, "r2", 150_000, 80_000) // TTFT 150ms (τ=100ms), ITL 80ms (τ=50ms)
+	// z_ttft now flows through the awaiting/first-token path; a completion with no prior
+	// first-token reconciles it via the OnComplete fallback, so route the request first.
+	r2 := &Request{ID: "r2", SLOClass: "", ArrivalTime: 0}
+	d.OnRoute(r2, "r2", false, 1)
+	d.OnComplete(r2, "r2", 150_000, 80_000) // TTFT 150ms (τ=100ms), ITL 80ms (τ=50ms)
 	z := d.zByClass[""]
 	if z == nil || z.zTTFT != 50_000 {
 		t.Errorf("Z_ttft = %v, want 50000", z)
@@ -241,7 +245,9 @@ func TestEDPP_OnComplete_UpdatesVirtualQueues(t *testing.T) {
 		t.Errorf("Z_itl = %v, want 30000", z.zITL)
 	}
 	// A large under-target completion must floor each queue at 0, not go negative.
-	d.OnComplete(&Request{ID: "r3", SLOClass: ""}, "r3", 0, 0)
+	r3 := &Request{ID: "r3", SLOClass: "", ArrivalTime: 0}
+	d.OnRoute(r3, "r3", false, 1)
+	d.OnComplete(r3, "r3", 0, 0)
 	if z.zTTFT != 0 || z.zITL != 0 {
 		t.Errorf("virtual queues not floored at 0: zTTFT=%v zITL=%v", z.zTTFT, z.zITL)
 	}
@@ -760,7 +766,8 @@ func TestEDPP_Anchor_UnitsDimensionless(t *testing.T) {
 		//   z_itl = (τ_itl + 50_000*k − τ_itl) / τ_itl = 50_000/50_000 = 1  (constant across k)
 		//   z_ttft = (τ_ttft + 50_000*k − τ_ttft) / τ_ttft = 50_000*k / (100_000*k) = 0.5 (constant)
 		// Both ttftTerm and itlTerm are now non-zero and must scale invariantly.
-		breach := &Request{ID: "b", SLOClass: "", OutputTokens: []int{1}}
+		breach := &Request{ID: "b", SLOClass: "", ArrivalTime: 0, OutputTokens: []int{1}}
+		d.OnRoute(breach, breach.ID, false, 1) // track so the OnComplete z_ttft fallback fires
 		d.OnComplete(breach, breach.ID, cfg.TauTTFTUs+50_000*k, cfg.TauITLUs+50_000*k)
 
 		return d.Decide(
@@ -965,5 +972,108 @@ func TestEDPP_TTFTP_UsesPrefillCoResidency(t *testing.T) {
 	// ttftP = 0/0.8 + 1·(5000 + 3000) + c_xfer(5000) = 8000 + 5000 = 13000.
 	if math.Abs(tr.TTFTP-13000) > 1e-6 {
 		t.Errorf("ttftP = %v, want 13000 (uses T_pf(B−1)=5000, not α_p=1000)", tr.TTFTP)
+	}
+}
+
+// --- Responsive z_ttft: continuous credit from observed elapsed-wait + first-token true-up ---
+//
+// These assert the law "same total z_ttft contribution as the old completion-time bump,
+// only credited earlier" plus the keep-credit-on-drop decision.
+
+func zval(z *edppClassState) float64 {
+	if z == nil {
+		return -1
+	}
+	return z.zTTFT
+}
+
+func newWaitingReq(id string, arrivalUs int64) *Request {
+	return &Request{ID: id, SLOClass: "", ArrivalTime: arrivalUs, InputTokens: []int{1, 2, 3}}
+}
+
+// First token at 250ms with τ_ttft=100ms ⇒ z_ttft bumps by the 150ms miss (same as the
+// old completion-time update would have produced).
+func TestEDPP_FirstToken_BumpsZTTFTByMiss(t *testing.T) {
+	d := NewEDPPDecider(defaultTestEDPPConfig(), newTestAffineModel(), nil, nil)
+	req := newWaitingReq("r1", 0)
+	d.OnRoute(req, "r1", false, 3)
+	d.OnFirstToken("r1", 250_000)
+	if got := zval(d.zByClass[""]); math.Abs(got-150_000) > 1 {
+		t.Fatalf("zTTFT = %v, want 150000", got)
+	}
+}
+
+// First token at 50ms (< τ 100ms): SLO met ⇒ z stays floored at 0 (no positive pressure).
+func TestEDPP_FirstToken_MetSLO_NoPositiveZ(t *testing.T) {
+	d := NewEDPPDecider(defaultTestEDPPConfig(), newTestAffineModel(), nil, nil)
+	d.OnRoute(newWaitingReq("r1", 0), "r1", false, 3)
+	d.OnFirstToken("r1", 50_000)
+	if got := zval(d.zByClass[""]); got != 0 {
+		t.Fatalf("zTTFT = %v, want 0 (SLO met)", got)
+	}
+}
+
+// A decision at clock=300ms while r1 (arrival 0, τ 100ms) is still awaiting its first
+// token credits the certain lower-bound miss (200ms) into z_ttft — before any completion.
+func TestEDPP_ContinuousCredit_BeforeFirstToken(t *testing.T) {
+	d := NewEDPPDecider(defaultTestEDPPConfig(), newTestAffineModel(), nil, nil)
+	d.OnRoute(newWaitingReq("r1", 0), "r1", false, 3)
+	d.Decide(newWaitingReq("r2", 300_000), &RouterState{Clock: 300_000})
+	if got := zval(d.zByClass[""]); math.Abs(got-200_000) > 1 {
+		t.Fatalf("zTTFT = %v, want 200000 (credited lower bound)", got)
+	}
+}
+
+// Two sweeps at 300ms then 400ms must credit only the increment: total 300ms (400−100),
+// not 200+300.
+func TestEDPP_Credit_NoDoubleCount(t *testing.T) {
+	d := NewEDPPDecider(defaultTestEDPPConfig(), newTestAffineModel(), nil, nil)
+	d.OnRoute(newWaitingReq("r1", 0), "r1", false, 3)
+	d.Decide(newWaitingReq("x", 300_000), &RouterState{Clock: 300_000})
+	d.Decide(newWaitingReq("y", 400_000), &RouterState{Clock: 400_000})
+	if got := zval(d.zByClass[""]); math.Abs(got-300_000) > 1 {
+		t.Fatalf("zTTFT = %v, want 300000 (increment-only)", got)
+	}
+}
+
+// A request dropped/timed-out after accruing credit keeps that credit (censored
+// observation: the long wait genuinely violated the SLO) and is no longer tracked.
+func TestEDPP_Forget_KeepsCredit(t *testing.T) {
+	d := NewEDPPDecider(defaultTestEDPPConfig(), newTestAffineModel(), nil, nil)
+	d.OnRoute(newWaitingReq("r1", 0), "r1", false, 3)
+	d.Decide(newWaitingReq("x", 300_000), &RouterState{Clock: 300_000})
+	d.Forget("r1")
+	if got := zval(d.zByClass[""]); math.Abs(got-200_000) > 1 {
+		t.Fatalf("zTTFT = %v, want 200000 (credit kept)", got)
+	}
+	if _, ok := d.awaitingFirstToken["r1"]; ok {
+		t.Fatalf("r1 should be untracked after Forget")
+	}
+}
+
+// If the first-token hook never fires (e.g. a completion path that bypasses it),
+// OnComplete falls back to bumping z_ttft from the realized TTFT — so the signal is
+// never lost. 250ms realized, τ 100ms ⇒ 150ms.
+func TestEDPP_OnComplete_FallbackBumpsZTTFT(t *testing.T) {
+	d := NewEDPPDecider(defaultTestEDPPConfig(), newTestAffineModel(), nil, nil)
+	req := newWaitingReq("r1", 0)
+	req.OutputTokens = []int{1, 2}
+	d.OnRoute(req, "r1", false, 3)
+	d.OnComplete(req, "r1", 250_000, 10_000)
+	if got := zval(d.zByClass[""]); math.Abs(got-150_000) > 1 {
+		t.Fatalf("zTTFT = %v, want 150000 (completion fallback)", got)
+	}
+}
+
+// When the first-token true-up already happened, OnComplete must NOT bump z_ttft again.
+func TestEDPP_OnComplete_NoDoubleAfterFirstToken(t *testing.T) {
+	d := NewEDPPDecider(defaultTestEDPPConfig(), newTestAffineModel(), nil, nil)
+	req := newWaitingReq("r1", 0)
+	req.OutputTokens = []int{1, 2}
+	d.OnRoute(req, "r1", false, 3)
+	d.OnFirstToken("r1", 250_000)
+	d.OnComplete(req, "r1", 250_000, 10_000)
+	if got := zval(d.zByClass[""]); math.Abs(got-150_000) > 1 {
+		t.Fatalf("zTTFT = %v, want 150000 (no double bump)", got)
 	}
 }
