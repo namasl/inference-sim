@@ -601,6 +601,9 @@ func NewClusterSimulator(config DeploymentConfig, requests []*sim.Request, onReq
 				inst.sim.OnAdmit = func(req *sim.Request, tick int64) {
 					cs.feedAdmission(req)
 				}
+				inst.sim.OnFirstToken = func(req *sim.Request, tick int64) {
+					cs.feedFirstToken(req, tick)
+				}
 			}
 		}
 	}
@@ -1126,6 +1129,9 @@ func (cs *ClusterSimulator) addLiveInstance(
 			inst.sim.OnAdmit = func(req *sim.Request, tick int64) {
 				cs.feedAdmission(req)
 			}
+			inst.sim.OnFirstToken = func(req *sim.Request, tick int64) {
+				cs.feedFirstToken(req, tick)
+			}
 		}
 	}
 
@@ -1290,6 +1296,19 @@ func (cs *ClusterSimulator) feedAdmission(req *sim.Request) {
 		return
 	}
 	cs.sloFeedback.OnAdmit(key, prefillSide)
+}
+
+// feedFirstToken trues up an SLO-feedback decider's TTFT virtual queue when a request
+// produces its first token (tick = absolute first-token time). The conservation key is
+// resolved the same way as completion (edppConservationKey): a non-disaggregated request
+// and a decode sub-request map to the key OnRoute used. For a PD request the first-token
+// hook also fires on the prefill sub-request, but that resolves to its own ID — a key the
+// decider never tracked (OnRoute used the parent ID) — so it harmlessly no-ops.
+func (cs *ClusterSimulator) feedFirstToken(req *sim.Request, tick int64) {
+	if cs.sloFeedback == nil {
+		return
+	}
+	cs.sloFeedback.OnFirstToken(cs.edppConservationKey(req), tick)
 }
 
 func (c *ClusterSimulator) detectPrefillCompletions(inst *InstanceSimulator) {

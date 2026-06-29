@@ -119,6 +119,14 @@ type Simulator struct {
 	// Note: a preempted-then-readmitted request fires OnAdmit again on re-admission, so consumers must be idempotent.
 	OnAdmit func(req *Request, tick int64)
 
+	// OnFirstToken is an optional callback invoked once when a request produces its first
+	// token (prefill completes: ProgressIndex reaches len(InputTokens)), with the absolute
+	// sim tick. Used by SLO-feedback deciders to true up a TTFT virtual queue from the
+	// realized first-token time instead of waiting for full completion. nil ⇒ no-op. Fired
+	// inside the deterministic event loop (INV-6 safe). A preempted-then-re-prefilled
+	// request fires again (TTFTSet reset on preemption), so consumers must be idempotent.
+	OnFirstToken func(req *Request, tick int64)
+
 	progressHook               ProgressHook
 	simClockProgressIntervalUs int64
 	nextSnapshotClockUs        int64
@@ -822,6 +830,9 @@ func (sim *Simulator) executeBatchStep(now int64) int64 {
 			req.TTFTSet = true
 			req.FirstTokenTime = now + currStepAdvance + sim.latencyModel.OutputTokenProcessingTime() - req.ArrivalTime
 			sim.Metrics.RequestTTFTs[req.ID] = float64(req.FirstTokenTime)
+			if sim.OnFirstToken != nil {
+				sim.OnFirstToken(req, req.ArrivalTime+req.FirstTokenTime)
+			}
 		}
 	}
 
