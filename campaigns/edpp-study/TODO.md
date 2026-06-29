@@ -61,28 +61,43 @@ We have `--edpp-decision-trace` and `--routing-decision-trace` but have only loo
    RAG numbers predate the routing fix). Does the decode-node-count story invert for prefill-bound?
 9. Pin the synth knee more precisely (one point at rate ~0.75) — cosmetic.
 
-## TODO — EDPP improvement: running-occupancy-aware local-TTFT (FIX DIRECTION, ready to pick up)
-10. **Make `ttft_d` (local-TTFT estimate) key off RUNNING decode occupancy, not the waiting backlog.**
-    Evidence (out/diag/SESSION_LOG.md "TRACE MINING 2026-06-29" + 2029b):
-    - Root cause of EDPP being worst on synth: `ttft_d` is built from the decode WAITING-backlog `qd`
-      + nominal μ. The routing trace shows `queue_depth` (waiting) reads 0 while `batch_size` is already
-      87→256(max) and `kv_util`→0.87 — i.e. waiting signals under-represent true decode-node load.
-    - So `z_ttft`=0 at the median decision (predicted local TTFT < SLO) even though realized local TTFT
-      is 117s; the SLO term never fires; EDPP only disaggregates on the weak balance-vs-transfer margin
-      and ramps to 100% too late (reactive lag).
-    - FIX: incorporate running occupancy into the local-TTFT prediction. Candidate signals (all present
-      in the snapshot / routing trace, confirmed informative): `batch_size`, `kv_utilization`,
-      `free_kv_blocks`, and the now-reservation-aware `inflight` (commit 6a97a2f counts running+reserved).
-      Likely touch points: EDPP `ttft_d` / `muDecode` / backlog read in `sim/edpp*.go` (the qd path) —
-      grep where `qd`/waiting-backlog feeds the local TTFT term. The waiting-only backlog was a
-      DELIBERATE earlier design choice ([[edpp-calibration-state]]); this revisits it for the local side.
-    - VALIDATE: re-run synth edpp@2P2D rate 2.0 (REPRO.md) — expect EDPP to disaggregate earlier/more
-      (toward always's 100%) and local TTFT mean to drop from 117s. Then re-check the load knee.
-    - CAVEAT (Q1 vs Q2): even a perfect fix only makes EDPP match `always` on this uniform decode-bound
-      workload (never beats never@4 — that's a provisioning/Q1 limit). The fix's real value shows on a
-      HETEROGENEOUS workload (TODO #1) where per-request adaptivity matters. Consider doing #1 first to
-      have a regime where the fix can actually WIN, then this fix, then re-measure.
+## TODO — apply the responsive-update fix to z_itl (NEXT, ready to pick up)
+10b. **`z_itl` has the SAME completion-lag flaw `z_ttft` just had — fix it the same way.**
+    `z_itl` is bumped only at completion (`OnComplete`, from realized mean ITL), so it reacts late to
+    ITL trouble exactly as `z_ttft` did. ITL is a per-token rate (not a wait), so the "observed
+    elapsed-wait lower bound" trick does not transfer directly — but a running ITL estimate is
+    observable mid-decode (per-token timestamps already exist; `req.ITL` accumulates during the run).
+    DESIGN QUESTION first: what is the observable, certain signal for an in-flight ITL miss? Candidate:
+    once a decoding request has produced ≥k tokens with running-mean ITL > τ_itl, credit the overage
+    incrementally (true-up at completion), mirroring the `z_ttft` credit/true-up structure
+    (`sim/edpp.go` `creditAwaiting`/`OnFirstToken`). VALIDATE: re-run the τ_itl 150→50ms ITL-binding
+    case (REPRO.md) — expect `z_itl` to activate earlier. NOTE: on uniform decode-bound synth ITL is
+    floored by decode capacity (disaggregation moves only prefill), so this helps RESPONSIVENESS, not
+    the capacity limit — the real payoff is on the heterogeneous workload (#1).
+
+## DONE — responsive z_ttft (the fix that replaced the wrong "ttft_d accuracy" direction)
+10. **(SUPERSEDED then DONE differently.)** The original plan — "make `ttft_d` running-occupancy-aware"
+    — was DISPROVED by mining EDPP's decision trace: `ttft_d` enters the rule only as
+    `z_ttft·(TTFT_P−TTFT_D)`, so where `z_ttft=0` (81% of decisions) its accuracy is multiplied by zero,
+    and where `z_ttft>0` (19%) the term already saturates the decision. `ttft_d`'s accuracy does not move
+    the decision. The REAL lever was `z_ttft`'s responsiveness: it updated only at completion, so the
+    TTFT-miss signal arrived ~100s+ late (z_ttft 0 for 81% of decisions, first positive 81% through run).
+    SHIPPED (feat/edpp-pd-disagg, 2026-06-29): credit `z_ttft` continuously from each waiting request's
+    observed elapsed wait (a certain lower bound on its miss), trued up at first token (new
+    `OnFirstToken` sim hook + cluster wiring) or completion fallback. Same total contribution per
+    request, credited earlier (faithful to the virtual-queue construction). Dropped-after-waiting keeps
+    credit. Deterministic sweep (INV-6). RESULT: edpp@2P2D rate2.0 75%→98% TTFT-SLO, p99 518s→180s,
+    disagg 52%→81%, z_ttft first-positive 81%→16% through run. EDPP now tracks `always` within a fixed
+    topology (still can't beat never@4 — the Q1 provisioning limit). Design:
+    `docs/superpowers/specs/2026-06-29-edpp-responsive-z-ttft-design.md`; archived flaw-driven numbers:
+    `out/diag/ARCHIVE_lagged-z-ttft-artifact.md`.
+11. **Re-measure under the fix** (pre-fix numbers retired): the load knee (rates 0.5–3.0), the ITL
+    τ_itl-tightening case, and the time-average MEANS table (SUMMARY.md). All were measured on the
+    lagged-`z_ttft` binary. (1P3D/2P2D/3P1D rate-2.0 cells already re-measured — see FINDINGS.)
 
 ## Done (for reference)
-- Synth (decode-bound) fully characterized: out/diag/{SESSION_LOG,FINDINGS,REPRO,SUMMARY}.md.
+- Synth (decode-bound) characterized: out/diag/{SESSION_LOG,FINDINGS,REPRO,SUMMARY}.md. NOTE the
+  EDPP-quality numbers were re-measured after the responsive-`z_ttft` fix; load-knee/ITL/means still pending.
 - Reservation-gap fix (6a97a2f), weighted-PD default (8728a4f), routing-decision-trace (0869c00).
+- Responsive `z_ttft` (2026-06-29): continuous credit from observed elapsed-wait + first-token true-up;
+  retired the wrong "ttft_d accuracy" fix direction. edpp@2P2D 75%→98% TTFT-SLO. See item 10 above.
