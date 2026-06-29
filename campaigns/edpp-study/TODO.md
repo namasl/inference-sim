@@ -61,9 +61,27 @@ We have `--edpp-decision-trace` and `--routing-decision-trace` but have only loo
    RAG numbers predate the routing fix). Does the decode-node-count story invert for prefill-bound?
 9. Pin the synth knee more precisely (one point at rate ~0.75) — cosmetic.
 
-## TODO — possible EDPP improvement (only after Q2 verdict)
-10. HOL/occupancy-aware ttft_d: incorporate running-decode KV/batch occupancy into the local-TTFT
-    estimate so EDPP stops over-keeping-local on a saturated decode pool. Prototype + re-test.
+## TODO — EDPP improvement: running-occupancy-aware local-TTFT (FIX DIRECTION, ready to pick up)
+10. **Make `ttft_d` (local-TTFT estimate) key off RUNNING decode occupancy, not the waiting backlog.**
+    Evidence (out/diag/SESSION_LOG.md "TRACE MINING 2026-06-29" + 2029b):
+    - Root cause of EDPP being worst on synth: `ttft_d` is built from the decode WAITING-backlog `qd`
+      + nominal μ. The routing trace shows `queue_depth` (waiting) reads 0 while `batch_size` is already
+      87→256(max) and `kv_util`→0.87 — i.e. waiting signals under-represent true decode-node load.
+    - So `z_ttft`=0 at the median decision (predicted local TTFT < SLO) even though realized local TTFT
+      is 117s; the SLO term never fires; EDPP only disaggregates on the weak balance-vs-transfer margin
+      and ramps to 100% too late (reactive lag).
+    - FIX: incorporate running occupancy into the local-TTFT prediction. Candidate signals (all present
+      in the snapshot / routing trace, confirmed informative): `batch_size`, `kv_utilization`,
+      `free_kv_blocks`, and the now-reservation-aware `inflight` (commit 6a97a2f counts running+reserved).
+      Likely touch points: EDPP `ttft_d` / `muDecode` / backlog read in `sim/edpp*.go` (the qd path) —
+      grep where `qd`/waiting-backlog feeds the local TTFT term. The waiting-only backlog was a
+      DELIBERATE earlier design choice ([[edpp-calibration-state]]); this revisits it for the local side.
+    - VALIDATE: re-run synth edpp@2P2D rate 2.0 (REPRO.md) — expect EDPP to disaggregate earlier/more
+      (toward always's 100%) and local TTFT mean to drop from 117s. Then re-check the load knee.
+    - CAVEAT (Q1 vs Q2): even a perfect fix only makes EDPP match `always` on this uniform decode-bound
+      workload (never beats never@4 — that's a provisioning/Q1 limit). The fix's real value shows on a
+      HETEROGENEOUS workload (TODO #1) where per-request adaptivity matters. Consider doing #1 first to
+      have a regime where the fix can actually WIN, then this fix, then re-measure.
 
 ## Done (for reference)
 - Synth (decode-bound) fully characterized: out/diag/{SESSION_LOG,FINDINGS,REPRO,SUMMARY}.md.
