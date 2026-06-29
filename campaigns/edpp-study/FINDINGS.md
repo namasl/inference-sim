@@ -1,5 +1,13 @@
 # EDPP Empirical Study — Findings
 
+## Framing — two distinct questions (see TODO.md)
+- **Q1: should this workload run disaggregated at all?** Provisioning/topology choice; EDPP doesn't
+  control it. Comparing EDPP to `never@4` answers Q1, not EDPP's quality.
+- **Q2: given a disaggregated deployment, does EDPP disaggregate the RIGHT requests?** The algorithm's
+  actual correctness — baselines hold topology FIXED (always / never-in-split / oracle).
+- Everything below answers **Q1** for uniform decode-bound synth (don't disaggregate; EDPP can't add
+  decode nodes; ranges harmless→harmful). **Q2 (decision correctness) is NOT yet determined — priority.**
+
 ## Diagnostic cell #1 — synth (decode-bound), rate 2.0, 2000 reqs, equal 4-node hardware
 
 See `out/diag/SUMMARY.md` for the full table; `out/diag/RUNS.md` for the run registry.
@@ -34,9 +42,20 @@ KEY RESULTS (corrected, under the llm-d weighted default; rate 2.0, 2000 reqs, e
   Sensitive to the routing/load signals; needs decision-trace diagnosis (item below).
 - prefix-threshold ≈ always on synth (tiny inputs trip threshold-16 → ~100% disagg).
 
-OPEN — WHY does EDPP disaggregate partially (and so much)? On a saturated decode pool the right call
-is to disaggregate ~all (like always) so no request's prefill waits behind decode; EDPP's partial
-choice is the thing to explain. Use `--routing-decision-trace` + `--edpp-decision-trace`.
+RESOLVED 2026-06-26 — WHY EDPP disaggregates only partially (~48% local @2P2D): its local-TTFT
+predictor `ttft_d` is BLIND to head-of-line blocking. `ttft_d` is built from the decode WAITING-
+backlog (`qd`) + nominal μ; it ignores the RUNNING decode occupancy (long 4000-tok decodes holding
+KV/batch slots). So on every transient `qd` dip EDPP predicts ~2s for keeping a request local and
+does so — but the request then waits behind running decodes. Predicted-vs-realized join (edpp@2P2D,
+join `dbg_edpp_2P2D_edpptrace.csv`→`dbg_edpp_2P2D.json`):
+  - kept-local: predicted TTFT p50 2.2s / p99 14.7s; REALIZED p50 24.3s / p99 542s → under-shoot 22×/174×.
+  - disaggregated: predicted 0.02s/14.1s, realized 0.12s/0.21s (conservative — no false confidence).
+The decision discriminator is the TTFT term only (z_ttft); z_itl was 0 in EVERY synth run (ITL SLO
+150ms never bound at 73–83ms), so EDPP's ITL-pressure path was never exercised. Formulation weakness:
+the waiting-only backlog (deliberate design, see [[edpp-calibration-state]]) is insufficient for the
+local-TTFT estimate on a decode-saturated pool — it needs running-occupancy/KV-aware TTFT.
+
+OPEN — WHY does EDPP disaggregate partially: (resolved above).
 
 OPEN — THE REAL TEST OF EDPP (Experiment 5, not yet run): uniform synth is not FAVORABLE to
 disaggregation (per-request adaptivity has no signal to exploit and is shown strictly harmful here).
