@@ -1,123 +1,62 @@
 # EDPP Empirical Study — Findings
 
-## Framing — two distinct questions (see TODO.md)
+Canonical findings doc. Detail/lab-notebook: `out/diag/SESSION_LOG.md`. Headline table:
+`out/diag/SUMMARY.md`. Backlog: `TODO.md`. Repro: `out/diag/REPRO.md`.
+Superseded round-robin artifacts: `out/diag/ARCHIVE_round-robin-artifact.md` (do not cite).
+
+EDPP is a Lyapunov **time-average** optimizer → report MEANS alongside p99 (means are arguably what it
+targets). All results below use the llm-d **weighted PD default** (`precise-prefix-cache:2,queue-depth:1`).
+
+## Framing — two distinct questions
 - **Q1: should this workload run disaggregated at all?** Provisioning/topology choice; EDPP doesn't
   control it. Comparing EDPP to `never@4` answers Q1, not EDPP's quality.
 - **Q2: given a disaggregated deployment, does EDPP disaggregate the RIGHT requests?** The algorithm's
   actual correctness — baselines hold topology FIXED (always / never-in-split / oracle).
-- Everything below answers **Q1** for uniform decode-bound synth (don't disaggregate; EDPP can't add
-  decode nodes; ranges harmless→harmful). **Q2 (decision correctness) is NOT yet determined — priority.**
+- Everything below answers **Q1** for uniform decode-bound synth. **Q2 is NOT yet determined — priority.**
 
-## Diagnostic cell #1 — synth (decode-bound), rate 2.0, 2000 reqs, equal 4-node hardware
+## Workload: synth (decode-bound), rate 2.0, 2000 reqs, equal 4-node HW
 
-See `out/diag/SUMMARY.md` for the full table; `out/diag/RUNS.md` for the run registry.
-Deciders compared at this point: never@4, edpp@{1P3D,2P2D}, always@2P2D, prefix-threshold@{1P3D,2P2D}.
+KEY RESULTS (weighted default; full table with means in `out/diag/SUMMARY.md`):
+- **`never@4` wins** (goodput 1.68 rps). Disaggregation does NOT help this decode-bound workload at
+  equal hardware. Outcome tracks DECODE-CAPABLE NODE COUNT monotonically: never@4(4) > *@1P3D(3) >
+  *@2P2D(2) > *@3P1D(1) on goodput AND completion. **(Q1: don't disaggregate; add decode nodes.)**
+- **EDPP is the WORST decider** at every split (TTFT mean 56s / p99 518s @2P2D; SLO 0.75). It keeps
+  ~48–51% of requests LOCAL; on a saturated decode pool those locals HOL-block (their prefill queues
+  behind running decode). `always`/`prefix-threshold` disaggregate 100% → no locals → fast TTFT (the
+  decode-queue wait appears only in E2E). EDPP's PARTIAL disaggregation actively hurts here.
+- 3P1D (1 decode node) is the only REAL saturation collapse: always/prefix complete 1192/2000 with
+  10,157 preemptions (nothing to balance).
+- `prefix-threshold` ≈ `always` on synth (tiny inputs trip threshold-16 → ~100% disagg).
 
-> **CORRECTED 2026-06-26 (instrument audit — the "wrong knob" case the discipline note below warns
-> about).** The original KEY RESULTS were produced with BLIS's default `--routing-policy round-robin`
-> and NO per-pool scorer flags, so the decode pool fell back to round-robin and pinned ALL decode to one
-> node — the "1192/2000 collapse" and "161s TTFT" were artifacts of that misconfiguration. llm-d's
-> shipped PD profile is weighted `prefix-cache:2 + queue:1`; BLIS now defaults to it in PD mode. The
-> results below are RE-MEASURED under that default (full table + mechanism in
-> `out/diag/SESSION_LOG.md` → "CORRECTED SLO/TTFT/E2E TABLE 2026-06-26").
+## WHY EDPP keeps ~half local (RESOLVED) — HOL-blind local-TTFT predictor
+`ttft_d` (predicted TTFT if local) is built from the decode WAITING-backlog (`qd`) + nominal μ; it
+ignores RUNNING decode occupancy. So on transient `qd` dips EDPP predicts ~2s, keeps a request local,
+and it then waits 24–542s behind running decodes. Predicted-vs-realized (edpp@2P2D):
+kept-local realized TTFT mean **117.8s** / p99 **541.9s** vs predicted p99 14.7s (174× under); the
+disaggregated side is predicted conservatively. The fix candidate (TODO #10): make `ttft_d`
+running-occupancy/KV-aware.
 
-KEY RESULTS (corrected, under the llm-d weighted default; rate 2.0, 2000 reqs, equal 4-node HW):
-- **No collapse, ZERO preemptions anywhere** — all arms complete 2000/2000 (the round-robin pin's
-  ~10k preemptions + 1192/2000 were the artifact).
-- **never@4 wins** (goodput 1.68 rps, E2E p99 275s). Disaggregation does NOT help this decode-bound
-  workload at equal hardware. Outcome tracks DECODE-CAPABLE NODE COUNT monotonically across ALL
-  topologies: never@4(4) > *@1P3D(3) > *@2P2D(2) > *@3P1D(1) on goodput AND completion.
-- **3P1D (1 decode node) is the only REAL collapse** (no routing artifact): nothing to balance →
-  KV saturation → always/prefix-thr complete just 1192/2000 with 10,157 preemptions. Those are the
-  EXACT numbers the original round-robin 2P2D "collapse" produced — confirming round-robin had pinned
-  2P2D to one active decode node (2→1 ≡ 3P1D). edpp@3P1D: worst SLO 0.46 / goodput 0.48 (TTFT p99 765s).
-- **EDPP is the WORST decider here**: TTFT p99 518s, SLO 0.75, lowest goodput, at BOTH 2P2D and 1P3D.
-  Mechanism (TTFT split by was_disaggregated): disaggregated reqs get fast TTFT (p99 0.2s, prefill on
-  dedicated nodes); the ~48% EDPP keeps LOCAL suffer HOL blocking — their prefill queues behind decode
-  on the saturated decode nodes — giving local TTFT p99 547s. always/prefix-threshold disaggregate
-  100% → no local reqs → fast TTFT (199ms); the decode-queue wait shows up only in E2E. So EDPP's
-  PARTIAL disaggregation actively hurts on this uniform decode-bound workload.
-- **EDPP's decisions shifted a lot** vs the round-robin runs: it now disaggregates 1045@2P2D (was 331)
-  and 1029@1P3D (was 0 — i.e. 1P3D flipped from "stay 100% local / fine" to "51% disagg / TTFT 518s").
-  Sensitive to the routing/load signals; needs decision-trace diagnosis (item below).
-- prefix-threshold ≈ always on synth (tiny inputs trip threshold-16 → ~100% disagg).
+## Load-dependence (knee)
+`never@4` healthy across rates 0.5–3.0 (TTFT mean ≤0.09s). EDPP@2P2D harmless ONLY at rate 0.5
+(0% disagg); SHARP CLIFF at rate 1.0 — TTFT mean 0.07s→15.5s (p99 162s) with just 7.2% disagg = the
+2-decode-node saturation onset. (Full table in SESSION_LOG.)
 
-RESOLVED 2026-06-26 — WHY EDPP disaggregates only partially (~48% local @2P2D): its local-TTFT
-predictor `ttft_d` is BLIND to head-of-line blocking. `ttft_d` is built from the decode WAITING-
-backlog (`qd`) + nominal μ; it ignores the RUNNING decode occupancy (long 4000-tok decodes holding
-KV/batch slots). So on every transient `qd` dip EDPP predicts ~2s for keeping a request local and
-does so — but the request then waits behind running decodes. Predicted-vs-realized join (edpp@2P2D,
-join `dbg_edpp_2P2D_edpptrace.csv`→`dbg_edpp_2P2D.json`):
-  - kept-local: predicted TTFT p50 2.2s / p99 14.7s; REALIZED p50 24.3s / p99 542s → under-shoot 22×/174×.
-  - disaggregated: predicted 0.02s/14.1s, realized 0.12s/0.21s (conservative — no false confidence).
-The decision discriminator is the TTFT term only (z_ttft); z_itl was 0 in EVERY synth run (ITL SLO
-150ms never bound at 73–83ms), so EDPP's ITL-pressure path was never exercised. Formulation weakness:
-the waiting-only backlog (deliberate design, see [[edpp-calibration-state]]) is insufficient for the
-local-TTFT estimate on a decode-saturated pool — it needs running-occupancy/KV-aware TTFT.
+## ITL decision path
+Tightening `τ_itl` 150→50ms first ACTIVATED `z_itl` (388 decisions). EDPP correctly disaggregated more
+(52→58%) but ITL mean stayed 72ms — disaggregation moves only PREFILL; decode stays on the same nodes,
+so ITL is floored by decode capacity. **EDPP's sole lever (prefill placement) is matched to TTFT/HOL
+but mismatched to ITL/decode-capacity.**
 
-OPEN — WHY does EDPP disaggregate partially: (resolved above).
+## Anomalies & instrument audits (kept)
+- The round-robin "collapse/161s/1192" numbers were a harness misconfiguration (default
+  `--routing-policy round-robin` + no per-pool scorers → decode pool unbalanced). Fixed by defaulting
+  PD pools to llm-d weighted. Full episode archived. **Lesson: audit the routing config (the "knob")
+  before blaming the algorithm.**
+- `--num-instances N` alone is fatal for PD (needs role'd instances) — use explicit P/D splits.
+- per-request ITL is recorded unconditionally on replay (`itl_mean_us`); `--record-itl` is observe-only.
+- `slo_class` valid set: critical/standard/sheddable/batch/background (NOT "interactive").
 
-OPEN — THE REAL TEST OF EDPP (Experiment 5, not yet run): uniform synth is not FAVORABLE to
-disaggregation (per-request adaptivity has no signal to exploit and is shown strictly harmful here).
-To see any EDPP *advantage* needs a heterogeneous regime (mixed prefill sizes + adequate decode), so
-adaptivity could beat both always and never.
-
----
-
-Status (full sweep): TEMPLATE (fill once the full sweep + `report.py` complete).
-Design: `docs/superpowers/specs/2026-06-25-edpp-empirical-study-design.md`.
-Artifacts: `campaigns/edpp-study/out/{summary.csv,regret.csv,*.png}`.
-
-Discipline: every prior memory claim below is a **prediction**, marked
-confirmed / refuted / refined against the experiment. When an outcome
-contradicts a prediction, audit the instrument first (wrong knob, not steady
-state, wrong counter) before concluding anything about the algorithm.
-
-## Setup actually run
-
-- Workloads: RAG summarization (prefill-bound) + synthetic-data-gen (decode-bound).
-- Load: `aggregate_rate` ∈ {0.5,1,1.5,2,2.5,3}, analyzed vs offered prefill/decode tok/s.
-- Topology: equal 4-instance hardware. `never`@4 homogeneous (all-local) baseline;
-  disaggregating arms (`edpp`/`always`/`prefix-threshold`) over P/D splits 1P3D, 2P2D, 3P1D.
-- Method: bake-then-replay (all arms see the identical trace per cell). `num_requests`=5000.
-- Steady state: `N̂_out`-convergence head trim + 5% drain-tail trim.
-
-## Prior claims tested (confirmed / refuted / refined)
-
-- [ ] **Saturation at `aggregate_rate 3.0` for 70B** → knee table (Task 5 Step 3 / `never`@4 p99 vs rate).
-- [ ] **EDPP "rarely disaggregates unforced"** → `disagg_frac` column in `summary.csv`.
-      Preview (synth/1.0): edpp `disagg_frac`=0 across all splits — consistent so far.
-- [ ] **Under-disagg bias direction** → `regret.csv` dominant-term tallies on EDPP SLO misses.
-
-## #1 Outcome — does EDPP beat the baselines?
-
-Per workload × split: EDPP vs `always` / `prefix-threshold`, with `never`@4 overlaid.
-A good adaptive decider sits at/above the better of {never, always} at each load point.
-- Preview (synth/1.0): edpp ttft_p99 125ms < always 142ms @1P3D — edpp correctly declines
-  to disaggregate decode-bound load. Fill the rest from `summary.csv` + plots.
-
-## #2 Mechanism — is the machinery behaving as designed?
-
-- `N̂_out` convergence time (window report; preview: ~index 204 on synth/1.0).
-- Backlog conservation: PARTIAL coverage here (no kernel-side ground-truth waiting-token
-  counter was added — deliberate scope cut). If the indirect signal is insufficient, add
-  the counter as a follow-up.
-- Whether prediction error correlates with bad decisions (via the regret join).
-
-## #3 Detective — WHY
-
-Regret events (`regret.csv`) decomposed by dominant rule term — the mechanistic story
-behind any EDPP loss, citing trace evidence (which term dominated, disaggregate y/n).
-
-## Anomalies & instrument audits
-
-- **`BLIS_STEP_CSV` not found in code** (calibration memory claims it exists) — flagged,
-  calibration-side, not resolved here.
-- **`--record-itl` is observe-only**, but the simulator records per-request ITL
-  unconditionally into `itl_mean_us` on replay — so ITL outcomes are available without
-  the flag. (Initial worry that ITL was unavailable was a misread of the instrument.)
-- **`--num-instances 4` alone is fatal** for PD disaggregation (`pool.go` requires role'd
-  instances) — the plan's original flag was wrong; corrected to explicit P/D splits.
-- **regret_join windowing**: uses the full (un-windowed) request set while `summary.csv`
-  uses the steady-state slice — regret tallies may include warmup. Re-window if it matters.
-- Record any case where a result contradicted a memory claim and what the instrument audit found.
+## Open (priority: Q2)
+EDPP's per-request decision correctness is undetermined. See `TODO.md`: mine the decision/routing
+traces we already produced (per-term lhs/rhs across load, predicted-vs-observed across load, routing
+queue/latency/scores), then a heterogeneous favorable-regime workload + oracle baseline.
