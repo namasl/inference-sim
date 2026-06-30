@@ -121,6 +121,72 @@ decode-only class in S2.)
   ongoing decode steps for the same iterations (head-of-line interference). This is the intrinsic
   cost of `local` that disaggregation trades against the transfer cost.
 
+### 3.6 Work model (per-request demand)
+
+Each request contributes a quantum of **work** (in µs) to the instance(s) it touches. Work is the
+forward/demand quantity that feeds the congestion queue and the forward latency estimate (it is
+*not* the SLO-deficit queue, which reads realized latency — see §5.2). Both phases follow one
+principle.
+
+**Unifying principle.** Work in each phase splits into:
+
+- **compute** = coeff × (number of *new* tokens computed) — linear in tokens;
+- **attention** = coeff × (number of new tokens) × (average context they attend over), where the
+  average context is `start_context + new_tokens/2` (context grows linearly across the phase, so
+  its mean is the midpoint).
+
+| phase | new tokens | start context | avg context | attention work |
+|-------|-----------|---------------|-------------|----------------|
+| prefill | uncached `a_p` | cached prefix `p_cached` | `p_cached + a_p/2` | `CAttn·a_p·(p_cached + a_p/2)` |
+| decode | output `o` | full prompt `input` | `input + o/2` | `C1·o·(input + o/2)` |
+
+**Decode work.**
+
+```
+W_d = C0 · o   +   C1 · o · (input + o/2)
+```
+
+- `C0` = decode per-step compute overhead (context-independent), `C1` = KV-read cost per resident
+  token (the `decode_compute_coeff` / `decode_memory_coeff` in plain terms).
+- `input` is the **full** prompt length, **not** the uncached `a_p`: prefix-cache hits reduce
+  prefill *compute*, but the full prompt resides in KV and is re-read every decode step.
+- `o` is the estimated output length `N̂_out` (running per-class mean, or a demand model). INV-9-safe:
+  `input` is known at routing; `o` is estimated, never read from actual `OutputTokens`.
+
+**Prefill work.** With full input `N`, uncached `a_p`, cached prefix `p_cached = N − a_p`:
+
+```
+W_p = CPf · a_p   +   CAttn · a_p · (p_cached + a_p/2)
+    = CPf · a_p   +   (CAttn/2) · a_p²   +   CAttn · a_p · p_cached
+```
+
+- `CPf` = exposed prefill compute per token, `CAttn` = prefill attention coefficient (µs/token²).
+- Only the uncached tokens are computed as queries, but each attends over the **full** context up
+  to its position (cached prefix included) — hence `a_p · (p_cached + a_p/2)`, not `a_p²` and not
+  `N²`.
+
+**Relationship to the prior `Wp`/`NomDecodeCtx` forms (corrections recorded here):**
+
+- The decode-work form `w_d = N̂_out · δ̄_decode(NomDecodeCtx) = N̂_out·(C0 + C1·NomDecodeCtx)` is
+  **deprecated** in this formulation. `NomDecodeCtx` is a single fixed assumed context (e.g. 2048)
+  plugged in for every request and every step; it ignores the request's actual prompt length and
+  the growth of context during decode, mis-estimating the (dominant) memory term in both directions.
+  `W_d` above replaces it with the trajectory integral — same calibrated `C0`, `C1`, no refitting.
+- The prior prefill work `Wp = CPf·a_p + (CAttn/2)·a_p²` is correct **only in the no-cache limit**
+  (`p_cached = 0`, `a_p = N`). With prefix caching it drops the cross term `CAttn·a_p·p_cached` —
+  the cost of uncached tokens attending back over the cached prefix. `W_p` above restores it.
+  In no-cache traffic (e.g. tiny-prompt synth) the cross term ≈ 0 and the two agree; it matters on
+  shared-prefix / RAG workloads.
+
+**Occupancy / forward-TTFT caveat (cross-reference §5.2).** The congestion backlog drains a
+request's work the moment it is admitted to the running batch, so it is a **waiting-only** quantity.
+A forward TTFT estimate built from waiting work alone omits the residual service time of the
+*currently-running* batch (the time until a slot/KV frees) and under-predicts TTFT on a saturated
+instance (and over-predicts when demand estimates are inflated). A faithful forward TTFT must add a
+residual-occupancy term `R_batch(occupancy)` estimated from live `batch_size` / `kv` / resident
+prefill — *in addition to* `waiting_work / drain_rate`. The SLO-deficit queue sidesteps this by
+reading **realized** latency, which already embeds occupancy (§5.2).
+
 ---
 
 ## 4. Objective
