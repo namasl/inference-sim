@@ -63,9 +63,26 @@ Derived sets:
 - prefill-capable instances: $\mathcal{P}^{+} = \{i : c(i)\in\{\mathsf{P},\mathsf{M}\}\}$
 - prefill-pool (per S3, the disaggregation prefill targets): $\mathcal{P} = \{i : c(i)=\mathsf{P}\}$
 
-**Heterogeneity (S4).** Each instance $i$ carries its own hardware/serving parameters:
-GPU type, tensor-parallel degree, KV-block capacity $K_i$, and per-phase service-rate
-coefficients. No two instances are assumed identical, even within the same class.
+**Heterogeneity (S4).** Each instance $i$ carries its own hardware/serving parameters: GPU type,
+tensor-parallel degree, KV-block capacity $K_i$, interconnect bandwidth, and — crucially — its own
+**latency-coefficient vector**
+
+$$\theta_i = (\alpha^D_i,\ \alpha^P_i,\ C0_i,\ C1_i,\ C_{\!pf,i},\ C_{\!attn,i})$$
+
+A $\mathsf{P}$ instance needs only the prefill subset $(\alpha^P_i, C_{\!pf,i}, C_{\!attn,i})$; an
+$\mathsf{M}$ instance carries the full vector (it does both phases). No two instances are assumed
+identical, even within the same class.
+
+**Consequence — work is request×instance.** Because the coefficients are per-instance, the work a
+request lands (§3.6) depends on *which* instance serves it: $W_d$ is evaluated with the decode
+node's $(C0,C1)$, $W_p$ with the prefill location's $(C_{\!pf},C_{\!attn})$. The *same* request has
+different cost on different instances — this is exactly why instance choice changes cost (not just
+load balance) and why the joint policy (§5.3) is non-trivial under heterogeneity.
+
+**Calibration note (practical).** Coefficients are fit per *hardware/TP profile* (model × GPU × TP),
+not per physical instance: instances sharing a profile share $\theta$. So heterogeneity = a small
+set of profile coefficient-files plus an instance→profile assignment, not $|\mathcal{I}|$
+independent fits.
 
 Topologies are simply initial label vectors:
 
@@ -140,27 +157,30 @@ principle.
 | prefill | uncached `a_p` | cached prefix `p_cached` | `p_cached + a_p/2` | `CAttn·a_p·(p_cached + a_p/2)` |
 | decode | output `o` | full prompt `input` | `input + o/2` | `C1·o·(input + o/2)` |
 
-**Decode work.**
+**Decode work** (on decode node `d`, using `d`'s coefficients):
 
 ```
-W_d = C0 · o   +   C1 · o · (input + o/2)
+W_d(d) = C0_d · o   +   C1_d · o · (input + o/2)
 ```
 
-- `C0` = decode per-step compute overhead (context-independent), `C1` = KV-read cost per resident
-  token (the `decode_compute_coeff` / `decode_memory_coeff` in plain terms).
+- `C0_d` = decode per-step compute overhead (context-independent), `C1_d` = KV-read cost per resident
+  token (the `decode_compute_coeff` / `decode_memory_coeff` in plain terms) — **per-instance** (§3.1).
 - `input` is the **full** prompt length, **not** the uncached `a_p`: prefix-cache hits reduce
   prefill *compute*, but the full prompt resides in KV and is re-read every decode step.
 - `o` is the estimated output length `N̂_out` (running per-class mean, or a demand model). INV-9-safe:
   `input` is known at routing; `o` is estimated, never read from actual `OutputTokens`.
 
-**Prefill work.** With full input `N`, uncached `a_p`, cached prefix `p_cached = N − a_p`:
+**Prefill work** (on prefill location `q`, using `q`'s coefficients; `q = p` for disaggregated,
+`q = d` for local). With full input `N`, uncached `a_p`, cached prefix `p_cached = N − a_p`:
 
 ```
-W_p = CPf · a_p   +   CAttn · a_p · (p_cached + a_p/2)
-    = CPf · a_p   +   (CAttn/2) · a_p²   +   CAttn · a_p · p_cached
+W_p(q) = CPf_q · a_p   +   CAttn_q · a_p · (p_cached + a_p/2)
+       = CPf_q · a_p   +   (CAttn_q/2) · a_p²   +   CAttn_q · a_p · p_cached
 ```
 
-- `CPf` = exposed prefill compute per token, `CAttn` = prefill attention coefficient (µs/token²).
+- `CPf_q` = exposed prefill compute per token, `CAttn_q` = prefill attention coefficient (µs/token²)
+  — **per-instance** (§3.1). For the `local` option these are the mixed node `d`'s own prefill
+  coefficients.
 - Only the uncached tokens are computed as queries, but each attends over the **full** context up
   to its position (cached prefix included) — hence `a_p · (p_cached + a_p/2)`, not `a_p²` and not
   `N²`.
@@ -288,9 +308,13 @@ J(a) = Σ_i Q_i · Δwork_i(a)            (congestion drift)
 
 with the forward (modeled) quantities:
 
-- `Δwork_i(a)` — work the action lands on instance `i`, from §3.6:
-  - `p = local`: `Δwork_d = W_p + W_d` (both phases on `d`); all other instances 0.
-  - `p ∈ 𝒫`: `Δwork_d = W_d`, `Δwork_p = W_p`.
+- `Δwork_i(a)` — work the action lands on instance `i`, from §3.6, **evaluated with each target
+  instance's own coefficients** (§3.1):
+  - `p = local`: `Δwork_d = W_p(d) + W_d(d)` (both phases on `d`, using `d`'s prefill *and* decode
+    coefficients); all other instances 0.
+  - `p ∈ 𝒫`: `Δwork_d = W_d(d)`, `Δwork_p = W_p(p)`.
+  - Under heterogeneity the same request yields different `Δwork` on different instances, so the
+    congestion term `Σ_i Q_i·Δwork_i` ranks instances by cost *and* load jointly.
 - `T̂(a)` — forward TTFT estimate for the request under action `a`. **Must be occupancy-aware**
   (§3.6 caveat): `T̂_local(d) = R_batch(d) + Q^wait_d/μ_d + own-prefill-on-d`;
   `T̂_disagg(d,p) = prefill-on-p + transfer + R_batch(d)` (admission wait on `d`). The `−τ_c` term
