@@ -157,8 +157,44 @@ where `penalty(a)` is the transfer/KV-movement cost (zero for `local`) plus any 
 $\Delta\text{work}_i(a)$ is the work action $a$ adds to instance $i$. In this single argmin,
 load balancing emerges from the $\sum_i Q_i\,\Delta\text{work}_i$ term (work flows to lighter
 instances) and the P/D split emerges from the penalty-vs-queue trade-off — there is no separate
-scorer. The exact queue definitions, penalty terms, and estimators are deferred to a follow-up
-design.
+scorer.
+
+### 5.2 Queue model (LOCKED)
+
+The formulation uses **two families of state**, deliberately kept distinct:
+
+1. **Congestion queues — one scalar work-backlog queue $Q_i$ per instance.** This is the only
+   role of the congestion family: **stability** (is instance $i$ being given more work than its
+   throughput can sustain?). Total committed work — prefill *and* decode — pools into a single
+   $Q_i$, because a mixed node is **one server, not two**: a vLLM engine interleaves prefill chunks
+   and decode steps in the same iterations, contending for the same compute and KV. Two independent
+   per-phase congestion queues would model an M node as two parallel servers, which it is not.
+   Heterogeneity (S4) enters as each instance's own service rate.
+
+2. **SLO-deficit queues — split by latency type.** A **TTFT-deficit** queue and an **ITL-deficit**
+   queue (per class; possibly per instance), accumulating how much each latency target is being
+   missed. The prefill/decode asymmetry lives *here*, for free: TTFT is a prefill-side latency, ITL
+   a decode-side latency — so splitting the SLO family by latency type captures the phase
+   distinction **without** doubling the congestion state.
+
+3. **Co-residency interference is a cost, not a queue.** "A local prefill on an M node inflates its
+   decode ITL" is a penalty/cost statement (§3.5); it feeds the ITL-deficit drift, weighed against
+   the transfer cost the disaggregated option pays. This is the heart of the P/D trade-off and
+   belongs in `penalty(a)` / the drift cost, not in a second congestion queue.
+
+**Why this split.** Stability is a scalar-work property of each box (one congestion queue is
+correct and matches the single-server reality); the phase-specific latency effects belong to the
+SLO family (TTFT vs ITL) and the cost (interference vs transfer). This keeps the drift algebra
+tractable and keeps one capacity constraint per box, which the offline MILP (§6) can express
+directly.
+
+**Fallback trigger (escape hatch).** If a concrete decision the policy must make turns out to be
+inexpressible with a single congestion queue — e.g. we want the *congestion* term itself, not the
+ITL-deficit term, to steer prefill away from decode-busy M nodes — revisit two-queue congestion
+(option b). Not expected to be needed.
+
+The exact penalty terms, the SLO-deficit drift, and the estimators remain to be specified
+(see §9).
 
 ---
 
@@ -223,7 +259,8 @@ node property. Our model respects this (S1, S2).
 
 ## 9. Open questions (to resolve next)
 
-- Exact form of the per-instance virtual queues and penalty in §5.1 (the joint policy design).
+- Queue *families* are now fixed (§5.2: one congestion queue per instance + TTFT/ITL-deficit
+  queues + interference-as-cost). Remaining: the exact penalty terms and the SLO-deficit drift.
 - Heterogeneity parameterization: which per-instance parameters the model carries explicitly
   (KV capacity, service-rate coefficients, interconnect bandwidth) and how they enter the costs.
 - MILP decision variables and constraints (§6) — the formal write-up of §3.
