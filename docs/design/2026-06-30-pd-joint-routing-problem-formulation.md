@@ -259,8 +259,96 @@ inexpressible with a single congestion queue — e.g. we want the *congestion* t
 ITL-deficit term, to steer prefill away from decode-busy M nodes — revisit two-queue congestion
 (option b). Not expected to be needed.
 
-The exact penalty terms, the SLO-deficit drift, and the estimators remain to be specified
-(see §9).
+The exact penalty terms and the SLO-deficit drift are specified in §5.3; the estimators
+(the forward quantities) remain deferred (§9).
+
+### 5.3 Penalty and drift — the joint decision rule
+
+**State.** Three queue families (§5.2), all maintained by observation:
+
+- `Q_i` — congestion backlog at instance `i` (work-µs), conservation-bookkept.
+- `Z^T_c` — TTFT-deficit virtual queue for SLO class `c`.
+- `Z^I_i` — ITL-deficit virtual queue at instance `i`.
+
+**Lyapunov function** (quadratic, standard):
+
+```
+L(t) = ½ [ Σ_i Q_i²  +  Σ_c (Z^T_c)²  +  Σ_i (Z^I_i)² ]
+```
+
+**Drift-plus-penalty decision.** For each request `r` of class `c`, choose the action
+`a = (d, p)` that minimizes the part of the one-step drift bound it controls, plus `V ×` penalty:
+
+```
+J(a) = Σ_i Q_i · Δwork_i(a)            (congestion drift)
+     + Z^T_c · T̂(a)                    (TTFT-deficit drift)
+     + Z^I_d · [ m_dec(d) + 1{p=local}·m_pf(d) ]   (ITL-deficit drift, on the decode node d)
+     + V · c_xfer · 1{p ≠ local}        (penalty)
+```
+
+with the forward (modeled) quantities:
+
+- `Δwork_i(a)` — work the action lands on instance `i`, from §3.6:
+  - `p = local`: `Δwork_d = W_p + W_d` (both phases on `d`); all other instances 0.
+  - `p ∈ 𝒫`: `Δwork_d = W_d`, `Δwork_p = W_p`.
+- `T̂(a)` — forward TTFT estimate for the request under action `a`. **Must be occupancy-aware**
+  (§3.6 caveat): `T̂_local(d) = R_batch(d) + Q^wait_d/μ_d + own-prefill-on-d`;
+  `T̂_disagg(d,p) = prefill-on-p + transfer + R_batch(d)` (admission wait on `d`). The `−τ_c` term
+  in the constraint is constant within a class and drops out of the argmin.
+- `m_dec(d)` — marginal per-step decode pressure the request adds to `d`'s batch (steers the
+  choice of `d` toward ITL-healthy decode nodes; identical for local and disagg, so it does **not**
+  drive the P/D split).
+- `m_pf(d)` — per-step prefill-chunk interference on `d`'s co-resident decodes when prefill is
+  **local** (the `c_pf · chunk` term). For disaggregation the prefill lands on a `𝖯`-only node,
+  which carries no ITL constraint, so it contributes **no** ITL drift — this asymmetry is the
+  interference cost the `local` option pays and the `disaggregate` option escapes.
+
+**Joint argmin.** The policy selects over the full action set in one optimization:
+
+```
+a* = argmin over { (d, local) : d ∈ 𝓜 } ∪ { (d, p) : d ∈ 𝓜, p ∈ 𝒫 }  of  J(a)
+```
+
+Load balancing (choice of `d`, choice of `p`) and the P/D split fall out of the same argmin; there
+is no separate scorer.
+
+**Reduction to the pairwise P/D rule (fixed `d`).** For a fixed decode node `d` (e.g. one chosen by
+an external scorer, as today) and the best prefill target
+`p* = argmin_{p∈𝒫} [ Q_p·W_p + Z^T_c·T̂_disagg(d,p) ]`, **disaggregate iff** `J(d,p*) < J(d,local)`,
+i.e.
+
+```
+  (Q_d − Q_{p*})·W_p  +  Z^I_d · m_pf(d)     >     Z^T_c · ( T̂_disagg − T̂_local )  +  V · c_xfer
+  └──────────────┬───────────────────────┘         └───────────────────┬─────────────────────┘
+   congestion relief (move W_p off d)                TTFT change from disaggregating
+   + ITL interference relief on d                    + transfer penalty
+```
+
+This is structurally the current EDPP `lhs > rhs` rule, generalized: the congestion term uses the
+corrected `W_p` (§3.6), the ITL interference relief `Z^I_d·m_pf(d)` is now an explicit observed-queue
+term on the LHS, and `T̂` is occupancy-aware.
+
+**Queue updates (all observed).**
+
+```
+Q_i      : conservation bookkeeping — add Δwork at route/admit, drain at service (§5.2)
+Z^T_c    : at each request's first token,  Z^T_c ← max( Z^T_c + (ttft_realized − τ^T_c), 0 )
+Z^I_i    : per decode step (or time slot) on i,  Z^I_i ← max( Z^I_i + (itl_realized_i − τ^I), 0 )
+```
+
+The TTFT update is per-request at first-token (one-shot); the ITL update is per-instance, integrated
+over the instance's decode steps (sustained) — the asymmetry locked in §5.2.
+
+**Normalization.** Each term is divided by its natural scale (the `τ`'s and work normalizers `w*`)
+so the terms are dimensionless and `V` is a pure penalty knob; this is the dimensionless-invariance
+property already anchored in the current implementation. The standard `[V ↔ 1/V]` trade-off applies:
+larger `V` lowers transfer cost at the price of larger SLO-deficit backlog.
+
+**Observed vs. modeled (cross-ref §5.2).** The queue *states* `Q_i, Z^T_c, Z^I_i` are observed; the
+*forward* quantities `T̂(a), m_dec, m_pf, Δwork` (and `N̂_out` inside `W_d`) are modeled — they price
+an action not yet taken. The reactive interference handling is automatic (a busy decode node already
+has high `Z^I_d`); `m_pf(d)` is the optional **anticipatory** layer (§5.1 / the deferred predictor
+work owes its estimate).
 
 ---
 
@@ -325,8 +413,9 @@ node property. Our model respects this (S1, S2).
 
 ## 9. Open questions (to resolve next)
 
-- Queue *families* are now fixed (§5.2: one congestion queue per instance + TTFT/ITL-deficit
-  queues + interference-as-cost). Remaining: the exact penalty terms and the SLO-deficit drift.
+- Queue families (§5.2) and the penalty + drift decision rule (§5.3) are now fixed. Remaining
+  forward-estimator specifics: `R_batch(occupancy)`, `m_dec`, `m_pf`, and `N̂_out` (the deferred
+  predictor work — §8 item 4).
 - Heterogeneity parameterization: which per-instance parameters the model carries explicitly
   (KV capacity, service-rate coefficients, interconnect bandwidth) and how they enter the costs.
 - MILP decision variables and constraints (§6) — the formal write-up of §3.
