@@ -38,14 +38,26 @@ disaggregate — you need more decode nodes, which EDPP can't provide; EDPP rang
      makes W_p (and the balance term) large — likely the PRIMARY decision driver when decode is adequate
      so z_ttft stays off. Mine the term composition on this workload to confirm. This is also where the
      per-instance-vs-pool-aggregate backlog question (below) becomes first-order.
-   - Then 4 arms at FIXED split (e.g. 2P2D): never-in-split / always / prefix-threshold / edpp.
-     Win condition for EDPP: protect A's ITL/TTFT (disaggregate B) without paying A's transfer cost
-     (keep A local) → beat both brackets on A's metrics.
-2. **Oracle / hindsight baseline for Q2:** label each request with the decision that *would* have
-   minimized its (and neighbors') SLO violation, compare EDPP's choices against it. Quantifies decision
-   accuracy independent of topology.
-3. **Forced-disaggregation correctness:** in a regime where disaggregation IS the right call for a
-   subset, does EDPP identify that subset? (precision/recall of EDPP's disaggregate decisions vs oracle.)
+   - **4 arms + oracle: DONE 2026-06-29 — EDPP FAILS (externality-blind).** 2P2D, decode adequate. A TTFT
+     p99: never-in-split 259ms / always 271ms / prefix-16 271ms / **edpp 256ms** / **ORACLE(disagg B only,
+     via prefix-threshold=1000) 51ms, 0% viol**. EDPP disaggregates A 0% (right) but B only 2% (WRONG) →
+     keeps interfering B local → A ≈ never. A 5× tail win (259→51ms) + 100% SLO is available; EDPP gets none.
+     ROOT CAUSE (structural, not tuning): B's huge W_p enters only via balance_term_d = q_d·(W_p/W*_d) and
+     q_d≈0 when decode adequate; B's own TTFT << its loose 5s SLO so z_ttft(batch)=0. B's loose SLO inflates
+     W*_d so B's balance term is SMALLER than A's → lowering V disaggregates A before B (backwards). EDPP
+     judges each request by its OWN class SLO + shared backlog; B-harms-A is an EXTERNALITY the rule can't
+     express. Detail: FINDINGS "Q2" + SESSION_LOG. Artifacts: out/diag/hetero/, specs/hetero/.
+   - **NEW FIX DIRECTION (the missing ingredient):** an interference/externality term — weight a request's
+     prefill cost (c_pf·chunk = the δ_pf it injects into the decode batch) by the CO-RESIDENT decode pool's
+     SLO pressure (the victims' z_ttft/z_itl), not the deciding request's own z. Today itl_term uses the
+     deciding request's z_itl (B's=0); it should use the pool's. This is what would let EDPP disaggregate B
+     to protect A. Design needed (and re-derive within the Lyapunov framework — it's a coupling term).
+   - **Robustness:** re-run with amplified B (frequency/size) — structural finding is robust, magnitude
+     (2.7% interference) is one operating point.
+2. **Oracle baseline: DONE for this setup** — prefix-threshold with threshold between A's and B's uncached
+   length (=1000) is a cheap per-class oracle (disagg B only, A local). Generalize if workloads get richer.
+3. **Forced-disaggregation correctness: ANSWERED for this case** — EDPP's recall on the should-disaggregate
+   subset (B) is ~2% (near-zero). The externality term above is the prerequisite to improve it.
 
 ## TODO — mine instrumentation we already produced but haven't analyzed
 

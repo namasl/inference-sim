@@ -96,8 +96,33 @@ beat the capacity floor. NOTE `z_itl` still has the SAME completion-lag flaw `z_
 - per-request ITL is recorded unconditionally on replay (`itl_mean_us`); `--record-itl` is observe-only.
 - `slo_class` valid set: critical/standard/sheddable/batch/background (NOT "interactive").
 
+## Q2 — heterogeneous favorable workload: EDPP FAILS (externality-blind) [2026-06-29]
+First real Q2 test (requests DIFFER, so there's a right subset to disaggregate). Workload
+(`specs/hetero/hetero.yaml`): A (85%, small prefill / substantial decode / tight 200ms TTFT) should stay
+LOCAL; B (15%, ~16k prefill / tiny decode / batch SLO) should DISAGGREGATE (its prefill interferes with
+co-resident A's TTFT — mechanism verified). 2P2D, decode ADEQUATE (bottleneck = interference, not capacity).
+
+| arm | A TTFT p99 | A SLO viol@200ms |
+|---|---|---|
+| never-in-split (B local) | 259ms | 2.7% |
+| always / prefix-16 (all disagg) | 271ms | 2.5% |
+| **edpp** | **256ms** | **2.5%** |
+| **ORACLE (disagg B only, A local)** | **51ms** | **0.0%** |
+
+**A 5× tail win (259→51ms) + 100% SLO is achievable; EDPP captures none of it.** EDPP disaggregates
+A 0% (correct) but B only 2% — it keeps the interfering big-prefill requests LOCAL, so A is no better
+than never-in-split. **Structural, not tuning:** B's huge `W_p` enters only via `balance_term_d =
+q_d·(W_p/W*_d)`, and `q_d≈0` when decode is adequate; B's own TTFT is far under its loose 5s SLO so
+`z_ttft(batch)=0`. Worse, B's loose SLO inflates `W*_d` (∝τ_ttft), making B's balance term *smaller*
+than A's — so lowering `V` disaggregates A before B (backwards). **Root cause: EDPP judges each request
+by its OWN class SLO pressure + shared backlog; B's prefill harming A's TTFT is an externality on
+neighbors that the rule cannot express.** Detail + fix direction in SESSION_LOG / TODO.
+
 ## Open (priority: Q2)
-EDPP's per-request decision correctness on a workload where requests DIFFER is still undetermined
-(uniform synth gives no per-request signal). See `TODO.md`: heterogeneous favorable-regime workload +
-oracle baseline; apply the responsive-update fix to `z_itl`; re-measure the load knee / ITL / means
-under the fix.
+- **The externality term** (fix direction from the result above): weight a request's prefill
+  interference cost by the *co-resident decode pool's* SLO pressure (the victims'), not the deciding
+  request's own `z`. This is the missing ingredient for EDPP to capture the favorable mechanism.
+- Robustness: re-run the hetero workload with amplified B (frequency/size) — the structural finding is
+  robust but the magnitude (2.7% interference signal) is one operating point.
+- Still open: `z_itl` responsive-update (TODO 10b), per-instance backlog coherence (TODO 12),
+  RAG re-measure (TODO 8).
