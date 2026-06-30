@@ -137,16 +137,26 @@ better than prefix-threshold (≈100%) but far worse than agg. MECHANISM: EDPP p
 doc-read prefills are RUNNING, not WAITING (`q_p≈0`) — the SAME waiting-vs-running blindness as `ttft_d`
 on synth, now on the prefill side. Caveats: GPU-matched framing, single seed.
 
-## SYNTHESIS — EDPP never beats no-disaggregation at equal HW (3 workloads)
+## SYNTHESIS — EDPP never beats no-disaggregation at equal HW (4 workloads)
 - **synth (decode-bound):** `never@4` wins; EDPP ranges harmless→harmful (responsive-`z_ttft` fix makes
   it *behave* sensibly but it still can't add decode nodes).
 - **hetero (mixed, decode-adequate):** EDPP *under*-disaggregates the big-prefill B (externality-blind);
   oracle shows a 5× A-TTFT win EDPP misses.
 - **RAG (prefill-bound):** `agg-4` wins; EDPP *over*-disaggregates short requests (`ttft_p` blind to
   running prefill-pool congestion).
-Common roots: (1) predictors see only WAITING backlog, blind to RUNNING occupancy (both `ttft_d` and
-`ttft_p`); (2) the own-class SLO + pool-backlog rule misjudges both *when* to disaggregate and the
-cross-request *externality*. These are the levers for any future EDPP improvement.
+- **vector-qa-only (clean single class):** `agg` wins on COMPLETIONS (893/1000 @ 0% viol vs PD splits
+  ≤532); EDPP completes fewest (294) + adds violations — worst arm. Role dedication starves the
+  under-provisioned side; "0% TTFT" on PD splits is a truncation mirage (read completions, not
+  TTFT-of-completed).
+
+Common roots: (1) role dedication wastes flexible capacity → lower completion throughput at equal HW;
+(2) predictors see only WAITING backlog, blind to RUNNING occupancy (`ttft_d` and `ttft_p`); (3) the
+own-class SLO + pool-backlog rule misjudges *when* to disaggregate and the cross-request *externality*.
+**CAVEAT (untested — the real open door):** all comparisons are GPU-MATCHED (same 16 GPUs repartitioned).
+Disaggregation's production value is INDEPENDENT SCALING (add prefill nodes without stealing from decode),
+which equal-HW cannot show. Fair claim: *at equal HW, repartitioning into P/D roles (and EDPP's routing
+within it) does not pay off on these workloads* — NOT *disaggregation never helps*. The honest next test,
+if pursued, is a non-GPU-matched (independent-scaling) comparison.
 
 ## Open (priority: Q2)
 - **The externality term** (fix direction from the result above): weight a request's prefill
