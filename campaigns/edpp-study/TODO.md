@@ -26,10 +26,18 @@ disaggregate — you need more decode nodes, which EDPP can't provide; EDPP rang
    - Distinct prefix_groups for A/B (avoid single-universal-prefix pinning). Decode capacity ADEQUATE
      (load below the decode knee) so the bottleneck is prefill-interference, NOT decode-capacity.
    - SLOs: A = standard (tight ITL ~80ms, TTFT ~1s); B = batch (loose).
-   - **Mechanism-check FIRST** (before the 4-arm sweep): `never@4` on A-only vs A+B — does A's ITL/TTFT
-     measurably degrade when B is mixed in? If BLIS doesn't model prefill↔decode batch interference,
-     this favorable mechanism doesn't exist and we need a different angle (and learned something about
-     the sim). Verify the latency model makes t_iter depend on co-batched prefill tokens.
+   - **Mechanism-check: DONE 2026-06-29 — interference is REAL, via TTFT (not ITL).** Single instance,
+     never decider, A(in256/out300) alone vs A+B(in16000/out10). A's TTFT degraded 2× mean / 5.6× p99
+     (exactly 12/60 A reqs spiked >100ms = one per B); A's ITL barely moved (+3% tail only — the
+     c_pf·S_pf channel exists but is dilute since B is rare vs A's 300-tok decodes). Specs:
+     specs/mech/{A_only,AB}.yaml; results out/diag/mech/; detail in SESSION_LOG. **DESIGN CHANGE: build
+     the favorable workload around A wanting tight TTFT (the strong, EDPP-responsive lever), NOT tight
+     ITL.** To exercise ITL-driven disaggregation (z_itl) instead, amplify B frequency / A-decode overlap.
+   - **The balance term will matter here (unlike synth).** balance_term_d = q_d·(W_p/W*_d) ∝ W_p =
+     c_pf·a_p + (c_attn/2)·a_p². Synth's tiny prompts made it negligible (~3e-4); Type-B's ~16k prompt
+     makes W_p (and the balance term) large — likely the PRIMARY decision driver when decode is adequate
+     so z_ttft stays off. Mine the term composition on this workload to confirm. This is also where the
+     per-instance-vs-pool-aggregate backlog question (below) becomes first-order.
    - Then 4 arms at FIXED split (e.g. 2P2D): never-in-split / always / prefix-threshold / edpp.
      Win condition for EDPP: protect A's ITL/TTFT (disaggregate B) without paying A's transfer cost
      (keep A local) → beat both brackets on A's metrics.
@@ -91,6 +99,16 @@ We have `--edpp-decision-trace` and `--routing-decision-trace` but have only loo
     topology (still can't beat never@4 — the Q1 provisioning limit). Design:
     `docs/superpowers/specs/2026-06-29-edpp-responsive-z-ttft-design.md`; archived flaw-driven numbers:
     `out/diag/ARCHIVE_lagged-z-ttft-artifact.md`.
+12. **Per-instance vs pool-aggregate backlog coherence in TTFT_D / balance (raised 2026-06-29).**
+    `Decide` runs after the decode pod D* is picked (state.SelectedInstance) but before P* is picked.
+    It uses D*'s own batch/KV for μ_dec/T_iter (per-instance ✓), but `Q_d`/`Q_p` (balance terms) and the
+    prefill side are POOL-AGGREGATE. Coherence bug: `TTFT_D = Q_d/μ_dec + …` divides the AGGREGATE
+    waiting backlog (all decode pods) by D*'s drain rate — over-counting queue from pods this request
+    won't sit on. Negligible on synth (balance term ≈ 0), but becomes first-order on the heterogeneous
+    workload (#1) where the balance term drives decisions. FIX DIRECTION: make the backlog terms key off
+    D*'s own waiting backlog. Pairs with the deferred running-occupancy TTFT_D work — both make the
+    local-TTFT estimate reflect the SPECIFIC chosen pod. Measure on #1 before fixing (measure-first).
+
 11. **Re-measure under the fix — DONE for synth.** Re-measured: 1P3D/2P2D/3P1D rate-2.0 cells (SUMMARY),
     the load knee rates 0.5–3.0 (the old "rate-1.0 cliff" is GONE — EDPP healthy through 1.5), and the
     ITL τ_itl-50ms case (disagg 58→90% but ITL stays 72ms = decode-capacity floored). See FINDINGS.
