@@ -77,8 +77,15 @@ We have `--edpp-decision-trace` and `--routing-decision-trace` but have only loo
    ttft_d HOL-blindness — quantify it directly.)
 
 ## TODO — Q1 loose ends (lower priority; mechanism already understood)
-8. RAG (prefill-bound) under the corrected weighted-PD default + per-class SLOs — re-measure (earlier
-   RAG numbers predate the routing fix). Does the decode-node-count story invert for prefill-bound?
+8. **RAG (prefill-bound): DONE 2026-06-29 (real inference-perf batch-summarization).** agg-4 (NO disagg)
+   WINS at every rate (vector-qa SLO-viol 0/9/53% vs edpp 11/36/90% vs prefix-thresh 15/76/98%). GPU-matched
+   dedicated-role splits steal flexible prefill capacity; EDPP OVER-disaggregates the short vector-qa
+   (60-76%) because ttft_p under-predicts prefill-pool congestion (clogging doc-read prefills are RUNNING,
+   not WAITING — same blindness as ttft_d, prefill side). Specs specs/rag/, results out/diag/rag/. So:
+   no decode-node-count inversion — instead the no-disaggregation baseline (agg) wins for prefill-bound too.
+   **SYNTHESIS: across decode-bound/mixed/prefill-bound, EDPP never beats no-disaggregation at equal HW.**
+   PREDICTOR FIX (TODO 10/12) now has BOTH sides: make ttft_d AND ttft_p running-occupancy-aware.
+   Follow-ups: multi-seed; non-GPU-matched (more total GPUs) framing where disagg's real value lives.
 9. Pin the synth knee more precisely (one point at rate ~0.75) — cosmetic.
 
 ## TODO — apply the responsive-update fix to z_itl (NEXT, ready to pick up)

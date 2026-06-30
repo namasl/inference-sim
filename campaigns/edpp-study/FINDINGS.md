@@ -118,6 +118,36 @@ than A's — so lowering `V` disaggregates A before B (backwards). **Root cause:
 by its OWN class SLO pressure + shared backlog; B's prefill harming A's TTFT is an externality on
 neighbors that the rule cannot express.** Detail + fix direction in SESSION_LOG / TODO.
 
+## Prefill-bound RAG (inference-perf batch-summarization) — agg wins; EDPP over-disaggregates [2026-06-29]
+Real catalog workload (prefill_decode_ratio 30): vector-qa (78%, ~2k in, standard τ 500ms) + doc-read
+(22%, ~60k in, batch). GPU-matched 16 GPUs (4×TP4). vector-qa TTFT SLO-violation@500ms:
+
+| arm | r=1.0 | r=3.0 | r=6.0 |
+|---|---|---|---|
+| **agg-4 (NO disagg)** | **0%** | **9%** | **53%** |
+| prefix-thresh 2P2D | 15% | 76% | 98% |
+| edpp 2P2D | 11% | 36% | 90% |
+| edpp 1P3D | 11% | 35% | 69% |
+
+**Q1: agg-4 wins at every rate** — GPU-matched dedicated-role splits steal flexible capacity (agg's 4
+nodes all prefill via chunked interleaving ≈ 2× a 2P-pool's throughput) and short prefills wait behind
+doc-read 60k prefills in the prefill pool. **Q2: EDPP over-disaggregates short vector-qa (60-76%)** —
+better than prefix-threshold (≈100%) but far worse than agg. MECHANISM: EDPP predicts `ttft_p < ttft_d`
+(disagg faster) for short reqs, but `ttft_p` under-predicts prefill-pool congestion because the clogging
+doc-read prefills are RUNNING, not WAITING (`q_p≈0`) — the SAME waiting-vs-running blindness as `ttft_d`
+on synth, now on the prefill side. Caveats: GPU-matched framing, single seed.
+
+## SYNTHESIS — EDPP never beats no-disaggregation at equal HW (3 workloads)
+- **synth (decode-bound):** `never@4` wins; EDPP ranges harmless→harmful (responsive-`z_ttft` fix makes
+  it *behave* sensibly but it still can't add decode nodes).
+- **hetero (mixed, decode-adequate):** EDPP *under*-disaggregates the big-prefill B (externality-blind);
+  oracle shows a 5× A-TTFT win EDPP misses.
+- **RAG (prefill-bound):** `agg-4` wins; EDPP *over*-disaggregates short requests (`ttft_p` blind to
+  running prefill-pool congestion).
+Common roots: (1) predictors see only WAITING backlog, blind to RUNNING occupancy (both `ttft_d` and
+`ttft_p`); (2) the own-class SLO + pool-backlog rule misjudges both *when* to disaggregate and the
+cross-request *externality*. These are the levers for any future EDPP improvement.
+
 ## Open (priority: Q2)
 - **The externality term** (fix direction from the result above): weight a request's prefill
   interference cost by the *co-resident decode pool's* SLO pressure (the victims'), not the deciding
