@@ -397,7 +397,8 @@ The exact penalty terms and the SLO-deficit drift are specified in §5.3; the es
 **Queue dynamics.** Each queue of §5.2 evolves by a standard update driven by *observed* signals.
 The congestion backlog at instance $i$ gains the work routed onto it and drains at its service rate:
 $$Q_i(t{+}1)=\max\{Q_i(t)-b_i(t),\,0\}+A_i(t),$$
-with $A_i(t)$ the work admitted to $i$ this epoch and $b_i(t)$ the work $i$ serves. The deficit
+with $A_i(t)$ the work routed onto $i$ this epoch (exogenous arrivals) and $b_i(t)$ the work $i$
+serves (set by the server, not by the routing action). The deficit
 queues integrate realized violations:
 $$Z^T_c(t{+}1)=\max\{Z^T_c(t)+(\text{ttft}_r-\tau^T_c),\,0\}\ \text{ at each class-}c\text{ first token},$$
 $$Z^I_i(t{+}1)=\max\{Z^I_i(t)+(\text{itl}_i-\tau^I),\,0\}\ \text{ per decode step on }i.$$
@@ -427,8 +428,12 @@ do not depend on $a$. Reading off the action-dependent part of the bound term by
 - **Congestion.** Write $\Delta\text{work}_i(a)$ for the §3.6 work the action places on instance $i$,
   each piece evaluated with that instance's own coefficients (§3.1): if $p=\text{local}$ then
   $\Delta\text{work}_d = W_p(d)+W_d(d)$ (both phases on $d$) and zero elsewhere; if $p\in\mathcal{P}$
-  then $\Delta\text{work}_d = W_d(d)$ and $\Delta\text{work}_p = W_p(p)$. The arrival's contribution
-  to the backlogs is therefore $\sum_i Q_i\,\mathbb{E}[A_i]=\sum_i Q_i\,\Delta\text{work}_i(a)$.
+  then $\Delta\text{work}_d = W_d(d)$ and $\Delta\text{work}_p = W_p(p)$. This epoch routes the single
+  request $r$, so the only exogenous arrival to any backlog is $r$ itself and $\mathbb{E}[A_i]=\Delta\text{work}_i(a)$.
+  Splitting the congestion term of the bound accordingly,
+  $$\sum_i Q_i\,\mathbb{E}[A_i-b_i]\;=\;\underbrace{\sum_i Q_i\,\Delta\text{work}_i(a)}_{\text{depends on }a}\;-\;\underbrace{\sum_i Q_i\,\mathbb{E}[b_i]}_{\text{independent of }a},$$
+  and the second sum — the server's own drain — is constant across the actions we compare, so it
+  drops from the argmin. The action-dependent congestion contribution is thus $\sum_i Q_i\,\Delta\text{work}_i(a)$.
 - **TTFT.** $r$'s realized first-token latency enters class $c$'s deficit; its conditional
   expectation under the action is the forward estimate of §3.8, so
   $Z^T_c\,\mathbb{E}[\text{ttft}_r]\to Z^T_c\,\hat T(a)$.
