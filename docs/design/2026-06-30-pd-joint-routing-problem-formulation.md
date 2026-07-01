@@ -172,58 +172,46 @@ forward/demand quantity that feeds the congestion queue and the forward latency 
 *not* the SLO-deficit queue, which reads realized latency — see §5.2). Both phases follow one
 principle.
 
-**Unifying principle.** Work in each phase splits into:
+**Unifying principle.** Work in each phase splits into a *compute* part, linear in the number of new
+tokens computed, and an *attention* part — the number of new tokens times the average context they
+attend over. Because context grows linearly across a phase, that average is the midpoint,
+$(\text{start context})+(\text{new tokens})/2$.
 
-- **compute** = coeff × (number of *new* tokens computed) — linear in tokens;
-- **attention** = coeff × (number of new tokens) × (average context they attend over), where the
-  average context is `start_context + new_tokens/2` (context grows linearly across the phase, so
-  its mean is the midpoint).
+| phase | new tokens | start context | avg. context | attention work |
+|-------|-----------|---------------|--------------|----------------|
+| prefill | uncached $a_p$ | cached prefix $a_r-a_p$ | $a_r-a_p/2$ | $C_{\!attn}\,a_p\,(a_r-a_p/2)$ |
+| decode | output $o_r$ | full prompt $a_r$ | $a_r+o_r/2$ | $C1\,o_r\,(a_r+o_r/2)$ |
 
-| phase | new tokens | start context | avg context | attention work |
-|-------|-----------|---------------|-------------|----------------|
-| prefill | uncached `a_p` | cached prefix `p_cached` | `p_cached + a_p/2` | `CAttn·a_p·(p_cached + a_p/2)` |
-| decode | output `o` | full prompt `input` | `input + o/2` | `C1·o·(input + o/2)` |
+Here $a_r$ is the full prompt length and $o_r$ the output length (both from §3.2), and $a_p\le a_r$ is
+the *uncached* portion of the prompt — the tokens not already resident in the target's KV cache.
 
-**Decode work** (on decode node `d`, using `d`'s coefficients):
+**Decode work** (on decode node $d$, with $d$'s coefficients):
+$$W_d(d) \;=\; C0_d\,o_r \;+\; C1_d\,o_r\,(a_r + o_r/2).$$
+$C0_d$ is the decode per-step compute overhead (context-independent) and $C1_d$ the KV-read cost per
+resident token (§3.1, per-instance). The decode context uses the **full** prompt $a_r$, not the
+uncached $a_p$: prefix-cache hits reduce prefill *compute*, but the full prompt resides in KV and is
+re-read every decode step. The output length is the estimate $o_r=\hat N_{\text{out}}$ (a running
+per-class mean, or a demand model), keeping the term INV-9-safe — $a_r$ is known at routing, $o_r$ is
+estimated, never read from the realized output.
 
-```
-W_d(d) = C0_d · o   +   C1_d · o · (input + o/2)
-```
+**Prefill work** (on prefill location $q$, with $q$'s coefficients; $q=p$ when disaggregated,
+$q=d$ when local):
+$$W_p(q) \;=\; C_{\!pf,q}\,a_p \;+\; C_{\!attn,q}\,a_p\,(a_r-a_p/2)\;=\;C_{\!pf,q}\,a_p+\tfrac12 C_{\!attn,q}\,a_p^2+C_{\!attn,q}\,a_p\,(a_r-a_p).$$
+$C_{\!pf,q}$ is the exposed prefill compute per token and $C_{\!attn,q}$ the prefill attention
+coefficient (µs/token², §3.1); for the `local` option these are the mixed node $d$'s own prefill
+coefficients. Only the uncached tokens are computed as queries, but each attends over the full
+context up to its position (cached prefix included) — hence $a_p\,(a_r-a_p/2)$, neither $a_p^2$ nor
+$a_r^2$.
 
-- `C0_d` = decode per-step compute overhead (context-independent), `C1_d` = KV-read cost per resident
-  token (the `decode_compute_coeff` / `decode_memory_coeff` in plain terms) — **per-instance** (§3.1).
-- `input` is the **full** prompt length, **not** the uncached `a_p`: prefix-cache hits reduce
-  prefill *compute*, but the full prompt resides in KV and is re-read every decode step.
-- `o` is the estimated output length `N̂_out` (running per-class mean, or a demand model). INV-9-safe:
-  `input` is known at routing; `o` is estimated, never read from actual `OutputTokens`.
-
-**Prefill work** (on prefill location `q`, using `q`'s coefficients; `q = p` for disaggregated,
-`q = d` for local). With full input `N`, uncached `a_p`, cached prefix `p_cached = N − a_p`:
-
-```
-W_p(q) = CPf_q · a_p   +   CAttn_q · a_p · (p_cached + a_p/2)
-       = CPf_q · a_p   +   (CAttn_q/2) · a_p²   +   CAttn_q · a_p · p_cached
-```
-
-- `CPf_q` = exposed prefill compute per token, `CAttn_q` = prefill attention coefficient (µs/token²)
-  — **per-instance** (§3.1). For the `local` option these are the mixed node `d`'s own prefill
-  coefficients.
-- Only the uncached tokens are computed as queries, but each attends over the **full** context up
-  to its position (cached prefix included) — hence `a_p · (p_cached + a_p/2)`, not `a_p²` and not
-  `N²`.
-
-**Relationship to the prior `Wp`/`NomDecodeCtx` forms (corrections recorded here):**
-
-- The decode-work form `w_d = N̂_out · δ̄_decode(NomDecodeCtx) = N̂_out·(C0 + C1·NomDecodeCtx)` is
-  **deprecated** in this formulation. `NomDecodeCtx` is a single fixed assumed context (e.g. 2048)
-  plugged in for every request and every step; it ignores the request's actual prompt length and
-  the growth of context during decode, mis-estimating the (dominant) memory term in both directions.
-  `W_d` above replaces it with the trajectory integral — same calibrated `C0`, `C1`, no refitting.
-- The prior prefill work `Wp = CPf·a_p + (CAttn/2)·a_p²` is correct **only in the no-cache limit**
-  (`p_cached = 0`, `a_p = N`). With prefix caching it drops the cross term `CAttn·a_p·p_cached` —
-  the cost of uncached tokens attending back over the cached prefix. `W_p` above restores it.
-  In no-cache traffic (e.g. tiny-prompt synth) the cross term ≈ 0 and the two agree; it matters on
-  shared-prefix / RAG workloads.
+**Relationship to the earlier forms (corrections recorded here).** The previous decode form
+$\hat N_{\text{out}}\cdot\bar\delta_{\text{dec}}(\text{NomDecodeCtx})=\hat N_{\text{out}}\,(C0+C1\cdot\text{NomDecodeCtx})$
+is **deprecated**: its fixed nominal context (e.g. 2048), applied to every request and every step,
+ignores the actual prompt length and the growth of context during decode, mis-estimating the
+(dominant) memory term in both directions. $W_d$ above is the trajectory integral of the same
+$C0, C1$ — no refitting. The previous prefill form $C_{\!pf}\,a_p+\tfrac12 C_{\!attn}\,a_p^2$ is the
+no-cache limit ($a_p=a_r$) of $W_p$; with a cached prefix it drops the cross term
+$C_{\!attn}\,a_p\,(a_r-a_p)$ — the cost of uncached tokens attending back over the cached prefix. The
+two agree on no-cache traffic (tiny-prompt synth) and diverge on shared-prefix / RAG workloads.
 
 The work in $W_p$ and $W_d$ is a *demand*, not a latency. The next two subsections connect it to
 wall-clock time, and in doing so expose a subtlety we must respect: a request's work is drained
@@ -236,22 +224,22 @@ waits. We therefore develop the time model with that residual occupancy in view.
 We connect work to time through the mechanics of continuous batching, in a form we can evaluate
 from observed state.
 
-At any instant, instance $i$ runs a *batch* $B_i$ — the set of requests active on it. Each active
-request $r$ sits at a definite *stage* $s_r$: either a specific prefill chunk, or decode step $k$
-(its $k$-th output token). We write $\delta(s_r)$ for the **marginal work** request $r$ contributes
-in the current iteration given its stage. It is the single-iteration slice of the §3.6 work, read
-off the stage:
+At any instant, instance $i$ runs a *batch* $\mathcal{B}_i$ — the set of requests active on it. Each
+active request $r$ sits at a definite *stage* $s_r$: either a specific prefill chunk, or decode step
+$k$ (its $k$-th output token). We write $\delta(s_r)$ for the **marginal work** request $r$
+contributes in the current iteration given its stage. It is the single-iteration slice of the §3.6
+work, read off the stage:
 
-- prefill chunk of `chunk` tokens: $\delta = C_{\!pf}\cdot\text{chunk} + C_{\!attn}\cdot\text{chunk}\cdot(\text{context cached so far})$;
-- decode step $k$: $\delta = C0 + C1\cdot(\text{input}+k)$.
+- prefill chunk of $\text{chunk}$ tokens: $\delta = C_{\!pf}\,\text{chunk} + C_{\!attn}\,\text{chunk}\cdot(\text{context processed so far})$;
+- decode step $k$: $\delta = C0 + C1\,(a_r+k)$.
 
 Every quantity here is observed from $r$'s current stage and the instance coefficients $\theta_i$;
-nothing is estimated except, for stages not yet reached, the output length $o$.
+nothing is estimated except, for stages not yet reached, the output length $o_r$.
 
 One iteration then takes
-$$T^{\text{iter}}_i \;=\; \alpha_i \;+\; \sum_{r\in B_i}\delta(s_r),$$
-where $\alpha_i$ is the per-iteration baseline from $\theta_i$ (kernel launch, weight load) and the
-sum is the batch's total marginal work. This is the state-resolved form of the linear iteration-time
+$$T^{\text{iter}}_i \;=\; \alpha_i \;+\; \sum_{r\in \mathcal{B}_i}\delta(s_r),$$
+where $\alpha_i$ is the per-iteration baseline from $\theta_i$ ($\alpha^P_i$ or $\alpha^D_i$ of §3.1,
+per the iteration's phase; kernel launch, weight load) and the sum is the batch's total marginal work. This is the state-resolved form of the linear iteration-time
 law $T=\alpha+N\delta$; we keep a per-request $\delta(s_r)$ rather than one shared mean $\delta$,
 precisely because we can observe each stage.
 
@@ -358,7 +346,7 @@ stability of the work backlogs is what keeps throughput sustainable. The rest of
 constraints into a per-request rule; the decision formula appears only in §5.3, as the minimizer of
 a drift bound — not as a starting assumption.
 
-### 5.2 Queue model (LOCKED)
+### 5.2 Queue model
 
 We keep **two families of state**, deliberately distinct:
 
@@ -379,7 +367,7 @@ We keep **two families of state**, deliberately distinct:
 3. **Co-residency interference is a cost, not a queue.** "A local prefill on an M node inflates its
    decode ITL" is a penalty/cost statement (§3.5); it feeds the ITL-deficit drift, weighed against
    the transfer cost the disaggregated option pays. This is the heart of the P/D trade-off and
-   belongs in `penalty(a)` / the drift cost, not in a second congestion queue.
+   belongs in the drift cost, not in a second congestion queue.
 
 **Why this split.** Stability is a scalar-work property of each box (one congestion queue is
 correct and matches the single-server reality); the phase-specific latency effects belong to the
@@ -447,7 +435,7 @@ do not depend on $a$. Reading off the action-dependent part of the bound term by
   no ITL constraint), and $\tau^I$ is fixed. Hence
   $$\sum_i Z^I_i\,\mathbb{E}[\text{itl}_i-\tau^I]\;=\;\underbrace{Z^I_d\big(m_{dec}(d)+\mathbf{1}\{p=\text{local}\}\,m_{pf}(d)\big)}_{\text{depends on }a}\;-\;\underbrace{\textstyle\sum_i Z^I_i\,\tau^I}_{\text{independent of }a}.$$
   Here the marginal per-step latency $r$ adds to $d$ is, by the iteration-time identity of §3.7, its
-  own marginal work $\delta$: since $T^{\text{iter}}_d=\alpha_d+\sum_{r'\in B_d}\delta(s_{r'})$,
+  own marginal work $\delta$: since $T^{\text{iter}}_d=\alpha_d+\sum_{r'\in \mathcal{B}_d}\delta(s_{r'})$,
   admitting $r$ raises every co-resident request's per-step time by $r$'s $\delta$. So we **define**
   $$m_{dec}(d)=\delta(\text{$r$'s decode step on }d),\qquad m_{pf}(d)=\delta(\text{$r$'s prefill chunk on }d),$$
   the first incurred whenever $r$ decodes on $d$ (i.e. always), the second only when prefill is local
@@ -455,7 +443,8 @@ do not depend on $a$. Reading off the action-dependent part of the bound term by
   $C_{\!pf,d}\cdot\text{chunk}$, dropping the attention part of $\delta$.) This is a first-order,
   *instantaneous* marginal; its persistence over $r$'s lifetime is not in this one-shot term but is
   recovered reactively through $Z^I_d$ (see §5.4).
-- **Penalty.** $V\,\mathbb{E}[g(a)]=V\,c_{\text{xfer}}\,\mathbf{1}\{p\ne\text{local}\}$.
+- **Penalty.** With $c_{\text{xfer}}$ the per-request transfer / KV-movement cost,
+  $g(a)=c_{\text{xfer}}\,\mathbf{1}\{p\ne\text{local}\}$, so $V\,\mathbb{E}[g(a)]=V\,c_{\text{xfer}}\,\mathbf{1}\{p\ne\text{local}\}$.
 
 Collecting the four and discarding the action-independent constant $B$ and the $-\tau$ shifts, the
 epoch bound is minimized by
@@ -478,25 +467,21 @@ We now give the forward quantities explicitly:
 - $\Delta\text{work}_i(a)$ — defined at the congestion step above. Under heterogeneity the same
   request yields a *different* $\Delta\text{work}$ on different instances, so the congestion term
   $\sum_i Q_i\,\Delta\text{work}_i$ ranks candidates by cost *and* load jointly, not by load alone.
-- `T̂(a)` — forward TTFT estimate for the request under action `a`, obtained as in §3.8 (the
+- $\hat T(a)$ — forward TTFT estimate for the request under action $a$, obtained as in §3.8 (the
   admission-delay roll-forward or Little's-law estimate, both occupancy-aware):
-  `T̂_local(d) = T^adm(d) + own-prefill-on-d`;
-  `T̂_disagg(d,p) = T^adm(p) + prefill-on-p + transfer + T^adm(d)`. The `−τ_c` term in the
-  constraint is constant within a class and drops out of the argmin.
+  $\hat T_{\text{local}}(d)=T^{\text{adm}}(d)+(\text{$r$'s own prefill on }d)$;
+  $\hat T_{\text{disagg}}(d,p)=T^{\text{adm}}(p)+(\text{prefill on }p)+(\text{transfer})+T^{\text{adm}}(d)$.
 - $m_{dec}(d),\ m_{pf}(d)$ — defined at the ITL step above. $m_{dec}(d)$ is incurred whether or not we
   disaggregate (decode is on $d$ either way), so it steers *which* decode node but **not** the
   local-vs-disaggregate split; $m_{pf}(d)$ is incurred **only** locally, so it is precisely the
   interference cost the `local` option pays and disaggregation escapes.
 
-**Joint argmin.** The policy selects over the full action set in one optimization:
-
-```
-a* = argmin over { (d, local) : d ∈ 𝓜 } ∪ { (d, p) : d ∈ 𝓜, p ∈ 𝒫 }  of  J(a)
-```
-
-Load balancing (choice of `d`, choice of `p`) and the P/D split fall out of the same argmin; there
-is no separate scorer. When the decode node is instead fixed by an external scorer, the rule
-collapses to the current EDPP pairwise decider — we show that reduction in §5.5.
+**Joint argmin.** Writing $J(a)$ for the bracketed objective above, the policy selects over the full
+action set in one optimization:
+$$a_r^{*}=\arg\min_{a\in\mathcal{A}} J(a),\qquad \mathcal{A}=\{(d,\text{local}):d\in\mathcal{M}\}\cup\{(d,p):d\in\mathcal{M},\,p\in\mathcal{P}\}.$$
+Load balancing (the choice of $d$ and of $p$) and the P/D split fall out of the same argmin; there is
+no separate scorer. When the decode node is instead fixed by an external scorer, the rule collapses
+to the current EDPP pairwise decider — we show that reduction in §5.5.
 
 **Units and normalization.** In raw form the three drift terms share units — writing work in
 time-units (work is a service time), $Q_i\,\Delta\text{work}_i$, $Z^T_c\,\hat T$, and $Z^I_d\,m$ are
@@ -630,9 +615,8 @@ $\hat T, m_{dec}, m_{pf}$, which we therefore hold to the observable validation 
 
 ### 5.5 Reduction to the pairwise rule (recovering EDPP)
 
-The joint action set is
-$$\mathcal{A}=\{(d,p): d\in\mathcal{M},\ p\in\mathcal{P}\cup\{\text{local}=d\}\},\qquad |\mathcal{A}|=|\mathcal{M}|\,(|\mathcal{P}|+1),$$
-and the joint rule minimizes $J$ over all of $\mathcal{A}$. The current EDPP decider instead
+Recall the joint action set $\mathcal{A}$ (§5.3), of size $|\mathcal{A}|=|\mathcal{M}|\,(|\mathcal{P}|+1)$;
+the joint rule minimizes $J$ over all of it. The current EDPP decider instead
 restricts to the slice $\{(d^{\star},p): p\in\mathcal{P}\cup\{\text{local}\}\}$ for a single decode
 node $d^{\star}$ chosen by an **external scorer** (prefix-cache / queue scores, not $J$), and
 minimizes only over $p$. It therefore optimizes the *same* objective on a one-dimensional slice
@@ -641,12 +625,7 @@ best prefill target be
 $p^{\star}=\arg\min_{p\in\mathcal{P}}\big[\,Q_p\,W_p+Z^T_c\,\hat T_{\text{disagg}}(d,p)\,\big]$. The
 joint rule then disaggregates iff $J(d,p^{\star})<J(d,\text{local})$, i.e.
 
-```
-  (Q_d − Q_{p*})·W_p  +  Z^I_d · m_pf(d)     >     Z^T_c · ( T̂_disagg − T̂_local )  +  V · c_xfer
-  └──────────────┬───────────────────────┘         └───────────────────┬─────────────────────┘
-   congestion relief (move W_p off d)                TTFT change from disaggregating
-   + ITL interference relief on d                    + transfer penalty
-```
+$$\underbrace{(Q_d-Q_{p^{\star}})\,W_p + Z^I_d\,m_{pf}(d)}_{\text{congestion relief on }d\ +\ \text{ITL interference relief}}\ >\ \underbrace{Z^T_c\big(\hat T_{\text{disagg}}-\hat T_{\text{local}}\big) + V\,c_{\text{xfer}}}_{\text{TTFT change from disaggregating}\ +\ \text{transfer penalty}}.$$
 
 This is structurally today's EDPP `lhs > rhs` rule, generalized in three ways: the congestion term
 uses the corrected work $W_p$ (§3.6); the ITL interference relief $Z^I_d\,m_{pf}(d)$ is now an
@@ -729,9 +708,10 @@ node property. Our model respects this (S1, S2).
 
 ## 9. Open questions (to resolve next)
 
-- The observable layer for `T̂` is now specified (§3.7–§3.8: per-iteration identity, admission-delay
-  roll-forward / Little's law). Remaining forward-estimator specifics: the marginal ITL terms
-  `m_dec`, `m_pf`, and the output-length estimate `N̂_out` (the deferred predictor work — §8 item 4).
+- The observable layer for $\hat T$ is now specified (§3.7–§3.8: per-iteration identity,
+  admission-delay roll-forward / Little's law). Remaining forward-estimator specifics: the marginal
+  ITL terms $m_{dec}, m_{pf}$ and the output-length estimate $\hat N_{\text{out}}$ (the deferred
+  predictor work — §8 item 4).
 - The analytical (Layer-2) reduction — closed-form steady-state on the tractable core and the
   provable policy guarantees — is not yet written here; §6 sketches its yardstick role.
 - Heterogeneity parameterization: which per-instance parameters the model carries explicitly
