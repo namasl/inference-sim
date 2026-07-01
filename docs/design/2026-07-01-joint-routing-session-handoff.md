@@ -53,12 +53,12 @@ after a long formulation session; the design itself is committed on branch `desi
 2. **Layer-2 analytical section** — closed-form steady state on the tractable core (prefill / local,
    external-Poisson OK); reconcile with MASCOTS (decode work matches; prefill differs via
    chunk-coupling); use the MASCOTS per-state `Tp(i)/TITL(i)` evaluated at *observed* occupancy as a
-   candidate `R_batch`/`T̂`; tighten the §5.4 Proposition toward a full theorem (state Slater/bounded-
+   candidate `T̂` (equivalently its admission-delay part `T_adm`, §3.8); tighten the §5.4 Proposition toward a full theorem (state Slater/bounded-
    moment conditions precisely).
 3. **MILP optimality yardstick (§6)** — write decision variables + constraints (formalizes §3+§3.6);
    offline/clairvoyant optimum on a fixed trace for the optimality gap.
-4. **Forward-estimator specifics (§8.4 / §9)** — the roll-forward `R_batch`, `m_dec/m_pf`, and
-   `N̂_out` (the deferred "predictor" work). Only soft dependency of the guarantee.
+4. **Forward-estimator specifics (§8.4 / §9)** — the admission-delay roll-forward `T_adm` (§3.8),
+   `m_dec/m_pf`, and `N̂_out` (the deferred "predictor" work). Only soft dependency of the guarantee.
 5. **Modeling loose end (§9):** ITL SLO per-request vs per-stream, and how ITL violations are scored
    over a request's decode horizon (interacts with the per-instance `Z^I_i` on a mixed-class batch).
 6. **Voice/consistency:** older sections (§1–§2, §6–§8) still have a few declaratives; a light pass.
@@ -73,7 +73,7 @@ Suggested staging:
 
 - **A. Estimator validation (Layer 1 correctness) — do this first, it underpins everything.**
   Instrument BLIS to log, per request, the realized `T_adm = schedule − enqueue`, realized TTFT/ITL,
-  and the forward estimates (`T̂`, roll-forward `R_batch`, `W_d/W_p`). Check predicted-vs-realized
+  and the forward estimates (`T̂` and its admission-delay roll-forward `T_adm`, `W_d/W_p`). Check predicted-vs-realized
   (the §3.8 validation target). This tests the *one soft dependency* of the guarantee. Use
   `--edpp-decision-trace` / `--routing-decision-trace` (already shipped) as the logging substrate;
   extend if needed.
