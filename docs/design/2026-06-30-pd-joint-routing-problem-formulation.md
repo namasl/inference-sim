@@ -424,8 +424,11 @@ against backlog. Consider the single request $r$ (class $c$) being routed, with 
 Only $r$'s own placement is controllable this epoch; the service terms $b_i$ and the targets $\tau$
 do not depend on $a$. Reading off the action-dependent part of the bound term by term:
 
-- **Congestion.** $r$ adds work $\Delta\text{work}_i(a)$ to each instance (to $d$ alone if local, or
-  to $d$ and $p$ if disaggregated), so $\sum_i Q_i\,\mathbb{E}[A_i]=\sum_i Q_i\,\Delta\text{work}_i(a)$.
+- **Congestion.** Write $\Delta\text{work}_i(a)$ for the §3.6 work the action places on instance $i$,
+  each piece evaluated with that instance's own coefficients (§3.1): if $p=\text{local}$ then
+  $\Delta\text{work}_d = W_p(d)+W_d(d)$ (both phases on $d$) and zero elsewhere; if $p\in\mathcal{P}$
+  then $\Delta\text{work}_d = W_d(d)$ and $\Delta\text{work}_p = W_p(p)$. The arrival's contribution
+  to the backlogs is therefore $\sum_i Q_i\,\mathbb{E}[A_i]=\sum_i Q_i\,\Delta\text{work}_i(a)$.
 - **TTFT.** $r$'s realized first-token latency enters class $c$'s deficit; its conditional
   expectation under the action is the forward estimate of §3.8, so
   $Z^T_c\,\mathbb{E}[\text{ttft}_r]\to Z^T_c\,\hat T(a)$.
@@ -444,13 +447,9 @@ This is the decision rule — obtained as the minimizer of the drift-plus-penalt
 Every quantity in it is either an observed queue state ($Q_i,\,Z^T_c,\,Z^I_d$) or a forward estimate
 from §3.6–§3.8. We now give the forward quantities explicitly:
 
-- `Δwork_i(a)` — work the action lands on instance `i`, from §3.6, **evaluated with each target
-  instance's own coefficients** (§3.1):
-  - `p = local`: `Δwork_d = W_p(d) + W_d(d)` (both phases on `d`, using `d`'s prefill *and* decode
-    coefficients); all other instances 0.
-  - `p ∈ 𝒫`: `Δwork_d = W_d(d)`, `Δwork_p = W_p(p)`.
-  - Under heterogeneity the same request yields different `Δwork` on different instances, so the
-    congestion term `Σ_i Q_i·Δwork_i` ranks instances by cost *and* load jointly.
+- $\Delta\text{work}_i(a)$ — defined at the congestion step above. Under heterogeneity the same
+  request yields a *different* $\Delta\text{work}$ on different instances, so the congestion term
+  $\sum_i Q_i\,\Delta\text{work}_i$ ranks candidates by cost *and* load jointly, not by load alone.
 - `T̂(a)` — forward TTFT estimate for the request under action `a`, obtained as in §3.8 (the
   admission-delay roll-forward or Little's-law estimate, both occupancy-aware):
   `T̂_local(d) = T^adm(d) + own-prefill-on-d`;
