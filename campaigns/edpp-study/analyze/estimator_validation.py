@@ -62,9 +62,18 @@ def main() -> int:
 
     df = out.merge(dec, on="request_id", how="inner", suffixes=("", "_dec"))
 
+    if len(df) != len(out):
+        print(f"warning: inner join dropped {len(out) - len(df)} outcome rows "
+              f"({len(out)} outcome vs {len(df)} joined); truncated_or_dropped assumes a total join match",
+              file=sys.stderr)
+
     total = len(out)
     completed = df[df["completed"]].copy()
     truncated = total - int(out["completed"].sum())
+
+    # Local (non-disaggregated) requests have an empty slo_class, which pandas reads
+    # as NaN. groupby silently drops NaN keys, so fill them into their own group.
+    completed["slo_class"] = completed["slo_class"].fillna("unknown").replace("", "unknown")
 
     # Reconstruct admission components from the decision trace (µs).
     completed["pred_prefill_adm"] = completed["qp_raw"] / completed["mu_p_nom"].where(completed["mu_p_nom"] != 0, np.nan)
