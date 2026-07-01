@@ -1303,6 +1303,14 @@ func (cs *ClusterSimulator) feedAdmission(req *sim.Request) {
 	cs.sloFeedback.OnAdmit(key, prefillSide)
 }
 
+// SetRecordPDOutcomes enables per-request admission-time capture for --pd-outcome-trace.
+// The setter only flips the gate bool; it does not allocate localAdmitTimes (which is
+// init'd solely in the PD-enabled cluster construction path). recordAdmissionTime returns
+// early when the gate is off, and no read path dereferences localAdmitTimes when PD is off,
+// so enabling the gate outside a PD deployment is safe (BuildPDOutcomeRecords simply yields
+// zero records, which the CLI warns about).
+func (cs *ClusterSimulator) SetRecordPDOutcomes(v bool) { cs.recordPDOutcomes = v }
+
 // BuildPDOutcomeRecords assembles one realized-outcome record per request for the
 // --pd-outcome-trace estimator-validation harness (Stage A). It walks disaggregated
 // parents and locally-admitted requests, pairs each with its realized TTFT/ITL/E2E

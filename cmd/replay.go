@@ -529,6 +529,9 @@ Example:
 			}
 		}
 		cs := cluster.NewClusterSimulator(config, requests, onRequestDone)
+		if pdOutcomeTracePath != "" {
+			cs.SetRecordPDOutcomes(true)
+		}
 		if err := cs.Run(); err != nil {
 			logrus.Fatalf("Replay simulation failed: %v", err)
 		}
@@ -721,6 +724,10 @@ Example:
 				}
 			}
 		}
+
+		// Write per-request realized-outcome CSV if requested (mirrors root.go runCmd; INV-13
+		// parity). Uses cs.AggregatedMetrics() — the finalized, PD-projected metrics.
+		writePDOutcomeTrace(cs, cs.AggregatedMetrics(), pdOutcomeTracePath)
 
 		// Write per-candidate routing-decision CSV if requested (shared with run; INV-13 parity).
 		writeRoutingDecisionTrace(cs.Trace(), routingDecisionTracePath)
