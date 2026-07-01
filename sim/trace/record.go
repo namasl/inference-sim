@@ -149,6 +149,33 @@ type EDPPDecisionRecord struct {
 	Disaggregate bool
 }
 
+// PDOutcomeRecord is one request's realized outcome for EDPP estimator validation
+// (Stage A). Joined against EDPPDecisionRecord on RequestID. Times are microseconds,
+// absolute; zero means the phase was not reached. Emitted only under --pd-outcome-trace.
+type PDOutcomeRecord struct {
+	RequestID       string
+	SLOClass        string
+	InputTokens     int
+	Disaggregated   bool
+	PrefillInstance string
+	DecodeInstance  string
+
+	PrefillEnqueue  int64
+	PrefillSchedule int64
+	PrefillTAdm     int64
+	DecodeEnqueue   int64
+	DecodeSchedule  int64
+	DecodeTAdm      int64
+	LocalEnqueue    int64
+	LocalSchedule   int64
+	LocalTAdm       int64
+
+	RealizedTTFT    float64
+	RealizedMeanITL float64
+	RealizedE2E     float64
+	Completed       bool
+}
+
 // RoutingTraceCandidate is one candidate instance considered during a routing
 // target selection, captured for the --routing-decision-trace CSV.
 type RoutingTraceCandidate struct {
