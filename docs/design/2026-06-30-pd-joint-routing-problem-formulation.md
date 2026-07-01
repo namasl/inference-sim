@@ -464,7 +464,16 @@ $$a_r^{*}=\arg\min_{a}\ \Big[\ \underbrace{\textstyle\sum_i Q_i\,\Delta\text{wor
 
 This is the decision rule — obtained as the minimizer of the drift-plus-penalty bound, not posited.
 Every quantity in it is either an observed queue state ($Q_i,\,Z^T_c,\,Z^I_d$) or a forward estimate
-from §3.6–§3.8. We now give the forward quantities explicitly:
+from §3.6–§3.8.
+
+**No drain rates.** Notably the server service rates $\mu_i$ (equivalently the $b_i$) do **not**
+appear in the rule: $b_i$ dropped as action-independent, so $\mu$ is needed neither to rank actions
+nor to update $Q_i$ (drained by *observed* completions, §5.2). Service timing re-enters only inside
+$\hat T(a)$, through the iteration-time roll-forward $T^{\text{iter}}=\alpha+\sum\delta$ (§3.7), where
+it comes from the coefficients $\theta$ — not from a separately-fit $\mu$. (This removes the explicit
+$q/\mu$ balance term the earlier EDPP carried.)
+
+We now give the forward quantities explicitly:
 
 - $\Delta\text{work}_i(a)$ — defined at the congestion step above. Under heterogeneity the same
   request yields a *different* $\Delta\text{work}$ on different instances, so the congestion term
@@ -489,10 +498,25 @@ Load balancing (choice of `d`, choice of `p`) and the P/D split fall out of the 
 is no separate scorer. When the decode node is instead fixed by an external scorer, the rule
 collapses to the current EDPP pairwise decider — we show that reduction in §5.5.
 
-**Normalization.** Each term is divided by its natural scale (the `τ`'s and work normalizers `w*`)
-so the terms are dimensionless and `V` is a pure penalty knob; this is the dimensionless-invariance
-property already anchored in the current implementation. The standard `[V ↔ 1/V]` trade-off applies:
-larger `V` lowers transfer cost at the price of larger SLO-deficit backlog.
+**Units and normalization.** In raw form the three drift terms share units — writing work in
+time-units (work is a service time), $Q_i\,\Delta\text{work}_i$, $Z^T_c\,\hat T$, and $Z^I_d\,m$ are
+each a $(\text{time})^2$, and the penalty $V\,c_{\text{xfer}}$ matches only if $V$ carries units of
+time. But their *magnitudes* diverge badly: a work backlog $Q_i$ can be seconds of accumulated work,
+while the ITL deficit is measured against $\tau^I\!\approx\!50$ ms and the TTFT deficit against
+$\tau^T\!\approx\!500$ ms. Summed raw, the congestion term swamps the SLO terms and ITL all but
+vanishes. We therefore measure each violation against its own target. The cleanest route is to
+define the deficit queues in *relative* form,
+$$Z^T_c\!\leftarrow\!\max\{Z^T_c+(\text{ttft}_r/\tau^T_c-1),\,0\},\qquad Z^I_i\!\leftarrow\!\max\{Z^I_i+(\text{itl}_i/\tau^I-1),\,0\},$$
+which enforces the identical constraint ($\text{ttft}\le\tau^T\Leftrightarrow\text{ttft}/\tau^T\le1$)
+but makes each deficit a dimensionless *fraction of target* — so a 10% TTFT miss and a 10% ITL miss
+count equally — and to normalize works by a reference work $W^{\*}$ ($q_i=Q_i/W^{\*}$,
+$\Delta w_i=\Delta\text{work}_i/W^{\*}$). Every term of the rule is then dimensionless and $V$ is a
+pure, dimensionless knob. Two consequences: (i) the argmin is invariant to an overall rescaling of
+$J$, so only the *relative* term weights — set by the normalizers — matter; and (ii) the transfer
+penalty must carry a fixed $\tau_{\text{ref}}/\tau^T$ factor so it scales as $1/(\tau^T)^2$ like the
+SLO terms, otherwise a loose $\tau^T$ shrinks the balance/SLO terms faster than the penalty and
+spuriously suppresses disaggregation. The standard $[V\!\leftrightarrow\!1/V]$ trade-off then holds:
+larger $V$ lowers transfer cost at the price of larger (dimensionless) SLO-deficit backlog.
 
 **Observed vs. modeled.** The queue *states* $Q_i, Z^T_c, Z^I_i$ are observed; the *forward*
 quantities $\hat T(a), m_{dec}, m_{pf}, \Delta\text{work}$ (and $\hat N_{\text{out}}$ inside $W_d$)
