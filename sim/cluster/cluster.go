@@ -56,6 +56,8 @@ type ClusterSimulator struct {
 	parentRequests            map[string]*ParentRequest // parent request ID → tracking record
 	pendingPrefillCompletions map[string]string         // prefill sub-req ID → parent ID
 	pendingDecodeCompletions  map[string]string         // decode sub-req ID → parent ID
+	localAdmitTimes           map[string]int64          // request ID → first local-admission tick (non-disagg); populated only when recordPDOutcomes
+	recordPDOutcomes          bool                      // gate: capture per-request admission times for --pd-outcome-trace
 	// transfersInitiated counts every request that reaches
 	// KVTransferStartedEvent (issue #1343: both successful reservations
 	// that enter the transfer pipeline AND drop-at-start cases where the
@@ -267,6 +269,7 @@ func NewClusterSimulator(config DeploymentConfig, requests []*sim.Request, onReq
 		cs.parentRequests = make(map[string]*ParentRequest)
 		cs.pendingPrefillCompletions = make(map[string]string)
 		cs.pendingDecodeCompletions = make(map[string]string)
+		cs.localAdmitTimes = make(map[string]int64)
 
 		// Per-pool routing policies and the disaggregation decider are created after
 		// the construction loop (both need cacheQueryFn from instances).
@@ -600,6 +603,7 @@ func NewClusterSimulator(config DeploymentConfig, requests []*sim.Request, onReq
 			if cs.sloFeedback != nil {
 				inst.sim.OnAdmit = func(req *sim.Request, tick int64) {
 					cs.feedAdmission(req)
+					cs.recordAdmissionTime(req, tick)
 				}
 				inst.sim.OnFirstToken = func(req *sim.Request, tick int64) {
 					cs.feedFirstToken(req, tick)
@@ -1128,6 +1132,7 @@ func (cs *ClusterSimulator) addLiveInstance(
 		if cs.sloFeedback != nil {
 			inst.sim.OnAdmit = func(req *sim.Request, tick int64) {
 				cs.feedAdmission(req)
+				cs.recordAdmissionTime(req, tick)
 			}
 			inst.sim.OnFirstToken = func(req *sim.Request, tick int64) {
 				cs.feedFirstToken(req, tick)
@@ -1296,6 +1301,35 @@ func (cs *ClusterSimulator) feedAdmission(req *sim.Request) {
 		return
 	}
 	cs.sloFeedback.OnAdmit(key, prefillSide)
+}
+
+// recordAdmissionTime captures the first admission instant of a request for the
+// --pd-outcome-trace estimator-validation harness (Stage A). No-op unless
+// recordPDOutcomes is set. A prefill sub-request sets its parent's
+// PrefillScheduleTime; a decode sub-request sets DecodeScheduleTime; a normal
+// (non-disaggregated) request is recorded in localAdmitTimes. OnAdmit can fire
+// twice under preemption re-admit, so the first (earliest) time is kept.
+func (cs *ClusterSimulator) recordAdmissionTime(req *sim.Request, tick int64) {
+	if !cs.recordPDOutcomes {
+		return
+	}
+	if req.IsDecodeSubRequest {
+		if pid, ok := cs.pendingDecodeCompletions[req.ID]; ok {
+			if p := cs.parentRequests[pid]; p != nil && p.DecodeScheduleTime == 0 {
+				p.DecodeScheduleTime = tick
+			}
+		}
+		return
+	}
+	if pid, ok := cs.pendingPrefillCompletions[req.ID]; ok {
+		if p := cs.parentRequests[pid]; p != nil && p.PrefillScheduleTime == 0 {
+			p.PrefillScheduleTime = tick
+		}
+		return
+	}
+	if _, seen := cs.localAdmitTimes[req.ID]; !seen {
+		cs.localAdmitTimes[req.ID] = tick
+	}
 }
 
 // feedFirstToken trues up an SLO-feedback decider's TTFT virtual queue when a request

@@ -20,6 +20,12 @@ type ParentRequest struct {
 	TransferStartTime    int64
 	TransferCompleteTime int64
 	DecodeEnqueueTime    int64
+	// Schedule instants (microseconds): when each sub-request first entered the
+	// running batch (waiting → running). Zero = not yet scheduled. Populated via
+	// recordAdmissionTime from the OnAdmit hook, only when --pd-outcome-trace is set.
+	// Used to compute realized admission delay T_adm = schedule − enqueue (§3.8).
+	PrefillScheduleTime int64
+	DecodeScheduleTime  int64
 	// CompletionTime has four meanings depending on outcome:
 	//   - Successful decode: set by detectDecodeCompletions to
 	//     clusterClock + decodeInstance.PostDecodeFixedOverhead() when the decode
