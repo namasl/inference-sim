@@ -22,8 +22,8 @@ Today the system makes two decisions with two separate mechanisms, in sequence:
 2. **Deciding** (the P/D decider, e.g. `prefix-threshold` or EDPP): given the decode instance
    is already fixed, choose whether to prefill locally or disaggregate.
 
-This is a **hierarchical decomposition** of a single underlying assignment problem. It is not
-lossless, because the two decisions are coupled:
+We view this as a **hierarchical decomposition** of a single underlying assignment problem, and it
+is not lossless, because the two decisions are coupled:
 
 - The *value* of disaggregating a request depends on **which** decode instance it lands on:
   offloading prefill helps a congested decode instance far more than an idle one.
@@ -36,6 +36,31 @@ A decomposed pipeline picks the decode instance *blind to the split*, then picks
 `(instance, split)` as one action and can express choices the pipeline cannot.
 
 In this document we formalize that joint problem.
+
+### 1.1 Why a model, and not just measured timing
+
+A reader may reasonably object: the simulator and a real server both expose per-request timestamps
+— arrival, schedule, first token — so why build a work model at all, rather than route on measured
+timing directly? We do rely on measurement heavily; it calibrates and validates everything in
+§3.7–§3.8. But three things a model supplies cannot be measured:
+
+1. **Counterfactuals.** A router commits to an action before it can observe the outcome, and it
+   never sees the alternative it did not take. Choosing between "route to $A$ or $B$" or "local or
+   disaggregate" requires an estimate of *each* candidate's latency, whereas timestamps are
+   retrospective and describe only the action already chosen. The work model exists to score the
+   actions not yet taken.
+2. **Extrapolation.** Measurement covers only operating points already visited. A parameterized
+   model predicts ones that have not been — a new topology, a different hardware mix, a load not yet
+   reached, or the effect of adding a replica — which is exactly the generalization a provisioning
+   or autoscaling decision needs.
+3. **Provable guarantees.** Stability and near-optimality are properties of a model, not of a log.
+   We establish them through Lyapunov drift (§5.3), which — importantly — does not assume memoryless
+   arrivals and so survives the correlated, non-Poisson stream a decode instance sees under
+   disaggregation (§3.8).
+
+Measurement and model are therefore not competitors. Timestamps are the ground truth against which
+we calibrate the coefficients and validate the predictions; the model is what turns that observable
+history into the forward, counterfactual, and provable statements a policy — and a paper — require.
 
 ---
 
@@ -300,8 +325,8 @@ and ITL targets), subject to:
 
 ## 5. Policy family and baselines
 
-Every routing policy in this study is a **restriction of the same action set** in §3.4, which
-keeps comparisons clean:
+We express every baseline as a **restriction of the same action set** (§3.4), which keeps the
+comparisons clean:
 
 | Policy | Restriction on $a_r$ |
 |--------|----------------------|
@@ -311,9 +336,9 @@ keeps comparisons clean:
 | EDPP (current) | decode instance from scorer; split from the Lyapunov rule, using **pool-level** virtual queues |
 | **Joint (target)** | choose $(d_r, p_r)$ jointly — see §6 |
 
-### 5.1 The joint policy direction (not yet specified in detail)
+### 5.1 The joint policy direction (made precise in §5.3)
 
-The joint objective chooses the full action in one optimization, e.g. a drift-plus-penalty form
+We let the joint objective choose the full action in one optimization — a drift-plus-penalty form
 with **per-instance** virtual queues $Q_i$:
 
 $$a_r^{\*} \;=\; \arg\min_{a}\; \Big[\, V\cdot \text{penalty}(a) \;+\; \sum_{i\in\mathcal{I}} Q_i \cdot \Delta\text{work}_i(a) \,\Big]$$
@@ -326,7 +351,7 @@ scorer.
 
 ### 5.2 Queue model (LOCKED)
 
-The formulation uses **two families of state**, deliberately kept distinct:
+We keep **two families of state**, deliberately distinct:
 
 1. **Congestion queues — one scalar work-backlog queue $Q_i$ per instance.** This is the only
    role of the congestion family: **stability** (is instance $i$ being given more work than its
@@ -480,7 +505,7 @@ on the formulation.
 
 ## 7. Why the realizable model looks the way it does (production grounding)
 
-Confirmed against upstream sources (2026-06-30):
+We confirmed the following against upstream sources (2026-06-30):
 
 - **llm-d** assigns roles via the static Kubernetes label `llm-d.ai/role` with values `prefill`,
   `decode`, `prefill-decode`. All endpoints live in one `InferencePool`; `prefill-profile` and
@@ -493,7 +518,7 @@ Confirmed against upstream sources (2026-06-30):
   {`disagg`,`prefill`,`decode`}. The (global) planner scales replica/GPU counts — it does **not**
   convert a worker between roles per request. (`ai-dynamo/dynamo` `examples/global_planner`.)
 
-**Conclusion:** in shipping data planes an instance's capability is fixed by the control plane on a
+**We conclude:** in shipping data planes an instance's capability is fixed by the control plane on a
 slow timescale; the per-request router only chooses *among* instances given fixed capabilities.
 "This request needs only prefill; this one can do both" is **not** expressible per-request — it is a
 node property. Our model respects this (S1, S2).
