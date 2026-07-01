@@ -341,7 +341,7 @@ comparisons clean:
 We let the joint objective choose the full action in one optimization — a drift-plus-penalty form
 with **per-instance** virtual queues $Q_i$:
 
-$$a_r^{\*} \;=\; \arg\min_{a}\; \Big[\, V\cdot \text{penalty}(a) \;+\; \sum_{i\in\mathcal{I}} Q_i \cdot \Delta\text{work}_i(a) \,\Big]$$
+$$a_r^{*} \;=\; \arg\min_{a}\; \Big[\, V\cdot \text{penalty}(a) \;+\; \sum_{i\in\mathcal{I}} Q_i \cdot \Delta\text{work}_i(a) \,\Big]$$
 
 where `penalty(a)` is the transfer/KV-movement cost (zero for `local`) plus any soft SLO cost, and
 $\Delta\text{work}_i(a)$ is the work action $a$ adds to instance $i$. In this single argmin,
