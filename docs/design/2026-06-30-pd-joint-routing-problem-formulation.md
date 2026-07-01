@@ -434,13 +434,24 @@ do not depend on $a$. Reading off the action-dependent part of the bound term by
   $$\sum_i Q_i\,\mathbb{E}[A_i-b_i]\;=\;\underbrace{\sum_i Q_i\,\Delta\text{work}_i(a)}_{\text{depends on }a}\;-\;\underbrace{\sum_i Q_i\,\mathbb{E}[b_i]}_{\text{independent of }a},$$
   and the second sum — the server's own drain — is constant across the actions we compare, so it
   drops from the argmin. The action-dependent congestion contribution is thus $\sum_i Q_i\,\Delta\text{work}_i(a)$.
-- **TTFT.** $r$'s realized first-token latency enters class $c$'s deficit; its conditional
-  expectation under the action is the forward estimate of §3.8, so
-  $Z^T_c\,\mathbb{E}[\text{ttft}_r]\to Z^T_c\,\hat T(a)$.
-- **ITL.** $r$ perturbs only decode node $d$ (a $\mathsf P$-only prefill target does no decode, so
-  carries no ITL constraint). To first order that perturbation is $r$'s marginal per-step work on
-  $d$: its decode presence $m_{dec}(d)$ always, plus its prefill-chunk interference $m_{pf}(d)$ only
-  when prefill is local. The contribution is $Z^I_d\big[m_{dec}(d)+\mathbf{1}\{p=\text{local}\}\,m_{pf}(d)\big]$.
+- **TTFT.** Only class $c$'s deficit sees this request — the other classes' queues are untouched by
+  $a$ — and the target $\tau^T_c$ is fixed, so
+  $$\sum_{c'} Z^T_{c'}\,\mathbb{E}[\text{ttft}-\tau^T_{c'}]\;=\;\underbrace{Z^T_c\,\mathbb{E}[\text{ttft}_r\mid a]}_{\text{depends on }a}\;-\;\underbrace{Z^T_c\,\tau^T_c}_{\text{independent of }a}.$$
+  We estimate the conditional expectation by the observable forward value $\hat T(a)$ of §3.8. The
+  action-dependent TTFT term is thus $Z^T_c\,\hat T(a)$.
+- **ITL.** Routing $r$ perturbs the per-step latency of the *one* decode node $d$ it lands on; every
+  other instance's ITL is untouched by $a$, a $\mathsf P$-only prefill target does no decode (so has
+  no ITL constraint), and $\tau^I$ is fixed. Hence
+  $$\sum_i Z^I_i\,\mathbb{E}[\text{itl}_i-\tau^I]\;=\;\underbrace{Z^I_d\big(m_{dec}(d)+\mathbf{1}\{p=\text{local}\}\,m_{pf}(d)\big)}_{\text{depends on }a}\;-\;\underbrace{\textstyle\sum_i Z^I_i\,\tau^I}_{\text{independent of }a}.$$
+  Here the marginal per-step latency $r$ adds to $d$ is, by the iteration-time identity of §3.7, its
+  own marginal work $\delta$: since $T^{\text{iter}}_d=\alpha_d+\sum_{r'\in B_d}\delta(s_{r'})$,
+  admitting $r$ raises every co-resident request's per-step time by $r$'s $\delta$. So we **define**
+  $$m_{dec}(d)=\delta(\text{$r$'s decode step on }d),\qquad m_{pf}(d)=\delta(\text{$r$'s prefill chunk on }d),$$
+  the first incurred whenever $r$ decodes on $d$ (i.e. always), the second only when prefill is local
+  and thus co-schedules on $d$. (Today's EDPP approximates $m_{pf}$ by its compute part
+  $C_{\!pf,d}\cdot\text{chunk}$, dropping the attention part of $\delta$.) This is a first-order,
+  *instantaneous* marginal; its persistence over $r$'s lifetime is not in this one-shot term but is
+  recovered reactively through $Z^I_d$ (see §5.4).
 - **Penalty.** $V\,\mathbb{E}[g(a)]=V\,c_{\text{xfer}}\,\mathbf{1}\{p\ne\text{local}\}$.
 
 Collecting the four and discarding the action-independent constant $B$ and the $-\tau$ shifts, the
@@ -460,13 +471,10 @@ from §3.6–§3.8. We now give the forward quantities explicitly:
   `T̂_local(d) = T^adm(d) + own-prefill-on-d`;
   `T̂_disagg(d,p) = T^adm(p) + prefill-on-p + transfer + T^adm(d)`. The `−τ_c` term in the
   constraint is constant within a class and drops out of the argmin.
-- `m_dec(d)` — marginal per-step decode pressure the request adds to `d`'s batch (steers the
-  choice of `d` toward ITL-healthy decode nodes; identical for local and disagg, so it does **not**
-  drive the P/D split).
-- `m_pf(d)` — per-step prefill-chunk interference on `d`'s co-resident decodes when prefill is
-  **local** (the `c_pf · chunk` term). For disaggregation the prefill lands on a `𝖯`-only node,
-  which carries no ITL constraint, so it contributes **no** ITL drift — this asymmetry is the
-  interference cost the `local` option pays and the `disaggregate` option escapes.
+- $m_{dec}(d),\ m_{pf}(d)$ — defined at the ITL step above. $m_{dec}(d)$ is incurred whether or not we
+  disaggregate (decode is on $d$ either way), so it steers *which* decode node but **not** the
+  local-vs-disaggregate split; $m_{pf}(d)$ is incurred **only** locally, so it is precisely the
+  interference cost the `local` option pays and disaggregation escapes.
 
 **Joint argmin.** The policy selects over the full action set in one optimization:
 
@@ -564,9 +572,14 @@ $\hat T, m_{dec}, m_{pf}$, which we therefore hold to the observable validation 
 
 ### 5.5 Reduction to the pairwise rule (recovering EDPP)
 
-The joint argmin generalizes the current EDPP decider, which fixes the decode node with an external
-scorer and chooses only local-vs-disaggregate. To see this, fix the decode node $d$ (the scorer's
-pick) and let the best prefill target be
+The joint action set is
+$$\mathcal{A}=\{(d,p): d\in\mathcal{M},\ p\in\mathcal{P}\cup\{\text{local}=d\}\},\qquad |\mathcal{A}|=|\mathcal{M}|\,(|\mathcal{P}|+1),$$
+and the joint rule minimizes $J$ over all of $\mathcal{A}$. The current EDPP decider instead
+restricts to the slice $\{(d^{\star},p): p\in\mathcal{P}\cup\{\text{local}\}\}$ for a single decode
+node $d^{\star}$ chosen by an **external scorer** (prefix-cache / queue scores, not $J$), and
+minimizes only over $p$. It therefore optimizes the *same* objective on a one-dimensional slice
+whose location is set by a non-drift mechanism. To see the reduction, fix $d=d^{\star}$ and let the
+best prefill target be
 $p^{\star}=\arg\min_{p\in\mathcal{P}}\big[\,Q_p\,W_p+Z^T_c\,\hat T_{\text{disagg}}(d,p)\,\big]$. The
 joint rule then disaggregates iff $J(d,p^{\star})<J(d,\text{local})$, i.e.
 
