@@ -509,14 +509,45 @@ define the deficit queues in *relative* form,
 $$Z^T_c\!\leftarrow\!\max\{Z^T_c+(\text{ttft}_r/\tau^T_c-1),\,0\},\qquad Z^I_i\!\leftarrow\!\max\{Z^I_i+(\text{itl}_i/\tau^I-1),\,0\},$$
 which enforces the identical constraint ($\text{ttft}\le\tau^T\Leftrightarrow\text{ttft}/\tau^T\le1$)
 but makes each deficit a dimensionless *fraction of target* — so a 10% TTFT miss and a 10% ITL miss
-count equally — and to normalize works by a reference work $W^{\*}$ ($q_i=Q_i/W^{\*}$,
-$\Delta w_i=\Delta\text{work}_i/W^{\*}$). Every term of the rule is then dimensionless and $V$ is a
-pure, dimensionless knob. Two consequences: (i) the argmin is invariant to an overall rescaling of
-$J$, so only the *relative* term weights — set by the normalizers — matter; and (ii) the transfer
-penalty must carry a fixed $\tau_{\text{ref}}/\tau^T$ factor so it scales as $1/(\tau^T)^2$ like the
-SLO terms, otherwise a loose $\tau^T$ shrinks the balance/SLO terms faster than the penalty and
-spuriously suppresses disaggregation. The standard $[V\!\leftrightarrow\!1/V]$ trade-off then holds:
-larger $V$ lowers transfer cost at the price of larger (dimensionless) SLO-deficit backlog.
+count equally — and to normalize the congestion pair by a reference work $W^{\star}$:
+$q_i=Q_i/W^{\star}$, $\Delta w_i=\Delta\text{work}_i/W^{\star}$. Every term of the rule is then
+dimensionless and $V$ is a pure, dimensionless knob.
+
+**Choosing $W^{\star}$ — class-agnostic, tied to $\tau_{\text{ref}}$.** The congestion queue $Q_i$
+carries *no class*: a mixed instance pools requests of every class, and stability is a property of
+that one shared GPU, not of any class (a per-class congestion queue would model per-class servers
+sharing no resource — the same error as splitting a mixed node into two servers). So $W^{\star}$ must
+be class-agnostic as well. We set it against a class-agnostic reference,
+$$W^{\star}\;\approx\;\mu_{\text{nom}}\cdot \tau_{\text{ref}},$$
+the work whose backlog induces one $\tau_{\text{ref}}$-worth of delay; then $q_i=Q_i/W^{\star}$ reads
+as "backlog measured in $\tau_{\text{ref}}$-delays," directly commensurate with the fraction-of-target
+SLO deficits. The per-class sensitivity is deliberately *not* placed here — it is already carried by
+the per-class TTFT term $Z^T_c\hat T$ (weighted by $\tau^T_c$), so a per-class $W^{\star}_c$ would
+double-count it. Two constants enter:
+
+- $\tau_{\text{ref}}$ — a **fixed reference TTFT**: one system-wide constant, independent of any
+  operating class target $\tau^T_c$. It is the single class-agnostic time-scale the formulation uses
+  for cross-cutting normalization — the same constant that appears in the transfer-penalty factor
+  below. (A natural pick is a representative interactive TTFT, e.g. the tightest class target or a
+  round number near it; its role is only to fix a common scale, and the argmin is invariant to it up
+  to the compensating factors.)
+- $\mu_{\text{nom}}$ — a **nominal service rate**: the work served per unit time by a representative
+  instance. It is used only as this one-time calibration constant and does **not** reintroduce $\mu$
+  into the per-request rule.
+
+A pleasant consequence: with a class-agnostic $W^{\star}$ but per-class $\tau^T_c$ on the SLO and
+transfer terms, those terms scale as $1/(\tau^T_c)^2$ while congestion scales as
+$1/(\tau_{\text{ref}})^2$. So a **tight-SLO** class (small $\tau^T_c$) yields latency-dominated
+decisions and a **loose** class yields balance-dominated ones — the behavior we want, for free. A
+per-class $W^{\star}_c$ would flatten this, making the stability-vs-SLO weight identical across
+classes.
+
+Two further consequences: (i) the argmin is invariant to an overall rescaling of $J$, so only the
+*relative* term weights — set by the normalizers — matter; and (ii) the transfer penalty must carry
+the fixed $\tau_{\text{ref}}/\tau^T_c$ factor so it scales as $1/(\tau^T_c)^2$ like the SLO terms,
+otherwise a loose $\tau^T_c$ shrinks the balance/SLO terms faster than the penalty and spuriously
+suppresses disaggregation. The standard $[V\!\leftrightarrow\!1/V]$ trade-off then holds: larger $V$
+lowers transfer cost at the price of larger (dimensionless) SLO-deficit backlog.
 
 **Observed vs. modeled.** The queue *states* $Q_i, Z^T_c, Z^I_i$ are observed; the *forward*
 quantities $\hat T(a), m_{dec}, m_{pf}, \Delta\text{work}$ (and $\hat N_{\text{out}}$ inside $W_d$)
