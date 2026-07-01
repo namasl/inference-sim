@@ -333,8 +333,11 @@ comparisons clean:
 | `never` (aggregate) | force $p_r = \text{local}$ |
 | `always` | force $p_r \neq \text{local}$ (always remote prefill) |
 | `prefix-threshold` | $p_r = \text{local}$ iff non-cached prompt tokens $\le$ threshold; decode instance from scorer |
-| EDPP (current) | decode instance from scorer; split from the Lyapunov rule, using **pool-level** virtual queues |
-| **Joint (target)** | choose $(d_r, p_r)$ jointly — derived in §5.3 |
+| EDPP — reduced ($d$ external) | the §5.3 drift rule minimized over the slice $\{(d^\star,p): p\in\mathcal{P}\cup\{\text{local}\}\}$, with $d^\star$ from a scorer (today's shipped decider; it also uses pool-level rather than per-instance queues) |
+| **EDPP — full joint (target)** | the *same* §5.3 drift rule minimized over all of $\mathcal{A}=\mathcal{M}\times(\mathcal{P}\cup\{\text{local}\})$; no scorer |
+
+The last two rows are the **same method** — the drift-plus-penalty decider of §5.3 — on two different
+action sets; §5.5 makes this precise.
 
 ### 5.1 The problem, as constrained stochastic optimization
 
@@ -595,6 +598,18 @@ uses the corrected work $W_p$ (§3.6); the ITL interference relief $Z^I_d\,m_{pf
 explicit observed-queue term on the left; and $\hat T$ is occupancy-aware (§3.8). Fixing $d$
 externally is exactly the loss the joint formulation removes (§1) — the pairwise rule cannot see
 that a *different* decode node would have made disaggregation unnecessary.
+
+**The two are one method, not two.** Nothing mathematical forces the reduction: the full joint rule
+*is* EDPP — the same drift-plus-penalty decider of §5.3 — evaluated over the whole action set
+$\mathcal{A}$ rather than a scorer-chosen slice. The scorer is not even required for cache locality.
+The cached prefix $p_{\text{cached}}$ in the work model (§3.6) is per-(request, node), so a node that
+already holds the prompt's KV has a smaller uncached $a_p$, hence smaller $W_p$ and $\hat T$, and the
+joint argmin prefers it on its own — cache affinity is subsumed by $J$, not delegated to a separate
+scorer. What the full version costs is compute — $|\mathcal{A}|=|\mathcal{M}|(|\mathcal{P}|+1)$
+candidate scorings per request instead of $(|\mathcal{P}|+1)$ — and llm-d scorer parity; what it buys
+is never sitting on a suboptimal slice. Optimizing over a superset, it is provably no worse than the
+reduced case. The reduction is therefore a deployment choice (integration on llm-d's existing
+scorer), not a mathematical necessity.
 
 ---
 
