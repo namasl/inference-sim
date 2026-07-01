@@ -334,20 +334,26 @@ comparisons clean:
 | `always` | force $p_r \neq \text{local}$ (always remote prefill) |
 | `prefix-threshold` | $p_r = \text{local}$ iff non-cached prompt tokens $\le$ threshold; decode instance from scorer |
 | EDPP (current) | decode instance from scorer; split from the Lyapunov rule, using **pool-level** virtual queues |
-| **Joint (target)** | choose $(d_r, p_r)$ jointly — see §6 |
+| **Joint (target)** | choose $(d_r, p_r)$ jointly — derived in §5.3 |
 
-### 5.1 The joint policy direction (made precise in §5.3)
+### 5.1 The problem, as constrained stochastic optimization
 
-We let the joint objective choose the full action in one optimization — a drift-plus-penalty form
-with **per-instance** virtual queues $Q_i$:
+Before naming any rule, we state what it must achieve. Write $g(t)$ for the operating cost we would
+rather avoid — here the transfer / KV-movement cost incurred by disaggregation in epoch $t$. Our
+objective (§4) is to minimize its time average subject to stability and the SLO constraints:
 
-$$a_r^{*} \;=\; \arg\min_{a}\; \Big[\, V\cdot \text{penalty}(a) \;+\; \sum_{i\in\mathcal{I}} Q_i \cdot \Delta\text{work}_i(a) \,\Big]$$
+$$\min\ \ \limsup_{T\to\infty}\frac1T\sum_{t=0}^{T-1}\mathbb{E}\big[g(t)\big]
+\qquad\text{s.t.}\qquad
+\begin{aligned}
+&\text{every congestion backlog } Q_i \text{ is mean-rate stable},\\
+&\overline{\text{ttft}}_c \le \tau^T_c \quad \forall\,\text{class } c,\\
+&\overline{\text{itl}}_i \le \tau^I \quad \forall\,\text{instance } i,
+\end{aligned}$$
 
-where `penalty(a)` is the transfer/KV-movement cost (zero for `local`) plus any soft SLO cost, and
-$\Delta\text{work}_i(a)$ is the work action $a$ adds to instance $i$. In this single argmin,
-load balancing emerges from the $\sum_i Q_i\,\Delta\text{work}_i$ term (work flows to lighter
-instances) and the P/D split emerges from the penalty-vs-queue trade-off — there is no separate
-scorer.
+where $\overline{(\cdot)}$ is a time average. The two SLO rows are *time-average* constraints, and
+stability of the work backlogs is what keeps throughput sustainable. The rest of §5 turns these
+constraints into a per-request rule; the decision formula appears only in §5.3, as the minimizer of
+a drift bound — not as a starting assumption.
 
 ### 5.2 Queue model (LOCKED)
 
@@ -386,31 +392,57 @@ ITL-deficit term, to steer prefill away from decode-busy M nodes — revisit two
 The exact penalty terms and the SLO-deficit drift are specified in §5.3; the estimators
 (the forward quantities) remain deferred (§9).
 
-### 5.3 Penalty and drift — the joint decision rule
+### 5.3 Deriving the decision rule
 
-**State.** Three queue families (§5.2), all maintained by observation:
+**Queue dynamics.** Each queue of §5.2 evolves by a standard update driven by *observed* signals.
+The congestion backlog at instance $i$ gains the work routed onto it and drains at its service rate:
+$$Q_i(t{+}1)=\max\{Q_i(t)-b_i(t),\,0\}+A_i(t),$$
+with $A_i(t)$ the work admitted to $i$ this epoch and $b_i(t)$ the work $i$ serves. The deficit
+queues integrate realized violations:
+$$Z^T_c(t{+}1)=\max\{Z^T_c(t)+(\text{ttft}_r-\tau^T_c),\,0\}\ \text{ at each class-}c\text{ first token},$$
+$$Z^I_i(t{+}1)=\max\{Z^I_i(t)+(\text{itl}_i-\tau^I),\,0\}\ \text{ per decode step on }i.$$
+The TTFT update fires once per request at its observed first token; the ITL update accrues per
+instance over its decode steps — the asymmetry of §5.2. By the standard virtual-queue argument,
+mean-rate stability of $Z^T_c$ (resp. $Z^I_i$) is equivalent to the time-average TTFT (resp. ITL)
+constraint of §5.1. So it suffices to keep every queue stable while minimizing $g$.
 
-- `Q_i` — congestion backlog at instance `i` (work-µs), conservation-bookkept.
-- `Z^T_c` — TTFT-deficit virtual queue for SLO class `c`.
-- `Z^I_i` — ITL-deficit virtual queue at instance `i`.
+**Lyapunov function.** Take the quadratic backlog measure
+$$L(t)=\tfrac12\Big[\textstyle\sum_i Q_i(t)^2+\sum_c \big(Z^T_c(t)\big)^2+\sum_i \big(Z^I_i(t)\big)^2\Big],$$
+and let $\Delta(t)=\mathbb{E}\big[L(t{+}1)-L(t)\mid \text{state}(t)\big]$ be its one-epoch conditional
+drift.
 
-**Lyapunov function** (quadratic, standard):
+**Drift bound.** Applying $(\max\{x-b,0\}+a)^2\le x^2+a^2+b^2+2x(a-b)$ to the congestion queues and
+$(\max\{x+y,0\})^2\le x^2+y^2+2xy$ to the deficit queues, then collecting the bounded second-moment
+terms into a constant $B$,
+$$\Delta(t)\ \le\ B\ +\ \sum_i Q_i\,\mathbb{E}[A_i-b_i]\ +\ \sum_c Z^T_c\,\mathbb{E}[\text{ttft}-\tau^T_c]\ +\ \sum_i Z^I_i\,\mathbb{E}[\text{itl}_i-\tau^I].$$
+$B$ is finite because per-request work and per-step latencies are bounded (finite prompt/output
+lengths and batch size).
 
-```
-L(t) = ½ [ Σ_i Q_i²  +  Σ_c (Z^T_c)²  +  Σ_i (Z^I_i)² ]
-```
+**Drift-plus-penalty.** The Lyapunov-optimization principle minimizes, each epoch, a bound on
+$\Delta(t)+V\,\mathbb{E}[g(t)\mid\text{state}]$, where $V>0$ tunes how hard cost is pushed down
+against backlog. Consider the single request $r$ (class $c$) being routed, with action $a=(d,p)$.
+Only $r$'s own placement is controllable this epoch; the service terms $b_i$ and the targets $\tau$
+do not depend on $a$. Reading off the action-dependent part of the bound term by term:
 
-**Drift-plus-penalty decision.** For each request `r` of class `c`, choose the action
-`a = (d, p)` that minimizes the part of the one-step drift bound it controls, plus `V ×` penalty:
+- **Congestion.** $r$ adds work $\Delta\text{work}_i(a)$ to each instance (to $d$ alone if local, or
+  to $d$ and $p$ if disaggregated), so $\sum_i Q_i\,\mathbb{E}[A_i]=\sum_i Q_i\,\Delta\text{work}_i(a)$.
+- **TTFT.** $r$'s realized first-token latency enters class $c$'s deficit; its conditional
+  expectation under the action is the forward estimate of §3.8, so
+  $Z^T_c\,\mathbb{E}[\text{ttft}_r]\to Z^T_c\,\hat T(a)$.
+- **ITL.** $r$ perturbs only decode node $d$ (a $\mathsf P$-only prefill target does no decode, so
+  carries no ITL constraint). To first order that perturbation is $r$'s marginal per-step work on
+  $d$: its decode presence $m_{dec}(d)$ always, plus its prefill-chunk interference $m_{pf}(d)$ only
+  when prefill is local. The contribution is $Z^I_d\big[m_{dec}(d)+\mathbf{1}\{p=\text{local}\}\,m_{pf}(d)\big]$.
+- **Penalty.** $V\,\mathbb{E}[g(a)]=V\,c_{\text{xfer}}\,\mathbf{1}\{p\ne\text{local}\}$.
 
-```
-J(a) = Σ_i Q_i · Δwork_i(a)            (congestion drift)
-     + Z^T_c · T̂(a)                    (TTFT-deficit drift)
-     + Z^I_d · [ m_dec(d) + 1{p=local}·m_pf(d) ]   (ITL-deficit drift, on the decode node d)
-     + V · c_xfer · 1{p ≠ local}        (penalty)
-```
+Collecting the four and discarding the action-independent constant $B$ and the $-\tau$ shifts, the
+epoch bound is minimized by
 
-with the forward (modeled) quantities:
+$$a_r^{*}=\arg\min_{a}\ \Big[\ \underbrace{\textstyle\sum_i Q_i\,\Delta\text{work}_i(a)}_{\text{congestion}}\;+\;\underbrace{Z^T_c\,\hat T(a)}_{\text{TTFT}}\;+\;\underbrace{Z^I_d\big[m_{dec}(d)+\mathbf{1}\{p=\text{local}\}\,m_{pf}(d)\big]}_{\text{ITL}}\;+\;\underbrace{V\,c_{\text{xfer}}\,\mathbf{1}\{p\ne\text{local}\}}_{\text{penalty}}\ \Big].$$
+
+This is the decision rule — obtained as the minimizer of the drift-plus-penalty bound, not posited.
+Every quantity in it is either an observed queue state ($Q_i,\,Z^T_c,\,Z^I_d$) or a forward estimate
+from §3.6–§3.8. We now give the forward quantities explicitly:
 
 - `Δwork_i(a)` — work the action lands on instance `i`, from §3.6, **evaluated with each target
   instance's own coefficients** (§3.1):
@@ -457,27 +489,64 @@ This is structurally the current EDPP `lhs > rhs` rule, generalized: the congest
 corrected `W_p` (§3.6), the ITL interference relief `Z^I_d·m_pf(d)` is now an explicit observed-queue
 term on the LHS, and `T̂` is occupancy-aware.
 
-**Queue updates (all observed).**
-
-```
-Q_i      : conservation bookkeeping — add Δwork at route/admit, drain at service (§5.2)
-Z^T_c    : at each request's first token,  Z^T_c ← max( Z^T_c + (ttft_realized − τ^T_c), 0 )
-Z^I_i    : per decode step (or time slot) on i,  Z^I_i ← max( Z^I_i + (itl_realized_i − τ^I), 0 )
-```
-
-The TTFT update is per-request at first-token (one-shot); the ITL update is per-instance, integrated
-over the instance's decode steps (sustained) — the asymmetry locked in §5.2.
-
 **Normalization.** Each term is divided by its natural scale (the `τ`'s and work normalizers `w*`)
 so the terms are dimensionless and `V` is a pure penalty knob; this is the dimensionless-invariance
 property already anchored in the current implementation. The standard `[V ↔ 1/V]` trade-off applies:
 larger `V` lowers transfer cost at the price of larger SLO-deficit backlog.
 
-**Observed vs. modeled (cross-ref §5.2).** The queue *states* `Q_i, Z^T_c, Z^I_i` are observed; the
-*forward* quantities `T̂(a), m_dec, m_pf, Δwork` (and `N̂_out` inside `W_d`) are modeled — they price
-an action not yet taken. The reactive interference handling is automatic (a busy decode node already
-has high `Z^I_d`); `m_pf(d)` is the optional **anticipatory** layer (§5.1 / the deferred predictor
-work owes its estimate).
+**Observed vs. modeled.** The queue *states* $Q_i, Z^T_c, Z^I_i$ are observed; the *forward*
+quantities $\hat T(a), m_{dec}, m_{pf}, \Delta\text{work}$ (and $\hat N_{\text{out}}$ inside $W_d$)
+are modeled — they price an action not yet taken. Reactive interference handling is automatic (a
+busy decode node already carries a high $Z^I_d$); the $m$ terms are the optional **anticipatory**
+correction whose approximation §5.4 examines.
+
+### 5.4 Is the rule sound? What is exact, and what is approximate
+
+The derivation is a standard Lyapunov drift-plus-penalty argument, so it inherits the usual
+guarantees — but only to the extent its inputs are exact. We separate the two.
+
+**Exact / rigorous.**
+
+- The drift bound and the quadratic Lyapunov step hold verbatim, needing only bounded per-request
+  work and per-step latency (finite prompt/output lengths and batch) for the constant $B$ to be finite.
+- The congestion term $\sum_i Q_i\,\Delta\text{work}_i(a)$ is exact — it is the arrival's contribution
+  to each backlog, with the action-independent service $b_i$ correctly dropped.
+- The virtual-queue construction is exact: mean-rate stability of $Z^T_c, Z^I_i$ is equivalent to the
+  §5.1 time-average SLO constraints. The standard result then applies — under the idealized rule the
+  policy is **throughput-optimal** (stable whenever any policy could be) and its time-average cost is
+  within $O(1/V)$ of the constrained optimum, with worst-case backlog $O(V)$: the usual
+  $[V\!\leftrightarrow\!1/V]$ trade-off.
+- Crucially, none of this assumes memoryless arrivals. The drift argument holds for general (bursty,
+  correlated) arrivals with bounded moments, so the guarantee **survives the non-Poisson decode
+  stream** of §3.8.
+
+**Approximate (and where the honesty lies).**
+
+- **TTFT term.** The bound contains $\mathbb{E}[\text{ttft}_r\mid a]$; we substitute the observable
+  forward estimate $\hat T(a)$ (§3.8). The guarantee is exact when $\hat T$ is unbiased and degrades
+  gracefully with its bias — which is exactly why §3.8 makes $\hat T$ measurable and validates it
+  against the realized $T^{\text{adm}}$. The *theory* attaches to the rule with true
+  $\mathbb{E}[\text{ttft}]$; the *implementation* substitutes $\hat T$, and the gap is the estimator error.
+- **ITL term.** $m_{dec}, m_{pf}$ approximate the horizon-integrated ITL impact of $r$ by its
+  *instantaneous* per-step marginal work on $d$. The persistence over $r$'s co-residence is not in
+  this one-shot term; it is captured *reactively*, since $Z^I_d$ stays elevated over that horizon as
+  realized ITL misses accrue. The $m$ terms are thus an anticipatory correction on top of reactive
+  backpressure, not a claim of exactness.
+- **Per-arrival epochs.** We apply the per-slot principle once per arrival, treating each routing as
+  one decision epoch — standard when an action affects only its own request's placement.
+
+**Two points the derivation settles.**
+
+- *No double counting.* The congestion term (weighted by $Q_i$) and the TTFT term (weighted by
+  $Z^T_c$) both correlate with load, yet they enforce *different* constraints — stability versus the
+  latency SLO — and are driven by different queues. There is no redundancy.
+- *Why keep congestion queues at all,* when $\hat T$ already sees occupancy? Because SLO deficits
+  alone do not bound backlog: under a loose SLO a policy could hold deficits near zero while work
+  piles up. The congestion queues deliver the stability (throughput-optimality) half of the guarantee.
+
+**Net.** "This joint rule is stable and within $O(1/V)$ of optimal, under general arrivals" is sound
+for the idealized rule; the deployed rule inherits it up to the bias of the forward estimates
+$\hat T, m_{dec}, m_{pf}$, which we therefore hold to the observable validation of §3.8.
 
 ---
 
