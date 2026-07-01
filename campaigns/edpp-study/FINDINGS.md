@@ -166,3 +166,52 @@ if pursued, is a non-GPU-matched (independent-scaling) comparison.
   robust but the magnitude (2.7% interference signal) is one operating point.
 - Still open: `z_itl` responsive-update (TODO 10b), per-instance backlog coherence (TODO 12),
   RAG re-measure (TODO 8).
+
+## Stage A — estimator-validation harness (2026-07-01)
+
+New `--pd-outcome-trace` CSV (run + replay) emits one row per request pairing realized
+admission delay (per prefill/decode sub-req, `T_adm = schedule − enqueue`), TTFT, mean ITL,
+E2E, and completion, keyed by `request_id`. `analyze/estimator_validation.py` joins it against
+`--edpp-decision-trace` on `request_id` and reports predicted-vs-realized bias, split by
+disaggregated × slo_class over completed requests. This validates the *shipped* (waiting-only,
+occupancy-blind) forward estimators; it is the baseline Stage C's occupancy-aware roll-forward
+will be re-measured against. Measurement-only — no decider/routing change.
+
+**Anchor run** — synth @ 2P2D, rate 2.0, 5000 reqs (bake `blis run --num-instances 4
+--trace-output`; replay `--num-instances 4 --prefill-instances 2 --decode-instances 2
+--pd-decider edpp --edpp-coeffs coeffs-llama70b-h100-tp4.json --edpp-tau-ttft 2s
+--edpp-tau-itl 150ms`). EDPP disaggregated 4545/5000 (91%); 455 kept local. Bias
+(median ratio realized/predicted, and tail):
+
+- **ttft_p (disagg, batch):** median 2.08× under-pred; predicted p50 63ms vs realized p50 120ms;
+  tail tight (p99 pred 93ms / real 190ms). For disaggregated requests TTFT is prefill-dominated,
+  so the decode queue does not enter TTFT — it lands in E2E/ITL.
+- **ttft_d (local path, HOL-blind):** median 2.74× but **tail catastrophic — p90 realized 324s vs
+  predicted 0.55s (~590×), p99 real 366s vs pred 0.68s**. This is the archived "predicted 14.7s vs
+  realized 542s" HOL-blindness (`ttft_d` built from waiting backlog, ignoring RUNNING decode
+  occupancy) — reproduced, confirming the harness.
+- **Decode admission delay (waiting-only estimate qd_raw/mu_d_nom):** **median ~905× under-pred —
+  predicted p50 0.31s vs realized p50 285s** under 2-decode-node saturation. The clearest single
+  quantitative case for Stage C (occupancy-aware admission-delay roll-forward).
+- **Prefill admission:** median 1.33× (predicted ~0 vs realized ~15.6ms) — the estimator predicts
+  no prefill wait; real wait is small.
+
+**Conclusion:** the harness works end-to-end and reproduces the qualitative, tail-heavy
+under-prediction of the shipped occupancy-blind estimators. The waiting-only decode signal is
+optimistic by ~3 orders of magnitude under saturation. This is the Stage-A baseline.
+
+**Known limitations / follow-ups (not blockers):**
+1. Local (non-disaggregated) requests carry no `ParentRequest`, so their `slo_class`/`input_tokens`
+   are empty/0 in the outcome CSV (populated only from a parent's `OriginalRequest`). The analysis
+   buckets them as `class=unknown` (was: silently dropped by NaN groupby — fixed). A proper fix
+   populates class/tokens for local rows from the original request stream.
+2. The outcome `completed` flag uses the `RequestE2Es[id] > 0` proxy, which marked 5000/5000 here
+   vs the sim's `completed_requests` = 4545 — the proxy is looser than the sim's completion
+   definition; reconcile before using `completed` as a hard filter.
+3. Realized decode `T_adm` (p50 285s) coexists with realized TTFT p50 120ms on the same disagg
+   requests — the decode-side TTFT is measured from decode arrival (omits the pre-decode wait),
+   the long-standing "decode-side TTFT understated" issue. Stage A surfaces it; it is orthogonal
+   to this harness.
+4. PD+EDPP *replay* on this full config completed 4545/5000 (2-decode-node saturation, expected) —
+   NOT a parity bug. An earlier smoke run's 23/50 was a small-config horizon artifact, not an
+   engine defect. `--pd-outcome-trace` admission-time columns match run byte-for-byte.
