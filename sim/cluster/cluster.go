@@ -1303,6 +1303,64 @@ func (cs *ClusterSimulator) feedAdmission(req *sim.Request) {
 	cs.sloFeedback.OnAdmit(key, prefillSide)
 }
 
+// BuildPDOutcomeRecords assembles one realized-outcome record per request for the
+// --pd-outcome-trace estimator-validation harness (Stage A). It walks disaggregated
+// parents and locally-admitted requests, pairs each with its realized TTFT/ITL/E2E
+// from m (keyed by original request ID), and returns records sorted by RequestID
+// (INV-6). A t_adm is emitted only when both its enqueue and schedule instants are
+// set; otherwise it stays zero. "disaggregated" means a distinct decode instance was
+// used. Completion follows the metrics convention: RequestE2Es[id] > 0.
+//
+// Local t_adm limitation: the non-disaggregated enqueue instant is not tracked as an
+// absolute tick (only GatewayEnqueueTime under flow control), so this task captures
+// only the local schedule time and leaves LocalEnqueue/LocalTAdm zero. Threading the
+// gateway enqueue instant for a local t_adm is deferred to a follow-up.
+func (cs *ClusterSimulator) BuildPDOutcomeRecords(m *sim.Metrics) []trace.PDOutcomeRecord {
+	recs := make([]trace.PDOutcomeRecord, 0, len(cs.parentRequests)+len(cs.localAdmitTimes))
+	tadm := func(enq, sched int64) int64 {
+		if enq > 0 && sched >= enq {
+			return sched - enq
+		}
+		return 0
+	}
+	realized := func(id string) (ttft, itl, e2e float64, done bool) {
+		e2e = m.RequestE2Es[id]
+		return m.RequestTTFTs[id], m.RequestITLs[id], e2e, e2e > 0
+	}
+
+	for id, p := range cs.parentRequests {
+		ttft, itl, e2e, done := realized(id)
+		class, in := "", 0
+		if p.OriginalRequest != nil {
+			class = p.OriginalRequest.SLOClass
+			in = len(p.OriginalRequest.InputTokens)
+		}
+		recs = append(recs, trace.PDOutcomeRecord{
+			RequestID: id, SLOClass: class, InputTokens: in,
+			Disaggregated:   p.DecodeInstanceID != "" && p.DecodeInstanceID != p.PrefillInstanceID,
+			PrefillInstance: string(p.PrefillInstanceID), DecodeInstance: string(p.DecodeInstanceID),
+			PrefillEnqueue: p.PrefillEnqueueTime, PrefillSchedule: p.PrefillScheduleTime, PrefillTAdm: tadm(p.PrefillEnqueueTime, p.PrefillScheduleTime),
+			DecodeEnqueue: p.DecodeEnqueueTime, DecodeSchedule: p.DecodeScheduleTime, DecodeTAdm: tadm(p.DecodeEnqueueTime, p.DecodeScheduleTime),
+			RealizedTTFT: ttft, RealizedMeanITL: itl, RealizedE2E: e2e, Completed: done,
+		})
+	}
+
+	for id, admit := range cs.localAdmitTimes {
+		if _, isParent := cs.parentRequests[id]; isParent {
+			continue // already emitted as a disagg/local-via-parent record
+		}
+		ttft, itl, e2e, done := realized(id)
+		recs = append(recs, trace.PDOutcomeRecord{
+			RequestID: id, Disaggregated: false,
+			LocalEnqueue: 0, LocalSchedule: admit, LocalTAdm: 0, // enqueue instant not separately tracked for local; schedule captured
+			RealizedTTFT: ttft, RealizedMeanITL: itl, RealizedE2E: e2e, Completed: done,
+		})
+	}
+
+	sort.Slice(recs, func(i, j int) bool { return recs[i].RequestID < recs[j].RequestID })
+	return recs
+}
+
 // recordAdmissionTime captures the first admission instant of a request for the
 // --pd-outcome-trace estimator-validation harness (Stage A). No-op unless
 // recordPDOutcomes is set. A prefill sub-request sets its parent's
