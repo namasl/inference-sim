@@ -471,23 +471,8 @@ a* = argmin over { (d, local) : d ∈ 𝓜 } ∪ { (d, p) : d ∈ 𝓜, p ∈ �
 ```
 
 Load balancing (choice of `d`, choice of `p`) and the P/D split fall out of the same argmin; there
-is no separate scorer.
-
-**Reduction to the pairwise P/D rule (fixed `d`).** For a fixed decode node `d` (e.g. one chosen by
-an external scorer, as today) and the best prefill target
-`p* = argmin_{p∈𝒫} [ Q_p·W_p + Z^T_c·T̂_disagg(d,p) ]`, **disaggregate iff** `J(d,p*) < J(d,local)`,
-i.e.
-
-```
-  (Q_d − Q_{p*})·W_p  +  Z^I_d · m_pf(d)     >     Z^T_c · ( T̂_disagg − T̂_local )  +  V · c_xfer
-  └──────────────┬───────────────────────┘         └───────────────────┬─────────────────────┘
-   congestion relief (move W_p off d)                TTFT change from disaggregating
-   + ITL interference relief on d                    + transfer penalty
-```
-
-This is structurally the current EDPP `lhs > rhs` rule, generalized: the congestion term uses the
-corrected `W_p` (§3.6), the ITL interference relief `Z^I_d·m_pf(d)` is now an explicit observed-queue
-term on the LHS, and `T̂` is occupancy-aware.
+is no separate scorer. When the decode node is instead fixed by an external scorer, the rule
+collapses to the current EDPP pairwise decider — we show that reduction in §5.5.
 
 **Normalization.** Each term is divided by its natural scale (the `τ`'s and work normalizers `w*`)
 so the terms are dimensionless and `V` is a pure penalty knob; this is the dimensionless-invariance
@@ -520,6 +505,31 @@ guarantees — but only to the extent its inputs are exact. We separate the two.
   correlated) arrivals with bounded moments, so the guarantee **survives the non-Poisson decode
   stream** of §3.8.
 
+Stated precisely:
+
+> **Proposition (stability and near-optimality; informal).** Suppose per-request work and per-step
+> latency are bounded, and the forward estimates are unbiased — $\mathbb{E}[\hat T(a)]=\mathbb{E}[\text{ttft}\mid a]$,
+> and likewise for the ITL marginals. If *some* policy meets all §5.1 constraints with time-average
+> cost $g^\star$ and slack $\epsilon>0$ (i.e. it keeps each SLO strictly below target on average),
+> then the rule of §5.3 (i) keeps every queue mean-rate stable — so all SLO constraints hold on time
+> average — and (ii) attains time-average cost $\bar g \le g^\star + B/V$, with mean total backlog
+> $O(V/\epsilon)$.
+
+*Proof sketch.* The rule minimizes the drift-plus-penalty bound over the action space, so its bound
+is no larger than that of **any** other policy — in particular a stationary, queue-blind policy that
+draws actions from the constraint-feasible distribution achieving $g^\star$ with slack $\epsilon$.
+Substituting that comparison policy on the right-hand side, feasibility drives each queue-weighted
+expectation to $\le -\epsilon$ and the penalty term to $Vg^\star$, giving
+$$\Delta(t)+V\,\mathbb{E}[g(t)]\ \le\ B + Vg^\star - \epsilon\textstyle\sum_q \text{queue}_q(t).$$
+Take expectations, sum over $t=0,\dots,T-1$, and telescope $L$: dropping the non-negative backlog
+term yields $\bar g \le g^\star + B/V$, and dropping the penalty term bounds the mean backlog by
+$O\big((B+Vg^\star)/\epsilon\big)=O(V/\epsilon)$, hence mean-rate stability. Bounded work/latency
+keep $B$ finite. Neither the comparison policy nor the telescoping invokes the arrival law, so the
+result holds for **general (non-Poisson) arrivals**. Finally, unbiasedness is what lets the
+*implemented* rule (which uses $\hat T$ and the $m$ terms in place of the true expectations) occupy
+the same inequality; any bias enters additively and is bounded by the estimator error — the quantity
+§3.8 makes observable and validates. $\qquad\blacksquare$
+
 **Approximate (and where the honesty lies).**
 
 - **TTFT term.** The bound contains $\mathbb{E}[\text{ttft}_r\mid a]$; we substitute the observable
@@ -547,6 +557,27 @@ guarantees — but only to the extent its inputs are exact. We separate the two.
 **Net.** "This joint rule is stable and within $O(1/V)$ of optimal, under general arrivals" is sound
 for the idealized rule; the deployed rule inherits it up to the bias of the forward estimates
 $\hat T, m_{dec}, m_{pf}$, which we therefore hold to the observable validation of §3.8.
+
+### 5.5 Reduction to the pairwise rule (recovering EDPP)
+
+The joint argmin generalizes the current EDPP decider, which fixes the decode node with an external
+scorer and chooses only local-vs-disaggregate. To see this, fix the decode node $d$ (the scorer's
+pick) and let the best prefill target be
+$p^{\star}=\arg\min_{p\in\mathcal{P}}\big[\,Q_p\,W_p+Z^T_c\,\hat T_{\text{disagg}}(d,p)\,\big]$. The
+joint rule then disaggregates iff $J(d,p^{\star})<J(d,\text{local})$, i.e.
+
+```
+  (Q_d − Q_{p*})·W_p  +  Z^I_d · m_pf(d)     >     Z^T_c · ( T̂_disagg − T̂_local )  +  V · c_xfer
+  └──────────────┬───────────────────────┘         └───────────────────┬─────────────────────┘
+   congestion relief (move W_p off d)                TTFT change from disaggregating
+   + ITL interference relief on d                    + transfer penalty
+```
+
+This is structurally today's EDPP `lhs > rhs` rule, generalized in three ways: the congestion term
+uses the corrected work $W_p$ (§3.6); the ITL interference relief $Z^I_d\,m_{pf}(d)$ is now an
+explicit observed-queue term on the left; and $\hat T$ is occupancy-aware (§3.8). Fixing $d$
+externally is exactly the loss the joint formulation removes (§1) — the pairwise rule cannot see
+that a *different* decode node would have made disaggregation unnecessary.
 
 ---
 
