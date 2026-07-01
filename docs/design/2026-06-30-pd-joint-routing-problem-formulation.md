@@ -4,10 +4,12 @@
 **Status:** Draft — problem/system model only. No algorithm or implementation committed yet.
 **Branch:** `design/pd-joint-routing`
 
-> This document fixes the **system model** and the **problem statement** for prefill/decode
-> (P/D) routing in a disaggregated LLM-serving deployment. It deliberately stops short of
-> proposing a specific policy implementation. Predictor-accuracy questions (how individual
-> latency terms are estimated) are explicitly **out of scope here** and deferred.
+> In this document we fix the **system model** and the **problem statement** for prefill/decode
+> (P/D) routing in a disaggregated LLM-serving deployment. We adopt one stance throughout: we
+> describe the system at **two fidelities** — an *exact, observable* layer that the deployed policy
+> evaluates from measured state (§3.7–§3.8), and a *tractable, analytical* layer we use for
+> closed-form reasoning and then validate against the first. We deliberately stop short of
+> committing a specific estimator for each latency term; those choices are deferred (§9).
 
 ---
 
@@ -33,7 +35,7 @@ A decomposed pipeline picks the decode instance *blind to the split*, then picks
 *blind to the decode alternatives it could have chosen*. A **joint** formulation treats
 `(instance, split)` as one action and can express choices the pipeline cannot.
 
-This document formalizes the joint problem.
+In this document we formalize that joint problem.
 
 ---
 
@@ -198,14 +200,91 @@ W_p(q) = CPf_q · a_p   +   CAttn_q · a_p · (p_cached + a_p/2)
   In no-cache traffic (e.g. tiny-prompt synth) the cross term ≈ 0 and the two agree; it matters on
   shared-prefix / RAG workloads.
 
-**Occupancy / forward-TTFT caveat (cross-reference §5.2).** The congestion backlog drains a
-request's work the moment it is admitted to the running batch, so it is a **waiting-only** quantity.
-A forward TTFT estimate built from waiting work alone omits the residual service time of the
-*currently-running* batch (the time until a slot/KV frees) and under-predicts TTFT on a saturated
-instance (and over-predicts when demand estimates are inflated). A faithful forward TTFT must add a
-residual-occupancy term `R_batch(occupancy)` estimated from live `batch_size` / `kv` / resident
-prefill — *in addition to* `waiting_work / drain_rate`. The SLO-deficit queue sidesteps this by
-reading **realized** latency, which already embeds occupancy (§5.2).
+The work in $W_p$ and $W_d$ is a *demand*, not a latency. The next two subsections connect it to
+wall-clock time, and in doing so expose a subtlety we must respect: a request's work is drained
+from a queue the moment it enters the running batch, so a backlog that counts only *waiting* work
+omits the *currently-running* batch entirely — the very thing that decides how long a new arrival
+waits. We therefore develop the time model with that residual occupancy in view.
+
+### 3.7 From work to time: the per-iteration identity
+
+We connect work to time through the mechanics of continuous batching, in a form we can evaluate
+from observed state.
+
+At any instant, instance $i$ runs a *batch* $B_i$ — the set of requests active on it. Each active
+request $r$ sits at a definite *stage* $s_r$: either a specific prefill chunk, or decode step $k$
+(its $k$-th output token). We write $\delta(s_r)$ for the **marginal work** request $r$ contributes
+in the current iteration given its stage. It is the single-iteration slice of the §3.6 work, read
+off the stage:
+
+- prefill chunk of `chunk` tokens: $\delta = C_{\!pf}\cdot\text{chunk} + C_{\!attn}\cdot\text{chunk}\cdot(\text{context cached so far})$;
+- decode step $k$: $\delta = C0 + C1\cdot(\text{input}+k)$.
+
+Every quantity here is observed from $r$'s current stage and the instance coefficients $\theta_i$;
+nothing is estimated except, for stages not yet reached, the output length $o$.
+
+One iteration then takes
+$$T^{\text{iter}}_i \;=\; \alpha_i \;+\; \sum_{r\in B_i}\delta(s_r),$$
+where $\alpha_i$ is the per-iteration baseline from $\theta_i$ (kernel launch, weight load) and the
+sum is the batch's total marginal work. This is the state-resolved form of the linear iteration-time
+law $T=\alpha+N\delta$; we keep a per-request $\delta(s_r)$ rather than one shared mean $\delta$,
+precisely because we can observe each stage.
+
+**Work is not wall-clock service.** Under continuous batching a request advances exactly one stage
+per iteration, so its remaining lifetime is a fixed number of iterations — its remaining *stage
+count* $(c_{\text{rem}}+o_{\text{rem}})$ — while each of those iterations lasts $T^{\text{iter}}_i$,
+which depends on the *whole* co-resident batch. Two distinct quantities therefore attach to a
+running request $r$, and we will need both:
+
+- its **residual work** $W'_r=\sum_{\text{remaining stages}}\delta(s)$ — $r$'s future contribution
+  to every co-resident request's iteration time;
+- its **departure**, set by its remaining stage count (it frees a slot and its KV only when it
+  completes), *not* by $W'_r$.
+
+We obtain both by bookkeeping: we observe how far $r$ has progressed (completed chunks and $k$
+tokens), read off the remaining stages, and take $W'_r$ as the tail of the same §3.6 integral —
+exact in the known quantities, depending only on the estimated $o$. This decoupling (own work
+spread across shared iterations; departure governed by stage count) is why a request's service time
+is not its work, and it is the fact §3.8 uses to obtain the admission delay.
+
+### 3.8 Admission delay, and how we obtain it
+
+The part of TTFT that queueing governs is the **admission delay** $T^{\text{adm}}_r$: the time from
+when request $r$ becomes eligible (enqueued after routing) until it enters the running batch and
+begins its own prefill. We obtain it in two complementary ways, neither of which assumes anything
+about the arrival process.
+
+**By observation (ground truth).** The simulator — and a real server, through its metrics —
+records $r$'s enqueue and schedule instants, so
+$$T^{\text{adm}}_r \;=\; t^{\text{schedule}}_r - t^{\text{enqueue}}_r$$
+is measured exactly. We use it both as the target any forward estimate must reproduce and to
+calibrate the coefficients.
+
+**By forward prediction (what the policy needs).** A router commits to an action before it can
+observe the outcome, and it can never measure the alternative it did not take, so it needs an
+estimate of $T^{\text{adm}}$ under a candidate placement. We form one from observed state, without a
+stochastic model:
+
+- If the target instance has a free batch slot and enough free KV for the prompt *now*, the request
+  is admitted on the next iteration and $T^{\text{adm}}\approx 0$.
+- Otherwise we roll the observed batch forward deterministically: each iteration costs
+  $T^{\text{iter}}_i$ (§3.7), running requests depart after their remaining stage counts, and we
+  accumulate elapsed time until a slot and the required KV free. This is a short, deterministic
+  look-ahead over observed state and the work formulas — not a solved queue.
+- Where a single aggregate suffices, Little's law gives $T^{\text{adm}}\approx \bar L^{\text{q}}_i/\lambda^{\text{adm}}_i$,
+  with the mean waiting count $\bar L^{\text{q}}_i$ and the admission rate $\lambda^{\text{adm}}_i$
+  both measured. Little's law holds for any ergodic system, so this estimate is valid however
+  bursty or correlated the arrivals are.
+
+**Why the arrival process does not enter.** For a disaggregated request, the decode instance sees
+as its arrivals the prefill instances' *departures* delayed by KV transfer — a correlated,
+non-Poisson stream. Both estimates above avoid this: the roll-forward conditions on the *actual
+current batch*, and Little's law needs no arrival assumption at all. A memoryless (Poisson)
+description remains reasonable for the *external* request stream seen by the prefill instances and
+by the aggregated (`local`) path; we use it only in the analytical layer where it is needed
+(steady state, and the offline yardstick of §6), and we validate that layer against the observed
+$T^{\text{adm}}$ above. This is the observable layer promised in the opening: the deployed policy's
+forward estimates rest on it, and the analytical layer must reproduce it.
 
 ---
 
@@ -315,10 +394,11 @@ with the forward (modeled) quantities:
   - `p ∈ 𝒫`: `Δwork_d = W_d(d)`, `Δwork_p = W_p(p)`.
   - Under heterogeneity the same request yields different `Δwork` on different instances, so the
     congestion term `Σ_i Q_i·Δwork_i` ranks instances by cost *and* load jointly.
-- `T̂(a)` — forward TTFT estimate for the request under action `a`. **Must be occupancy-aware**
-  (§3.6 caveat): `T̂_local(d) = R_batch(d) + Q^wait_d/μ_d + own-prefill-on-d`;
-  `T̂_disagg(d,p) = prefill-on-p + transfer + R_batch(d)` (admission wait on `d`). The `−τ_c` term
-  in the constraint is constant within a class and drops out of the argmin.
+- `T̂(a)` — forward TTFT estimate for the request under action `a`, obtained as in §3.8 (the
+  admission-delay roll-forward or Little's-law estimate, both occupancy-aware):
+  `T̂_local(d) = T^adm(d) + own-prefill-on-d`;
+  `T̂_disagg(d,p) = T^adm(p) + prefill-on-p + transfer + T^adm(d)`. The `−τ_c` term in the
+  constraint is constant within a class and drops out of the argmin.
 - `m_dec(d)` — marginal per-step decode pressure the request adds to `d`'s batch (steers the
   choice of `d` toward ITL-healthy decode nodes; identical for local and disagg, so it does **not**
   drive the P/D split).
@@ -437,9 +517,11 @@ node property. Our model respects this (S1, S2).
 
 ## 9. Open questions (to resolve next)
 
-- Queue families (§5.2) and the penalty + drift decision rule (§5.3) are now fixed. Remaining
-  forward-estimator specifics: `R_batch(occupancy)`, `m_dec`, `m_pf`, and `N̂_out` (the deferred
-  predictor work — §8 item 4).
+- The observable layer for `T̂` is now specified (§3.7–§3.8: per-iteration identity, admission-delay
+  roll-forward / Little's law). Remaining forward-estimator specifics: the marginal ITL terms
+  `m_dec`, `m_pf`, and the output-length estimate `N̂_out` (the deferred predictor work — §8 item 4).
+- The analytical (Layer-2) reduction — closed-form steady-state on the tractable core and the
+  provable policy guarantees — is not yet written here; §6 sketches its yardstick role.
 - Heterogeneity parameterization: which per-instance parameters the model carries explicitly
   (KV capacity, service-rate coefficients, interconnect bandwidth) and how they enter the costs.
 - MILP decision variables and constraints (§6) — the formal write-up of §3.
