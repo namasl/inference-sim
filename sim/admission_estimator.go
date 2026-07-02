@@ -55,6 +55,27 @@ func (littleEstimator) EstimateTAdm(ctx AdmissionContext) float64 {
 	return float64(ctx.QueueDepth) / ctx.AdmissionRate
 }
 
+type fluidEstimator struct{}
+
+func (fluidEstimator) Name() string { return "fluid" }
+func (fluidEstimator) EstimateTAdm(ctx AdmissionContext) float64 {
+	// Admit next iteration if a slot AND enough KV already fit.
+	if ctx.BatchSize < ctx.MaxBatchSize && ctx.FreeKVBlocks >= ctx.ReqKVNeed {
+		return 0
+	}
+	// Occupancy-conditioned departure rate X̂_dep = B / (R̄ · T_iter) departures per µs.
+	if ctx.RemainingStepsEst <= 0 || ctx.TIter <= 0 || ctx.BatchSize <= 0 {
+		return 0
+	}
+	xDep := float64(ctx.BatchSize) / (ctx.RemainingStepsEst * ctx.TIter)
+	if xDep <= 0 {
+		return 0
+	}
+	// N_ahead: at least one departure needed for a slot; add KV-driven departures if KV-bound.
+	nAhead := 1.0
+	return nAhead / xDep
+}
+
 // NewAdmissionEstimator returns the estimator by name. Little/fluid/rollforward
 // and the oracle variants are added in later tasks.
 func NewAdmissionEstimator(name string) (AdmissionDelayEstimator, error) {
@@ -63,6 +84,8 @@ func NewAdmissionEstimator(name string) (AdmissionDelayEstimator, error) {
 		return waitingEstimator{}, nil
 	case "little":
 		return littleEstimator{}, nil
+	case "fluid":
+		return fluidEstimator{}, nil
 	default:
 		return nil, fmt.Errorf("unknown admission estimator %q", name)
 	}
