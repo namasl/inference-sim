@@ -2235,7 +2235,7 @@ var runCmd = &cobra.Command{
 
 		// Write per-request realized-vs-closed work-model CSV if requested (shared with replay; INV-13 parity).
 		writeWorkTrace(cs, edppWorkTracePath)
-	writeAdmissionTrace(cs, edppAdmissionTracePath)
+		writeAdmissionTrace(cs, edppAdmissionTracePath)
 
 		// Write per-candidate routing-decision CSV if requested (shared with replay; INV-13 parity).
 		writeRoutingDecisionTrace(cs.Trace(), routingDecisionTracePath)

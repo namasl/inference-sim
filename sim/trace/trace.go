@@ -51,13 +51,13 @@ type SimulationTrace struct {
 // NewSimulationTrace creates a SimulationTrace ready for recording.
 func NewSimulationTrace(config TraceConfig) *SimulationTrace {
 	return &SimulationTrace{
-		Config:          config,
-		Admissions:      make([]AdmissionDecisionRecord, 0),
-		Routings:        make([]RoutingRecord, 0),
-		Disaggregations: make([]DisaggregationRecord, 0),
-		PrefillRoutings: make([]PrefillRoutingRecord, 0),
-		DecodeRoutings:  make([]DecodeRoutingRecord, 0),
-		EncodeRoutings:  make([]EncodeRoutingRecord, 0),
+		Config:           config,
+		Admissions:       make([]AdmissionDecisionRecord, 0),
+		Routings:         make([]RoutingRecord, 0),
+		Disaggregations:  make([]DisaggregationRecord, 0),
+		PrefillRoutings:  make([]PrefillRoutingRecord, 0),
+		DecodeRoutings:   make([]DecodeRoutingRecord, 0),
+		EncodeRoutings:   make([]EncodeRoutingRecord, 0),
 		KVTransfers:      make([]KVTransferRecord, 0),
 		EDPPDecisions:    make([]EDPPDecisionRecord, 0),
 		RoutingDecisions: make([]RoutingDecisionTraceRecord, 0),
