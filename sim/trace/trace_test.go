@@ -9,7 +9,7 @@ func TestSimulationTrace_RecordAdmission_AppendsRecord(t *testing.T) {
 	st := NewSimulationTrace(TraceConfig{Level: TraceLevelDecisions, CounterfactualK: 0})
 
 	// WHEN an admission record is recorded
-	st.RecordAdmission(AdmissionRecord{
+	st.RecordAdmission(AdmissionDecisionRecord{
 		RequestID: "req_1",
 		Clock:     1000,
 		Admitted:  true,
@@ -55,8 +55,8 @@ func TestSimulationTrace_MultipleRecords_PreservesOrder(t *testing.T) {
 	st := NewSimulationTrace(TraceConfig{Level: TraceLevelDecisions})
 
 	// WHEN multiple records are added
-	st.RecordAdmission(AdmissionRecord{RequestID: "req_1", Clock: 100, Admitted: true, Reason: "ok"})
-	st.RecordAdmission(AdmissionRecord{RequestID: "req_2", Clock: 200, Admitted: false, Reason: "rejected"})
+	st.RecordAdmission(AdmissionDecisionRecord{RequestID: "req_1", Clock: 100, Admitted: true, Reason: "ok"})
+	st.RecordAdmission(AdmissionDecisionRecord{RequestID: "req_2", Clock: 200, Admitted: false, Reason: "rejected"})
 	st.RecordRouting(RoutingRecord{RequestID: "req_1", Clock: 150, ChosenInstance: "i_0", Reason: "rr"})
 
 	// THEN order is preserved

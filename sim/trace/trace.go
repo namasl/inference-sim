@@ -35,7 +35,7 @@ type TraceConfig struct {
 // SimulationTrace collects decision records during a cluster simulation.
 type SimulationTrace struct {
 	Config          TraceConfig
-	Admissions      []AdmissionRecord
+	Admissions      []AdmissionDecisionRecord
 	Routings        []RoutingRecord
 	Disaggregations []DisaggregationRecord
 	PrefillRoutings []PrefillRoutingRecord
@@ -52,7 +52,7 @@ type SimulationTrace struct {
 func NewSimulationTrace(config TraceConfig) *SimulationTrace {
 	return &SimulationTrace{
 		Config:          config,
-		Admissions:      make([]AdmissionRecord, 0),
+		Admissions:      make([]AdmissionDecisionRecord, 0),
 		Routings:        make([]RoutingRecord, 0),
 		Disaggregations: make([]DisaggregationRecord, 0),
 		PrefillRoutings: make([]PrefillRoutingRecord, 0),
@@ -65,7 +65,7 @@ func NewSimulationTrace(config TraceConfig) *SimulationTrace {
 }
 
 // RecordAdmission appends an admission decision record.
-func (st *SimulationTrace) RecordAdmission(record AdmissionRecord) {
+func (st *SimulationTrace) RecordAdmission(record AdmissionDecisionRecord) {
 	st.Admissions = append(st.Admissions, record)
 }
 

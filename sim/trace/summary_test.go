@@ -47,9 +47,9 @@ func TestSummarize_EmptyTrace_ZeroValues(t *testing.T) {
 func TestSummarize_PopulatedTrace_CorrectCounts(t *testing.T) {
 	// GIVEN a trace with mixed admission and routing records
 	st := NewSimulationTrace(TraceConfig{Level: TraceLevelDecisions})
-	st.RecordAdmission(AdmissionRecord{RequestID: "r1", Admitted: true, Reason: "ok"})
-	st.RecordAdmission(AdmissionRecord{RequestID: "r2", Admitted: false, Reason: "rejected"})
-	st.RecordAdmission(AdmissionRecord{RequestID: "r3", Admitted: true, Reason: "ok"})
+	st.RecordAdmission(AdmissionDecisionRecord{RequestID: "r1", Admitted: true, Reason: "ok"})
+	st.RecordAdmission(AdmissionDecisionRecord{RequestID: "r2", Admitted: false, Reason: "rejected"})
+	st.RecordAdmission(AdmissionDecisionRecord{RequestID: "r3", Admitted: true, Reason: "ok"})
 	st.RecordRouting(RoutingRecord{RequestID: "r1", ChosenInstance: "i_0", Regret: 0.1})
 	st.RecordRouting(RoutingRecord{RequestID: "r3", ChosenInstance: "i_1", Regret: 0.3})
 
@@ -161,7 +161,7 @@ func TestSummarize_PDFields_KVTransferMean(t *testing.T) {
 func TestSummarize_PDFields_EmptyPDRecords_ZeroValues(t *testing.T) {
 	// GIVEN a trace with only standard admission/routing records (no PD records)
 	st := NewSimulationTrace(TraceConfig{Level: TraceLevelDecisions})
-	st.RecordAdmission(AdmissionRecord{RequestID: "r1", Admitted: true})
+	st.RecordAdmission(AdmissionDecisionRecord{RequestID: "r1", Admitted: true})
 	st.RecordRouting(RoutingRecord{RequestID: "r1", ChosenInstance: "i_0"})
 
 	// WHEN summarized

@@ -267,7 +267,18 @@ type EDPPDecider struct {
 	// Requests routed but not yet at their first token, keyed by the same conservation
 	// key as pending. Drives the continuous z_ttft credit (design: responsive z_ttft).
 	awaitingFirstToken map[string]*edppAwaiting
+
+	// captureAdmissionCtx, when set, makes Decide attach the assembled per-pool
+	// AdmissionContext(s) to the returned DisaggregationDecision so the cluster's
+	// --edpp-admission-trace companion trace can recompute all six estimator predictions
+	// at end of run. Off by default (zero-cost). Logging-only path (INV-9).
+	captureAdmissionCtx bool
 }
+
+// SetCaptureAdmissionContext toggles attaching the assembled per-pool AdmissionContext
+// to each DisaggregationDecision (for the --edpp-admission-trace companion trace).
+// Off by default; enabling it does not affect the routing decision itself (INV-9).
+func (d *EDPPDecider) SetCaptureAdmissionContext(v bool) { d.captureAdmissionCtx = v }
 
 // NewEDPPDecider constructs the decider and initializes class-independent physics
 // constants from cfg.Coeffs. cfg is validated (panics on invalid values, R3).
@@ -467,22 +478,24 @@ func (d *EDPPDecider) Decide(req *Request, state *RouterState) DisaggregationDec
 	decAdmRate := admissionRateFromSnapshot(decSnap)
 	prefillAdmRate := admissionRateFromSnapshot(prefillSnap)
 
-	tAdmP := d.tadmEstimator.EstimateTAdm(AdmissionContext{
+	prefillCtx := AdmissionContext{
 		QWork: qP, Mu: muPf,
 		BatchSize: prefillSnap.BatchSize, MaxBatchSize: int(prefillSnap.MaxBatchSize),
 		FreeKVBlocks: prefillSnap.FreeKVBlocks, ReqKVNeed: reqKVNeed,
 		TIter: d.coeffs.tIterPrefill(sPfPrefill), QueueDepth: prefillSnap.QueueDepth,
 		AdmissionRate: prefillAdmRate, RemainingStepsEst: remStepsEst,
 		Running: prefillSnap.RunningDecode,
-	})
-	tAdmD := d.tadmEstimator.EstimateTAdm(AdmissionContext{
+	}
+	decodeCtx := AdmissionContext{
 		QWork: qD, Mu: muDec,
 		BatchSize: decSnap.BatchSize, MaxBatchSize: int(decSnap.MaxBatchSize),
 		FreeKVBlocks: decSnap.FreeKVBlocks, ReqKVNeed: reqKVNeed,
 		TIter: tBminus1, QueueDepth: decSnap.QueueDepth,
 		AdmissionRate: decAdmRate, RemainingStepsEst: remStepsEst,
 		Running: decSnap.RunningDecode,
-	})
+	}
+	tAdmP := d.tadmEstimator.EstimateTAdm(prefillCtx)
+	tAdmD := d.tadmEstimator.EstimateTAdm(decodeCtx)
 	ttftP := tAdmP + nChunks*(d.coeffs.tIterPrefill(sPfPrefill)+deltaPfChunk) + float64(d.cfg.CXferUs)
 	ttftD := tAdmD + nChunks*(tBminus1+deltaPfChunk)
 
@@ -517,6 +530,14 @@ func (d *EDPPDecider) Decide(req *Request, state *RouterState) DisaggregationDec
 			BalanceTermD: balanceTermD, BalanceTermP: balanceTermP,
 			TransferTerm: transferTerm, TTFTTerm: ttftTerm, ITLTerm: itlTerm,
 			LHS: lhs, RHS: rhs, Disaggregate: lhs > rhs,
+		}
+	}
+	if d.captureAdmissionCtx {
+		dc := decodeCtx
+		dec.AdmissionCtxDecode = &dc
+		if len(prefillSnaps) > 0 {
+			pc := prefillCtx
+			dec.AdmissionCtxPrefill = &pc
 		}
 	}
 	return dec

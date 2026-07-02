@@ -64,6 +64,16 @@ type ClusterSimulator struct {
 	recordWorkTrace bool
 	workCoeffs      sim.EDPPCoeffs
 	workByInstance  map[string]map[string]sim.ReqWork // instanceID → reqID → work
+
+	// Stage C admission trace: per-request realized-vs-predicted admission delay CSV
+	// (--edpp-admission-trace). recordAdmissionTrace gates capture (zero-cost when off).
+	// admissionCtx keys parent/local request ID → the per-pool AdmissionContext(s) the
+	// EDPP decider assembled at decision time. localEnqueueTimes captures the local
+	// (non-disaggregated) enqueue instant so local_t_adm = local_schedule − local_enqueue.
+	recordAdmissionTrace bool
+	admissionCoeffs      sim.EDPPCoeffs
+	admissionCtx         map[string]*capturedAdmission
+	localEnqueueTimes    map[string]int64
 	// transfersInitiated counts every request that reaches
 	// KVTransferStartedEvent (issue #1343: both successful reservations
 	// that enter the transfer pipeline AND drop-at-start cases where the
@@ -2244,6 +2254,17 @@ func (cs *ClusterSimulator) executeDisaggregatedRouting(req *sim.Request, time i
 	disaggDecision := cs.disaggregationDecider.Decide(req, state)
 	logrus.Debugf("[cluster] req %s: disaggregate=%v", req.ID, disaggDecision.Disaggregate)
 
+	// Stage C: snapshot the assembled per-pool AdmissionContext(s) so BuildAdmissionRecords
+	// can recompute all six estimator predictions at end of run (--edpp-admission-trace).
+	// hasPrefill is true iff this request disaggregates (a prefill row is emitted then).
+	if cs.recordAdmissionTrace && disaggDecision.AdmissionCtxDecode != nil {
+		cap := &capturedAdmission{decodeCtx: *disaggDecision.AdmissionCtxDecode, hasPrefill: disaggDecision.Disaggregate}
+		if disaggDecision.AdmissionCtxPrefill != nil {
+			cap.prefillCtx = *disaggDecision.AdmissionCtxPrefill
+		}
+		cs.admissionCtx[req.ID] = cap
+	}
+
 	// If the decider overrode the decode pod (joint D+P policies), retarget.
 	// Empty string = keep the pod pre-selected by the decode routing policy.
 	// The override must be a member of the decode-pool snapshot set; the downstream
@@ -2384,6 +2405,14 @@ func (cs *ClusterSimulator) executeDisaggregatedRouting(req *sim.Request, time i
 		if warmUpCount > 0 && len(decodeInst.WarmUpRequestIDs()) < warmUpCount {
 			decodeInst.RecordWarmUpRequest(req.ID)
 		}
+		// Stage C: the local (non-disaggregated) enqueue instant, so local_t_adm =
+		// local_schedule − local_enqueue (--edpp-admission-trace). OnAdmit later records
+		// the schedule instant into localAdmitTimes.
+		if cs.recordAdmissionTrace {
+			if _, seen := cs.localEnqueueTimes[req.ID]; !seen {
+				cs.localEnqueueTimes[req.ID] = time
+			}
+		}
 		decodeInst.InjectRequestOnline(req, time)
 		if cs.evictionTracker != nil {
 			cs.evictionTracker.Track(req, decodeDecision.TargetInstance, cs.priorityMap)
@@ -2441,6 +2470,95 @@ func (cs *ClusterSimulator) executeDisaggregatedRouting(req *sim.Request, time i
 		},
 		seqID: cs.nextSeqID(),
 	})
+}
+
+// capturedAdmission holds the per-pool AdmissionContext(s) the EDPP decider assembled
+// for one request at routing-decision time, so BuildAdmissionRecords can recompute every
+// estimator's prediction at end of run against the same inputs the live decision saw.
+// hasPrefill is true only for a disaggregated request (a prefill row is emitted then).
+type capturedAdmission struct {
+	decodeCtx  sim.AdmissionContext
+	prefillCtx sim.AdmissionContext
+	hasPrefill bool
+}
+
+// EnableAdmissionTrace turns on per-request admission-context capture for the
+// --edpp-admission-trace companion trace (Stage C). It (a) flips SetAdmissionDetail(true)
+// on every instance so RunningDecode/TrueRemaining/DispatchRate populate (oracle mode —
+// logging-only, INV-9); (b) reuses the Stage A per-request time correlation
+// (SetRecordPDOutcomes) to compute realized t_adm; and (c) tells the EDPP decider to
+// attach its assembled AdmissionContext(s) to each decision. Zero-cost when never called.
+func (cs *ClusterSimulator) EnableAdmissionTrace(coeffs sim.EDPPCoeffs) {
+	cs.recordAdmissionTrace = true
+	cs.admissionCoeffs = coeffs
+	cs.admissionCtx = make(map[string]*capturedAdmission)
+	if cs.localEnqueueTimes == nil {
+		cs.localEnqueueTimes = make(map[string]int64)
+	}
+	// Realized t_adm reuses Stage A's parent/local schedule/enqueue capture.
+	cs.SetRecordPDOutcomes(true)
+	// Oracle admission detail: populate RunningDecode/TrueRemaining/DispatchRate. INV-9:
+	// oracle predictions are logged only; the Task 6 guard prevents oracle-as-router-driver.
+	for _, inst := range cs.instances {
+		inst.sim.SetAdmissionDetail(true)
+	}
+	if d, ok := cs.disaggregationDecider.(*sim.EDPPDecider); ok {
+		d.SetCaptureAdmissionContext(true)
+	}
+}
+
+// BuildAdmissionRecords assembles one realized-vs-predicted admission-delay record per
+// pool-term for the --edpp-admission-trace companion trace. It walks disaggregated
+// parents (prefill + decode rows) and locally-admitted requests (a local row), pairs
+// each with the AdmissionContext captured at decision time, computes realized t_adm from
+// the Stage A schedule/enqueue instants, runs all six estimators against the captured
+// context, and returns rows sorted by request_id (INV-6). Records with no captured
+// context are skipped (e.g. empty-prompt / fully-cached early returns in the decider).
+func (cs *ClusterSimulator) BuildAdmissionRecords() []trace.AdmissionRecord {
+	recs := make([]trace.AdmissionRecord, 0, len(cs.admissionCtx))
+	tadm := func(enq, sched int64) float64 {
+		if enq > 0 && sched >= enq {
+			return float64(sched - enq)
+		}
+		return 0
+	}
+	mk := func(id, pool string, realized float64, ctx sim.AdmissionContext) trace.AdmissionRecord {
+		p := func(name string) float64 {
+			est, err := sim.NewAdmissionEstimator(name)
+			if err != nil {
+				return 0
+			}
+			return est.EstimateTAdm(ctx)
+		}
+		return trace.AdmissionRecord{
+			RequestID: id, Pool: pool, RealizedTAdm: realized,
+			TAdmPredWaiting:           p("waiting"),
+			TAdmPredLittle:            p("little"),
+			TAdmPredFluid:             p("fluid"),
+			TAdmPredRollforward:       p("rollforward"),
+			TAdmPredFluidOracle:       p("fluid_oracle"),
+			TAdmPredRollforwardOracle: p("rollforward_oracle"),
+		}
+	}
+
+	for id, cap := range cs.admissionCtx {
+		if p, isParent := cs.parentRequests[id]; isParent && cap.hasPrefill {
+			recs = append(recs, mk(id, "prefill", tadm(p.PrefillEnqueueTime, p.PrefillScheduleTime), cap.prefillCtx))
+			recs = append(recs, mk(id, "decode", tadm(p.DecodeEnqueueTime, p.DecodeScheduleTime), cap.decodeCtx))
+			continue
+		}
+		// Local (non-disaggregated) request: realized t_adm = local schedule − local enqueue.
+		realized := tadm(cs.localEnqueueTimes[id], cs.localAdmitTimes[id])
+		recs = append(recs, mk(id, "local", realized, cap.decodeCtx))
+	}
+
+	sort.Slice(recs, func(i, j int) bool {
+		if recs[i].RequestID != recs[j].RequestID {
+			return recs[i].RequestID < recs[j].RequestID
+		}
+		return recs[i].Pool < recs[j].Pool
+	})
+	return recs
 }
 
 // EnableWorkTrace turns on per-request work accumulation on every instance simulator.

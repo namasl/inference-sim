@@ -2,12 +2,31 @@
 // This package has no dependencies on sim/ or sim/cluster/ — it stores pure data types.
 package trace
 
-// AdmissionRecord captures a single admission policy decision.
-type AdmissionRecord struct {
+// AdmissionDecisionRecord captures a single admission policy decision (admit/reject).
+type AdmissionDecisionRecord struct {
 	RequestID string
 	Clock     int64
 	Admitted  bool
 	Reason    string
+}
+
+// AdmissionRecord is one request's realized admission delay vs the six admission-delay
+// estimators' predictions, for the --edpp-admission-trace companion trace (Stage C).
+// Pool is "prefill", "decode", or "local" per the term the row describes. RealizedTAdm
+// and all predictions are microseconds. The oracle predictions (…Oracle) are computed
+// against a true-remaining-populated context and are logging-only (INV-9). Emitted only
+// under --edpp-admission-trace; rows are sorted by request_id (INV-6).
+type AdmissionRecord struct {
+	RequestID string
+	Pool      string
+
+	RealizedTAdm              float64
+	TAdmPredWaiting           float64
+	TAdmPredLittle            float64
+	TAdmPredFluid             float64
+	TAdmPredRollforward       float64
+	TAdmPredFluidOracle       float64
+	TAdmPredRollforwardOracle float64
 }
 
 // CandidateScore captures a counterfactual candidate instance with its score and state.

@@ -126,6 +126,7 @@ var (
 	edppDecisionTracePath    string // Path to write EDPP per-decision rule-term CSV (requires --trace-level decisions + --pd-decider edpp)
 	pdOutcomeTracePath       string // Path to write per-request realized-outcome CSV (Stage A estimator validation)
 	edppWorkTracePath        string // Stage B: per-request realized-vs-closed work CSV
+	edppAdmissionTracePath   string // Stage C: per-request realized-vs-predicted admission-delay CSV
 	routingDecisionTracePath string // Path to write per-candidate routing-decision CSV (every prefill/decode/standard target selection)
 
 	// Workload spec config (PR10)
@@ -1132,6 +1133,33 @@ func writeWorkTrace(cs *cluster.ClusterSimulator, path string) {
 	}
 }
 
+// writeAdmissionTrace writes the per-request realized-vs-predicted admission-delay CSV
+// to path (no-op when path is empty). Shared by run and replay for INV-13 parity.
+func writeAdmissionTrace(cs *cluster.ClusterSimulator, path string) {
+	if path == "" {
+		return
+	}
+	recs := cs.BuildAdmissionRecords()
+	if len(recs) == 0 {
+		logrus.Warnf("--edpp-admission-trace: no admission records (need --pd-decider edpp)")
+		return
+	}
+	f, err := os.Create(path)
+	if err != nil {
+		logrus.Errorf("--edpp-admission-trace: could not create %q: %v", path, err)
+		return
+	}
+	werr := trace.WriteAdmissionCSV(f, recs)
+	cerr := f.Close()
+	if werr != nil {
+		logrus.Errorf("--edpp-admission-trace: write failed: %v", werr)
+	} else if cerr != nil {
+		logrus.Errorf("--edpp-admission-trace: close failed: %v", cerr)
+	} else {
+		logrus.Infof("Wrote %d admission-trace records to %s", len(recs), path)
+	}
+}
+
 func resolveEDPPCoeffs(pdDecider, coeffsPath string) sim.EDPPCoeffs {
 	if pdDecider != "edpp" {
 		return sim.EDPPCoeffs{}
@@ -1207,6 +1235,7 @@ func registerSimConfigFlags(cmd *cobra.Command) {
 	cmd.Flags().StringVar(&routingDecisionTracePath, "routing-decision-trace", "", "Write per-candidate routing-decision breakdown (every prefill/decode/standard target selection: per-candidate queue/KV/inflight/prefix score) to this CSV path. All deciders.")
 	cmd.Flags().StringVar(&pdOutcomeTracePath, "pd-outcome-trace", "", "Write per-request realized outcomes (T_adm/TTFT/ITL/E2E) to this CSV path for EDPP estimator validation. Requires PD/disaggregation.")
 	cmd.Flags().StringVar(&edppWorkTracePath, "edpp-work-trace", "", "Write per-request realized-vs-closed work model CSV (Stage B validation). Requires --pd-decider edpp (uses its coeffs).")
+	cmd.Flags().StringVar(&edppAdmissionTracePath, "edpp-admission-trace", "", "Write per-request realized-vs-predicted admission-delay CSV (Stage C validation), one row per prefill/decode/local term with all six estimator predictions. Requires --pd-decider edpp (uses its coeffs).")
 
 	// Tiered KV cache (PR12)
 	cmd.Flags().Int64Var(&kvCPUBlocks, "kv-cpu-blocks", 0, "CPU tier KV cache blocks (0 = disabled, single-tier mode). Typical: 1/3 of --total-kv-blocks")
@@ -1908,6 +1937,9 @@ var runCmd = &cobra.Command{
 		if edppWorkTracePath != "" {
 			cs.EnableWorkTrace(config.EDPPCoeffs)
 		}
+		if edppAdmissionTracePath != "" {
+			cs.EnableAdmissionTrace(config.EDPPCoeffs)
+		}
 		if err := cs.Run(); err != nil {
 			logrus.Fatalf("Simulation failed: %v", err)
 		}
@@ -2203,6 +2235,7 @@ var runCmd = &cobra.Command{
 
 		// Write per-request realized-vs-closed work-model CSV if requested (shared with replay; INV-13 parity).
 		writeWorkTrace(cs, edppWorkTracePath)
+	writeAdmissionTrace(cs, edppAdmissionTracePath)
 
 		// Write per-candidate routing-decision CSV if requested (shared with replay; INV-13 parity).
 		writeRoutingDecisionTrace(cs.Trace(), routingDecisionTracePath)

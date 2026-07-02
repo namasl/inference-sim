@@ -170,7 +170,7 @@ func (e *AdmissionDecisionEvent) Execute(cs *ClusterSimulator) {
 	if !admitted {
 		// Record rejection from admission policy before returning (BC-2).
 		if cs.trace != nil {
-			cs.trace.RecordAdmission(trace.AdmissionRecord{
+			cs.trace.RecordAdmission(trace.AdmissionDecisionRecord{
 				RequestID: e.request.ID,
 				Clock:     cs.clock,
 				Admitted:  false,
@@ -189,7 +189,7 @@ func (e *AdmissionDecisionEvent) Execute(cs *ClusterSimulator) {
 
 	// Record admission (BC-2): tenant budget enforcement is in the TenantBudgetAdmission decorator.
 	if cs.trace != nil {
-		cs.trace.RecordAdmission(trace.AdmissionRecord{
+		cs.trace.RecordAdmission(trace.AdmissionDecisionRecord{
 			RequestID: e.request.ID,
 			Clock:     cs.clock,
 			Admitted:  true,

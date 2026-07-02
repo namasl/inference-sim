@@ -22,6 +22,14 @@ type DisaggregationDecision struct {
 	// decider has tracing enabled (EDPPConfig.TraceEnabled); nil otherwise and for all
 	// non-EDPP deciders. The cluster records it into the SimulationTrace at the call site.
 	EDPPTrace *EDPPDecisionTrace
+	// AdmissionCtxDecode / AdmissionCtxPrefill carry the exact per-pool AdmissionContext
+	// the EDPP decider assembled for this request, so the --edpp-admission-trace companion
+	// trace can recompute every estimator's prediction at end of run against the same
+	// inputs the live decision saw. Populated only when the EDPP decider has admission-
+	// context capture enabled (SetCaptureAdmissionContext); nil otherwise and for all
+	// non-EDPP deciders. AdmissionCtxPrefill is nil unless a prefill pool exists.
+	AdmissionCtxDecode  *AdmissionContext
+	AdmissionCtxPrefill *AdmissionContext
 }
 
 // DisaggregationDecider decides whether a request should be disaggregated

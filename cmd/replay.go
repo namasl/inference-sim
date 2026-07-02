@@ -535,6 +535,9 @@ Example:
 		if edppWorkTracePath != "" {
 			cs.EnableWorkTrace(config.EDPPCoeffs)
 		}
+		if edppAdmissionTracePath != "" {
+			cs.EnableAdmissionTrace(config.EDPPCoeffs)
+		}
 		if err := cs.Run(); err != nil {
 			logrus.Fatalf("Replay simulation failed: %v", err)
 		}
@@ -734,6 +737,7 @@ Example:
 
 		// Write per-request realized-vs-closed work-model CSV if requested (shared with run; INV-13 parity).
 		writeWorkTrace(cs, edppWorkTracePath)
+		writeAdmissionTrace(cs, edppAdmissionTracePath)
 
 		// Write per-candidate routing-decision CSV if requested (shared with run; INV-13 parity).
 		writeRoutingDecisionTrace(cs.Trace(), routingDecisionTracePath)
