@@ -8,6 +8,7 @@ import (
 	"sort"
 
 	"github.com/inference-sim/inference-sim/sim"
+	"github.com/inference-sim/inference-sim/sim/internal/util"
 	"github.com/inference-sim/inference-sim/sim/latency"
 	"github.com/inference-sim/inference-sim/sim/trace"
 	"github.com/sirupsen/logrus"
@@ -58,6 +59,11 @@ type ClusterSimulator struct {
 	pendingDecodeCompletions  map[string]string         // decode sub-req ID → parent ID
 	localAdmitTimes           map[string]int64          // request ID → first local-admission tick (non-disagg); populated only when recordPDOutcomes
 	recordPDOutcomes          bool                      // gate: capture per-request admission times for --pd-outcome-trace
+
+	// Stage B work trace: per-request realized-vs-closed work model CSV (--edpp-work-trace).
+	recordWorkTrace bool
+	workCoeffs      sim.EDPPCoeffs
+	workByInstance  map[string]map[string]sim.ReqWork // instanceID → reqID → work
 	// transfersInitiated counts every request that reaches
 	// KVTransferStartedEvent (issue #1343: both successful reservations
 	// that enter the transfer pipeline AND drop-at-start cases where the
@@ -2435,4 +2441,84 @@ func (cs *ClusterSimulator) executeDisaggregatedRouting(req *sim.Request, time i
 		},
 		seqID: cs.nextSeqID(),
 	})
+}
+
+// EnableWorkTrace turns on per-request work accumulation on every instance simulator.
+func (cs *ClusterSimulator) EnableWorkTrace(coeffs sim.EDPPCoeffs) {
+	cs.recordWorkTrace = true
+	cs.workCoeffs = coeffs
+	for _, inst := range cs.instances {
+		inst.sim.SetWorkTrace(coeffs)
+	}
+}
+
+// gatherWorkByInstance snapshots each instance's per-request work accumulators.
+func (cs *ClusterSimulator) gatherWorkByInstance() map[string]map[string]sim.ReqWork {
+	out := make(map[string]map[string]sim.ReqWork)
+	for _, inst := range cs.instances {
+		out[string(inst.id)] = inst.sim.WorkAccumulators()
+	}
+	return out
+}
+
+// BuildWorkTraceRecords gathers live instance accumulators and correlates
+// prefill/decode sub-requests back to parents. Sorted by request_id (INV-6).
+func (cs *ClusterSimulator) BuildWorkTraceRecords() []trace.WorkTraceRecord {
+	return cs.buildWorkTraceRecordsFrom(cs.gatherWorkByInstance())
+}
+
+func (cs *ClusterSimulator) buildWorkTraceRecordsFrom(byInst map[string]map[string]sim.ReqWork) []trace.WorkTraceRecord {
+	claimed := make(map[string]map[string]bool) // instanceID → reqID → claimed by a parent
+	mark := func(inst, id string) {
+		if claimed[inst] == nil {
+			claimed[inst] = map[string]bool{}
+		}
+		claimed[inst][id] = true
+	}
+	get := func(inst, id string) (sim.ReqWork, bool) {
+		m := byInst[inst]
+		if m == nil {
+			return sim.ReqWork{}, false
+		}
+		w, ok := m[id]
+		return w, ok
+	}
+	mk := func(id, slo string, ar, ap, o int64, chunks int, pfWork, decWork float64) trace.WorkTraceRecord {
+		chf := 0.0
+		if ar > 0 {
+			chf = 1.0 - float64(ap)/float64(ar)
+		}
+		return trace.WorkTraceRecord{
+			RequestID: id, SLOClass: slo, Ar: ar, ApRealized: ap, ORealized: o,
+			PrefillChunks: chunks, CacheHitFrac: chf,
+			RealizedPrefillWork: pfWork, RealizedDecodeWork: decWork,
+			WpClosed:           cs.workCoeffs.Wp(int(ap), int(ar)),
+			WdClosed:           cs.workCoeffs.Wd(int(ar), float64(o)),
+			WpClosedNoCacheOld: cs.workCoeffs.CPf*float64(ap) + (cs.workCoeffs.CAttn/2.0)*float64(ap)*float64(ap),
+		}
+	}
+
+	recs := make([]trace.WorkTraceRecord, 0)
+	for pid, p := range cs.parentRequests {
+		pf, _ := get(string(p.PrefillInstanceID), p.PrefillSubReqID)
+		dec, _ := get(string(p.DecodeInstanceID), p.DecodeSubReqID)
+		mark(string(p.PrefillInstanceID), p.PrefillSubReqID)
+		mark(string(p.DecodeInstanceID), p.DecodeSubReqID)
+		slo, ar := "", int64(0)
+		if p.OriginalRequest != nil {
+			slo = p.OriginalRequest.SLOClass
+			ar = util.Len64(p.OriginalRequest.InputTokens)
+		}
+		recs = append(recs, mk(pid, slo, ar, pf.ApRealized, dec.ORealized, pf.PrefillChunks, pf.RealizedPrefillWork, dec.RealizedDecodeWork))
+	}
+	for inst, m := range byInst {
+		for id, w := range m {
+			if claimed[inst][id] {
+				continue
+			}
+			recs = append(recs, mk(id, w.SLOClass, w.Ar, w.ApRealized, w.ORealized, w.PrefillChunks, w.RealizedPrefillWork, w.RealizedDecodeWork))
+		}
+	}
+	sort.Slice(recs, func(i, j int) bool { return recs[i].RequestID < recs[j].RequestID })
+	return recs
 }

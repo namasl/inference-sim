@@ -125,6 +125,7 @@ var (
 	summarizeTrace           bool   // Print trace summary after simulation
 	edppDecisionTracePath    string // Path to write EDPP per-decision rule-term CSV (requires --trace-level decisions + --pd-decider edpp)
 	pdOutcomeTracePath       string // Path to write per-request realized-outcome CSV (Stage A estimator validation)
+	edppWorkTracePath        string // Stage B: per-request realized-vs-closed work CSV
 	routingDecisionTracePath string // Path to write per-candidate routing-decision CSV (every prefill/decode/standard target selection)
 
 	// Workload spec config (PR10)
@@ -1104,6 +1105,33 @@ func writePDOutcomeTrace(cs *cluster.ClusterSimulator, m *sim.Metrics, path stri
 	}
 }
 
+// writeWorkTrace writes the per-request realized-vs-closed work-model CSV to path
+// (no-op when path is empty). Shared by run and replay for INV-13 parity.
+func writeWorkTrace(cs *cluster.ClusterSimulator, path string) {
+	if path == "" {
+		return
+	}
+	recs := cs.BuildWorkTraceRecords()
+	if len(recs) == 0 {
+		logrus.Warnf("--edpp-work-trace: no work records (need --pd-decider edpp)")
+		return
+	}
+	f, err := os.Create(path)
+	if err != nil {
+		logrus.Errorf("--edpp-work-trace: could not create %q: %v", path, err)
+		return
+	}
+	werr := trace.WriteWorkTraceCSV(f, recs)
+	cerr := f.Close()
+	if werr != nil {
+		logrus.Errorf("--edpp-work-trace: write failed: %v", werr)
+	} else if cerr != nil {
+		logrus.Errorf("--edpp-work-trace: close failed: %v", cerr)
+	} else {
+		logrus.Infof("Wrote %d work-trace records to %s", len(recs), path)
+	}
+}
+
 func resolveEDPPCoeffs(pdDecider, coeffsPath string) sim.EDPPCoeffs {
 	if pdDecider != "edpp" {
 		return sim.EDPPCoeffs{}
@@ -1178,6 +1206,7 @@ func registerSimConfigFlags(cmd *cobra.Command) {
 	cmd.Flags().StringVar(&edppDecisionTracePath, "edpp-decision-trace", "", "Write per-decision EDPP rule-term breakdown to this CSV path (requires --trace-level decisions and --pd-decider edpp)")
 	cmd.Flags().StringVar(&routingDecisionTracePath, "routing-decision-trace", "", "Write per-candidate routing-decision breakdown (every prefill/decode/standard target selection: per-candidate queue/KV/inflight/prefix score) to this CSV path. All deciders.")
 	cmd.Flags().StringVar(&pdOutcomeTracePath, "pd-outcome-trace", "", "Write per-request realized outcomes (T_adm/TTFT/ITL/E2E) to this CSV path for EDPP estimator validation. Requires PD/disaggregation.")
+	cmd.Flags().StringVar(&edppWorkTracePath, "edpp-work-trace", "", "Write per-request realized-vs-closed work model CSV (Stage B validation). Requires --pd-decider edpp (uses its coeffs).")
 
 	// Tiered KV cache (PR12)
 	cmd.Flags().Int64Var(&kvCPUBlocks, "kv-cpu-blocks", 0, "CPU tier KV cache blocks (0 = disabled, single-tier mode). Typical: 1/3 of --total-kv-blocks")
@@ -1876,6 +1905,9 @@ var runCmd = &cobra.Command{
 		if pdOutcomeTracePath != "" {
 			cs.SetRecordPDOutcomes(true)
 		}
+		if edppWorkTracePath != "" {
+			cs.EnableWorkTrace(config.EDPPCoeffs)
+		}
 		if err := cs.Run(); err != nil {
 			logrus.Fatalf("Simulation failed: %v", err)
 		}
@@ -2168,6 +2200,9 @@ var runCmd = &cobra.Command{
 		// Diagnostic file output; does not affect stdout determinism (INV-6). Warns (does
 		// not fail) when no records are present (no PD/disaggregation enabled).
 		writePDOutcomeTrace(cs, cs.AggregatedMetrics(), pdOutcomeTracePath)
+
+		// Write per-request realized-vs-closed work-model CSV if requested (shared with replay; INV-13 parity).
+		writeWorkTrace(cs, edppWorkTracePath)
 
 		// Write per-candidate routing-decision CSV if requested (shared with replay; INV-13 parity).
 		writeRoutingDecisionTrace(cs.Trace(), routingDecisionTracePath)

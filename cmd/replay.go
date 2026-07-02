@@ -532,6 +532,9 @@ Example:
 		if pdOutcomeTracePath != "" {
 			cs.SetRecordPDOutcomes(true)
 		}
+		if edppWorkTracePath != "" {
+			cs.EnableWorkTrace(config.EDPPCoeffs)
+		}
 		if err := cs.Run(); err != nil {
 			logrus.Fatalf("Replay simulation failed: %v", err)
 		}
@@ -728,6 +731,9 @@ Example:
 		// Write per-request realized-outcome CSV if requested (mirrors root.go runCmd; INV-13
 		// parity). Uses cs.AggregatedMetrics() — the finalized, PD-projected metrics.
 		writePDOutcomeTrace(cs, cs.AggregatedMetrics(), pdOutcomeTracePath)
+
+		// Write per-request realized-vs-closed work-model CSV if requested (shared with run; INV-13 parity).
+		writeWorkTrace(cs, edppWorkTracePath)
 
 		// Write per-candidate routing-decision CSV if requested (shared with run; INV-13 parity).
 		writeRoutingDecisionTrace(cs.Trace(), routingDecisionTracePath)
