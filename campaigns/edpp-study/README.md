@@ -157,3 +157,115 @@ rate), replays across decider×split cells).
   pre-existing DES quirk) — neither breaks the work-model exactness check (each run is internally consistent).
 - **Latency-model basis:** the default trained-physics model over-counts causal attention ~3× vs the
   roofline backend; `W_p` deliberately matches the *active* model. See FINDINGS Stage B §7.
+
+---
+
+## 7. Stage C — occupancy-aware admission-delay estimator (walkthrough)
+
+### 7.1 The problem
+EDPP decides disaggregate-vs-local per request; to decide it must *predict* the **admission delay** —
+how long the request waits to enter a serving engine — which feeds its TTFT estimate. The shipped
+predictor was occupancy-BLIND: admission delay ≈ *waiting-queue work ÷ drain rate* (`qD/muDec`). When
+the waiting queue is empty but the running batch is FULL, it predicts ≈0 while reality is "wait for a
+running request to finish and free a slot." Stage A measured this at ~905× under-prediction. Stage C
+makes the predictor pluggable and adds fidelity levels that model the running batch.
+
+### 7.2 What was built (files)
+- `sim/admission_estimator.go` — `AdmissionDelayEstimator.EstimateTAdm(AdmissionContext) float64` (pure
+  function) + variants:
+  - **deployable** (may drive routing): `waiting` (shipped `QWork/Mu`, the default), `little`
+    (Little's law `QueueDepth/AdmissionRate`), `fluid` (occupancy-conditioned mean-field
+    `N_ahead/X̂_dep`, `X̂_dep=BatchSize/(RemainingStepsEst·TIter)`), `rollforward` (true per-request
+    deterministic batch look-ahead — the proposed method).
+  - **oracle** (logging-only, use true `o_r`, forbidden as routing driver by an INV-9 guard in
+    `NewEDPPDecider`): `fluid_oracle`, `rollforward_oracle`.
+- `sim/edpp.go` — `Decide` calls the estimator for the `ttft_d`/`ttft_p` admission terms (keeping the
+  `+compute` part); default `waiting` is byte-identical to pre-Stage-C. Holds the INV-9 guard.
+- `sim/routing.go` + `sim/cluster/snapshot.go` — `RoutingSnapshot` enriched with the running decode
+  batch (`RunningDecode`, `RemainingDecodeWork`, `AdmissionRate`); populated only when admission detail
+  is enabled (zero cost otherwise).
+- `sim/trace/admission_csv.go` + `--edpp-admission-trace <path>` — logs realized admission + all six
+  predictions per request×pool (so ONE run yields the whole comparison).
+- `local_t_adm` capture (closes Stage A's gap for locally-routed requests).
+
+### 7.3 How it is evaluated — isolation microbenchmark
+To measure a *predictor* with zero routing noise: one engine per role (1P1D), routing FORCED so the
+estimator's value doesn't change where requests go.
+- **T1 (isolate `ttft_d`):** force all-local → every request queues on the single decode engine.
+- **T2 (isolate `ttft_p` + decode):** force all-disaggregate → single P engine + single D engine.
+
+Routing is forced with the transfer-penalty knob while EDPP still runs (see FAQ Q2): `--edpp-c-xfer
+100s` ⇒ all-local (T1); `--edpp-c-xfer 0s` ⇒ all-disagg (T2).
+
+### 7.4 Exact commands (every flag)
+Build: `go build -o blis main.go`. T1 (T2 = same but `--edpp-c-xfer 0s` and `t2_admission.csv`):
+```
+./blis run \
+  --model meta-llama/llama-3.3-70b-instruct \                 # calibrated model
+  --workload-spec campaigns/edpp-study/specs/synth_rate2.0.yaml \  # synth, aggregate_rate 2.0, 5000 reqs
+  --num-instances 2 --prefill-instances 1 --decode-instances 1 \  # 1P1D (num = P+D)
+  --pd-decider edpp \                                          # REQUIRED: only edpp runs Decide (Q2)
+  --edpp-coeffs scripts/calibration/coeffs-llama70b-h100-tp4.json \  # frozen α/C0/C1/C_pf/C_attn (Q4)
+  --edpp-tau-ttft 2s --edpp-tau-itl 150ms \                    # EDPP control-law targets (Q1)
+  --slo-ttft "batch=2s" --slo-itl "batch=150ms" \              # goodput yardstick (Q1)
+  --edpp-c-xfer 100s \                                         # 100s ⇒ all-local (T1); 0s ⇒ all-disagg (T2)
+  --edpp-admission-trace /tmp/t1_admission.csv                 # realized + 6 predictions per request×pool
+```
+Analysis: `python3 campaigns/edpp-study/analyze/admission_ablation.py --admission /tmp/t1_admission.csv`.
+One-command reproduction (writes to `out/stage_c/`): `bash campaigns/edpp-study/repro_stage_c.sh`.
+
+### 7.5 Reading the outputs
+`--edpp-admission-trace` columns: `request_id, pool, realized_t_adm, t_adm_pred_{waiting, little, fluid,
+rollforward, fluid_oracle, rollforward_oracle}` (µs; `pool` ∈ decode/prefill/local). `admission_ablation.py`
+JSON: per pool×estimator `median_ratio_real_over_pred` (>1 = under-prediction — the headline metric) +
+`decomposition` (`rollforward` residual split into estimator-*form* error vs `N̂_out`-*prediction* error).
+
+### 7.6 Result (see FINDINGS "Stage C" for the full table + checkpoint)
+T1 local pool (saturated, realized p50 ≈ 560s): **`waiting` under-predicts 57×; `rollforward` → 1.29×
+(near-exact)** — the proposed estimator fixes the Stage A mechanism. Open follow-ups before the paper's
+fidelity figure: `fluid` under-predicts ~1e6× (bug), `little` predicts 0 (no live admission-rate
+signal), prefill-pool estimators inert (only the *decode* batch was enriched → `ttft_p` unvalidated),
+`rollforward` over-predicts on the disagg decode path, and there is **no CLI flag yet to select the
+routing estimator** (`TAdmEstimator` is programmatic-only — add `--edpp-tadm-estimator` before Stage D
+deploys `rollforward` as the driver).
+
+## 8. FAQ (why things are the way they are)
+
+**Q1. Why are there separate `--slo-*` and `--edpp-tau-*` flags?** They are mechanically distinct.
+`--slo-ttft`/`--slo-itl` are the **measurement yardstick** — they define goodput (a request is "good"
+if realized TTFT/ITL ≤ target), apply to *every* decider, and affect only reported metrics, never
+routing. `--edpp-tau-ttft`/`--edpp-tau-itl` are an **EDPP control-law parameter** — the τ normalizers
+inside the drift-plus-penalty rule (`z_ttft`/`z_itl` accumulate deficit relative to τ; term scalings
+divide by τ), shaping *what the policy optimizes*. Keeping them separate lets you score against the
+real SLO while the policy chases a different internal target, and lets non-EDPP deciders be scored
+uniformly. In these studies τ is set equal to the SLO by choice. (Per-class variant: `--edpp-tau-*-classes`.)
+
+**Q2. Why must the study use `--pd-decider edpp`, not `always`/`never`?** The estimator predictions and
+the `AdmissionContext` they read are computed inside EDPP's `Decide()`. `always`/`never` are separate
+code paths that force routing WITHOUT running EDPP's drift-rule machinery, so they assemble no context
+and `--edpp-admission-trace` would log nothing. We need both forced routing AND context assembly, so we
+run `edpp` and force the decision with `--edpp-c-xfer` (100s ⇒ local, 0s ⇒ disagg).
+
+**Q3. If the system is saturated, the queue grows unboundedly, so `t_admit` keeps increasing — is the
+measurement valid?** Correct: under overload there is no steady-state `t_admit`; each request waits
+longer than the last. This is handled three ways, with one honest limitation: (a) the harness compares
+**per-request, conditional on the batch state at that request's decision instant** — not against a
+steady-state average — so a growing delay is the signal, not a bug (this is also *why* the conditional
+`rollforward` tracks it while the aggregate `little` cannot — there is no steady-state mean for
+`little` to use); (b) the workload is finite (5000 requests), so saturation is transient/bounded, not
+infinite; (c) LIMITATION: a forced-overload point is a deliberate stress test over a non-stationary
+transient, so the "median ratio" summarizes a moving target. The rigorous complement — a **utilization
+sweep approaching but below capacity**, where admission delay is large but bounded/stationary — is a
+noted follow-up (see FINDINGS) before claiming steady-state accuracy.
+
+**Q4. The Stage B work equations changed — do the frozen `--edpp-coeffs` still hold?** Yes, by design,
+not luck. The coeffs (α, C0, C1, C_pf, C_attn) were fit to the latency model's per-iteration law
+`T_iter = α + C0·B_dec + C1·KV + C_pf·S_pf + C_attn·pf_ctx`. Stage B changed the *form* of `W_p`/`W_d`
+but deliberately chose it to be the **trajectory integral of the exact same per-step δ the coeffs
+describe** (that was the "Option 1" decision — the trained-physics `+a_p/2` basis, matching the
+`nt·(si+nt/2)` the latency model charges and `C_attn` was fit to). No refit. And Stage B *proved* it:
+realized per-request work matched the closed-form `W_p`/`W_d` to float precision (~5e-16) using these
+exact frozen coeffs. Stage C's `rollforward` builds `T_iter` from the same coeffs, inheriting that
+validity. Caveat (fidelity, not validity-within-sim): the coeffs are tied to the trained-physics model,
+which over-counts causal attention ~3× vs roofline/physical; a roofline or real-server backend would
+recalibrate `C_attn`. See FINDINGS Stage B §7.

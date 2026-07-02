@@ -339,3 +339,15 @@ full monotonic ablation and the paper's fidelity figure are publishable**.
 **Reproduce:** `bash campaigns/edpp-study/repro_stage_c.sh` → `out/stage_c/{t1,t2}_ablation.json`.
 Checkpoint: T1 local `waiting` median ratio ≈ 57×, `rollforward` ≈ 1.3×.
 Limitations carry Stage B's (trained-physics attention basis); single saturating operating point.
+
+### Stage C follow-up: utilization sweep (validity of the saturating operating point)
+
+The T1/T2 microbenchmark uses a single saturating operating point (synth rate 2.0 on one decode
+engine). Under overload the backlog grows and admission delay is non-stationary (each request waits
+longer than the last), so the reported median ratios summarize a moving target — a deliberate stress
+test, not a steady-state claim. The per-request *conditional* comparison (predicted vs realized at each
+request's own decision instant) is valid regardless, and is precisely why the conditional `rollforward`
+tracks the growing delay while the aggregate `little` cannot. REQUIRED FOLLOW-UP before the paper's
+fidelity figure: a **utilization sweep** at loads approaching but below single-engine capacity, where
+admission delay is large but bounded/stationary, so predicted-vs-realized has a well-defined
+steady-state meaning. Pair it with the fluid/little/prefill fixes.
