@@ -200,6 +200,19 @@ will be re-measured against. Measurement-only — no decider/routing change.
 under-prediction of the shipped occupancy-blind estimators. The waiting-only decode signal is
 optimistic by ~3 orders of magnitude under saturation. This is the Stage-A baseline.
 
+**Reproduction (one command).** `bash campaigns/edpp-study/repro_stage_a.sh` (tracked) rebuilds
+`blis` if needed, bakes the trace, replays 2P2D@edpp with both traces, and writes the bias report to
+`campaigns/edpp-study/out/stage_a/bias.json` (out/ gitignored). Deterministic (INV-6): the run above
+is byte-identical across invocations. Inputs pinned by the script: model
+`meta-llama/llama-3.3-70b-instruct`, coeffs `scripts/calibration/coeffs-llama70b-h100-tp4.json`, spec
+`campaigns/edpp-study/specs/synth_rate2.0.yaml` (5000 reqs). Runtime ~110s. **Checkpoint —
+`bias.json` must show** (else the harness, not the estimator, regressed): total 5000 / completed 5000;
+`disagg=True,class=batch` n=4545 with ttft median-ratio ≈2.085, decode-admission median-ratio ≈904.8
+(pred p50 ≈0.312s, real p50 ≈285.8s), prefill-admission median-ratio ≈1.326; `disagg=False,
+class=unknown` n=455 with ttft median-ratio ≈2.740, real p90 ≈324s vs pred p90 ≈0.553s. The two traces
+the analysis joins are produced by `--edpp-decision-trace` (needs `--trace-level decisions`) and
+`--pd-outcome-trace` (no trace-level needed) — both emitted by the same replay invocation.
+
 **Known limitations / follow-ups (not blockers):**
 1. Local (non-disaggregated) requests carry no `ParentRequest`, so their `slo_class`/`input_tokens`
    are empty/0 in the outcome CSV (populated only from a parent's `OriginalRequest`). The analysis
