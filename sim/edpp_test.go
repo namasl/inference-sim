@@ -197,6 +197,56 @@ func decodeState(selected string, queue, batch int, itlUs float64) *RouterState 
 	}
 }
 
+// admissionSpy is a test AdmissionDelayEstimator that captures the last
+// AdmissionContext it was asked to estimate, so tests can assert on how Decide
+// populated the occupancy fields.
+type admissionSpy struct {
+	onCall func(AdmissionContext)
+}
+
+func (s admissionSpy) Name() string { return "spy" }
+func (s admissionSpy) EstimateTAdm(ctx AdmissionContext) float64 {
+	if s.onCall != nil {
+		s.onCall(ctx)
+	}
+	return 0
+}
+
+// newTestEDPPDeciderWithEstimator constructs an EDPPDecider with the default
+// test config and injects est as the admission-delay estimator.
+func newTestEDPPDeciderWithEstimator(t *testing.T, est AdmissionDelayEstimator) *EDPPDecider {
+	t.Helper()
+	d := NewEDPPDecider(defaultTestEDPPConfig(), newTestAffineModel(), nil, func() []RoutingSnapshot { return nil })
+	d.tadmEstimator = est
+	return d
+}
+
+// makeReq builds a Request with nInput input tokens and the given SLO class.
+func makeReq(id string, nInput int, class string) *Request {
+	return &Request{ID: id, InputTokens: make([]int, nInput), SLOClass: class}
+}
+
+func TestDecide_PopulatesAdmissionContext(t *testing.T) {
+	var seen AdmissionContext
+	spy := admissionSpy{onCall: func(c AdmissionContext) { seen = c }}
+	d := newTestEDPPDeciderWithEstimator(t, spy) // helper: constructs decider, injects spy as tadmEstimator
+	state := &RouterState{
+		SelectedInstance: "d0",
+		Snapshots: []RoutingSnapshot{{
+			ID: "d0", BatchSize: 4, MaxBatchSize: 4, FreeKVBlocks: 0,
+			RemainingDecodeWork: 30, AdmissionRate: 0.001,
+			RunningDecode: []RunningReqState{{StepsDone: 2, KVBlocks: 5, TrueRemaining: -1}},
+		}},
+	}
+	d.Decide(makeReq("r1", 100, "batch"), state)
+	if seen.BatchSize != 4 || seen.MaxBatchSize != 4 || seen.RemainingStepsEst == 0 || seen.AdmissionRate != 0.001 {
+		t.Fatalf("context not populated from snapshot: %+v", seen)
+	}
+	if len(seen.Running) != 1 || seen.Running[0].StepsDone != 2 {
+		t.Fatalf("running state not propagated: %+v", seen.Running)
+	}
+}
+
 func TestEDPP_NOutIndependence(t *testing.T) {
 	// §11 N_out-independence anchor: the decision must not read Request.OutputTokens (INV-9).
 	d := NewEDPPDecider(defaultTestEDPPConfig(), newTestAffineModel(), nil, nil)

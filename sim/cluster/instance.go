@@ -215,6 +215,16 @@ func (i *InstanceSimulator) ResidentPrefillTokens() int64 {
 	return s
 }
 
+// RunningDecodeState returns per-running-decode-request state for the roll-forward
+// admission estimator, delegating to the underlying Simulator. Returns nil when the
+// instance has no simulator or admission detail is disabled (zero-cost default).
+func (i *InstanceSimulator) RunningDecodeState() []sim.RunningReqState {
+	if i.sim == nil {
+		return nil
+	}
+	return i.sim.RunningDecodeState()
+}
+
 // TotalKVBlocks returns the total number of KV cache blocks for this instance.
 func (i *InstanceSimulator) TotalKVBlocks() int64 {
 	if i.sim == nil || i.sim.KVCache == nil {

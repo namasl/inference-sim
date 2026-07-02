@@ -18,21 +18,24 @@ type RoutingSnapshot struct {
 	KVUtilization         float64
 	FreeKVBlocks          int64
 	CacheHitRate          float64
-	InFlightRequests      int     // Requests dispatched to this instance but not yet completed
-	PreemptionCount       int64   // Cumulative preemption events since instance start (monotonically increasing; Immediate by default, Periodic when --snapshot-refresh-interval > 0)
-	Model                 string  // Model served by this instance; used by buildRouterState() for per-model filtering
-	GPUType               string  // GPU hardware type (e.g. "A100-80GB"); populated by buildRouterState() from instance config
-	TPDegree              int     // Tensor-parallel degree; populated by buildRouterState() from instance config
-	CostPerHour           float64 // Node pool cost in $/hr; populated by buildRouterState() from NodePool.CostPerHour
-	TotalKvCapacityTokens int64   // Total KV cache capacity in tokens (TotalBlocks × BlockSizeTokens); used by V2SaturationAnalyzer
-	KvTokensInUse         int64   // Current KV cache occupancy in tokens (UsedBlocks × BlockSizeTokens); used by V2SaturationAnalyzer
-	ResidentPrefillTokens int64   // Σ NumNewTokens over requests currently in prefill phase (S_pf for the EDPP E3 law); 0 if not yet available
-	TTFT                  float64 // μs; 0 if not yet available
-	ITL                   float64 // μs; 0 if not yet available
-	DispatchRate          float64 // req/s completed by this instance; 0 if not yet available
-	AvgInTokens           float64 // average input tokens per completed request; 0 if not yet available
-	AvgOutTokens          float64 // average output tokens per completed request; 0 if not yet available
-	MaxBatchSize          float64 // server-configured max batch size; 0 if not yet available
+	InFlightRequests      int               // Requests dispatched to this instance but not yet completed
+	PreemptionCount       int64             // Cumulative preemption events since instance start (monotonically increasing; Immediate by default, Periodic when --snapshot-refresh-interval > 0)
+	Model                 string            // Model served by this instance; used by buildRouterState() for per-model filtering
+	GPUType               string            // GPU hardware type (e.g. "A100-80GB"); populated by buildRouterState() from instance config
+	TPDegree              int               // Tensor-parallel degree; populated by buildRouterState() from instance config
+	CostPerHour           float64           // Node pool cost in $/hr; populated by buildRouterState() from NodePool.CostPerHour
+	TotalKvCapacityTokens int64             // Total KV cache capacity in tokens (TotalBlocks × BlockSizeTokens); used by V2SaturationAnalyzer
+	KvTokensInUse         int64             // Current KV cache occupancy in tokens (UsedBlocks × BlockSizeTokens); used by V2SaturationAnalyzer
+	ResidentPrefillTokens int64             // Σ NumNewTokens over requests currently in prefill phase (S_pf for the EDPP E3 law); 0 if not yet available
+	TTFT                  float64           // μs; 0 if not yet available
+	ITL                   float64           // μs; 0 if not yet available
+	DispatchRate          float64           // req/s completed by this instance; 0 if not yet available
+	AvgInTokens           float64           // average input tokens per completed request; 0 if not yet available
+	AvgOutTokens          float64           // average output tokens per completed request; 0 if not yet available
+	MaxBatchSize          float64           // server-configured max batch size; 0 if not yet available
+	RemainingDecodeWork   float64           // Σ estimated remaining decode steps over running decode reqs (N̂_out-based); 0 if not populated
+	AdmissionRate         float64           // req/µs admitted at this instance (for the little estimator); 0 if not available
+	RunningDecode         []RunningReqState // per-running-decode-request state for the roll-forward estimator; nil unless admission detail enabled
 }
 
 // EffectiveLoad returns the total effective load on this instance:
@@ -175,7 +178,7 @@ type observerFunc func(req *Request, targetInstance string)
 // by first occurrence (lowest index) when rng is nil.
 type WeightedScoring struct {
 	scorers     []scorerFunc
-	scorerNames []string // parallel to scorers; used for ScorerBreakdown keys (routing-decision trace)
+	scorerNames []string  // parallel to scorers; used for ScorerBreakdown keys (routing-decision trace)
 	weights     []float64 // normalized to sum to 1.0
 	observers   []observerFunc
 	rng         *rand.Rand

@@ -428,8 +428,50 @@ func (d *EDPPDecider) Decide(req *Request, state *RouterState) DisaggregationDec
 	}
 	nChunks := math.Ceil(float64(ap) / float64(chunk))
 	deltaPfChunk := d.coeffs.CPf * float64(chunk)
-	tAdmP := d.tadmEstimator.EstimateTAdm(AdmissionContext{QWork: qP, Mu: muPf}) // occupancy fields added in Task 3
-	tAdmD := d.tadmEstimator.EstimateTAdm(AdmissionContext{QWork: qD, Mu: muDec})
+	// Occupancy inputs for the admission-delay estimators (fluid/rollforward, Tasks 4/5).
+	// Decode side reads the selected decode snapshot; prefill side reads the first prefill snapshot.
+	decSnap, _ := d.selectedDecodeSnapshot(state)
+	// ReqKVNeed: KV blocks this request needs ≈ ⌈a_r / blockSize⌉ (a_r = full input length; oracle-safe).
+	reqKVNeed := int64(0)
+	if d.cfg.BlockSize > 0 {
+		reqKVNeed = int64((len(req.InputTokens) + d.cfg.BlockSize - 1) / d.cfg.BlockSize)
+	}
+	// RemainingStepsEst: prefer the snapshot's aggregate remaining decode work; else fall
+	// back to max(N̂_out − mean(StepsDone over running decode), 1).
+	remStepsEst := decSnap.RemainingDecodeWork
+	if remStepsEst == 0 {
+		nHatOut := d.nHatFor(req.SLOClass).mean()
+		var meanSteps float64
+		if len(decSnap.RunningDecode) > 0 {
+			var sum int64
+			for _, r := range decSnap.RunningDecode {
+				sum += r.StepsDone
+			}
+			meanSteps = float64(sum) / float64(len(decSnap.RunningDecode))
+		}
+		remStepsEst = math.Max(nHatOut-meanSteps, 1)
+	}
+	var prefillSnap RoutingSnapshot
+	if len(prefillSnaps) > 0 {
+		prefillSnap = prefillSnaps[0]
+	}
+
+	tAdmP := d.tadmEstimator.EstimateTAdm(AdmissionContext{
+		QWork: qP, Mu: muPf,
+		BatchSize: prefillSnap.BatchSize, MaxBatchSize: int(prefillSnap.MaxBatchSize),
+		FreeKVBlocks: prefillSnap.FreeKVBlocks, ReqKVNeed: reqKVNeed,
+		TIter: d.coeffs.tIterPrefill(sPfPrefill), QueueDepth: prefillSnap.QueueDepth,
+		AdmissionRate: prefillSnap.AdmissionRate, RemainingStepsEst: remStepsEst,
+		Running: prefillSnap.RunningDecode,
+	})
+	tAdmD := d.tadmEstimator.EstimateTAdm(AdmissionContext{
+		QWork: qD, Mu: muDec,
+		BatchSize: decSnap.BatchSize, MaxBatchSize: int(decSnap.MaxBatchSize),
+		FreeKVBlocks: decSnap.FreeKVBlocks, ReqKVNeed: reqKVNeed,
+		TIter: tBminus1, QueueDepth: decSnap.QueueDepth,
+		AdmissionRate: decSnap.AdmissionRate, RemainingStepsEst: remStepsEst,
+		Running: decSnap.RunningDecode,
+	})
 	ttftP := tAdmP + nChunks*(d.coeffs.tIterPrefill(sPfPrefill)+deltaPfChunk) + float64(d.cfg.CXferUs)
 	ttftD := tAdmD + nChunks*(tBminus1+deltaPfChunk)
 
@@ -467,6 +509,27 @@ func (d *EDPPDecider) Decide(req *Request, state *RouterState) DisaggregationDec
 		}
 	}
 	return dec
+}
+
+// selectedDecodeSnapshot returns the decode snapshot this request would land on
+// (state.SelectedInstance), falling back to the first snapshot; ok is false when
+// no snapshot is available (nominal-state path).
+func (d *EDPPDecider) selectedDecodeSnapshot(state *RouterState) (snap RoutingSnapshot, ok bool) {
+	if state == nil {
+		return RoutingSnapshot{}, false
+	}
+	snaps := state.Snapshots
+	if state.SelectedInstance != "" {
+		for _, s := range snaps {
+			if s.ID == state.SelectedInstance {
+				return s, true
+			}
+		}
+	}
+	if len(snaps) > 0 {
+		return snaps[0], true
+	}
+	return RoutingSnapshot{}, false
 }
 
 // selectedDecodeState returns (B_dec, KV, S_pf) for the decode pod this request

@@ -142,6 +142,57 @@ type Simulator struct {
 	recordWorkTrace bool
 	workCoeffs      EDPPCoeffs
 	workAcc         map[string]*reqWorkAccum
+
+	// Admission-detail gate (off by default, zero-cost). When recordAdmissionDetail
+	// is set, RunningDecodeState()/RemainingDecodeWork() walk the running batch to
+	// populate the occupancy-aware AdmissionContext fields for fluid/rollforward
+	// estimators. admissionDetailOracle additionally populates RunningReqState.TrueRemaining
+	// from OutputTokens (measurement-only; INV-9 keeps this out of the deployable path).
+	recordAdmissionDetail bool
+	admissionDetailOracle bool
+}
+
+// SetAdmissionDetail enables population of the occupancy-aware admission-detail
+// snapshot fields (per-running-decode-request state and aggregate remaining decode
+// work). When oracle is true, RunningReqState.TrueRemaining is filled from
+// OutputTokens (measurement only — never on the deployable control path, INV-9);
+// otherwise it is left at -1. Off by default (zero-cost).
+func (sim *Simulator) SetAdmissionDetail(oracle bool) {
+	sim.recordAdmissionDetail = true
+	sim.admissionDetailOracle = oracle
+}
+
+// RunningDecodeState returns per-running-decode-request state for the roll-forward
+// admission estimator. Returns nil when admission detail is disabled (zero-cost
+// default) or there is no running batch. StepsDone = ProgressIndex − len(InputTokens);
+// KVBlocks ≈ ⌈ProgressIndex / blockSize⌉; TrueRemaining = len(OutputTokens) − StepsDone
+// only in oracle mode, else −1.
+func (sim *Simulator) RunningDecodeState() []RunningReqState {
+	if !sim.recordAdmissionDetail || sim.RunningBatch == nil {
+		return nil
+	}
+	blockSize := int64(1)
+	if sim.KVCache != nil && sim.KVCache.BlockSize() > 0 {
+		blockSize = sim.KVCache.BlockSize()
+	}
+	var out []RunningReqState
+	for _, req := range sim.RunningBatch.Requests {
+		inLen := int64(len(req.InputTokens))
+		if req.ProgressIndex < inLen {
+			continue // still in prefill phase — not a decode request
+		}
+		stepsDone := req.ProgressIndex - inLen
+		trueRemaining := int64(-1)
+		if sim.admissionDetailOracle {
+			trueRemaining = int64(len(req.OutputTokens)) - stepsDone
+		}
+		out = append(out, RunningReqState{
+			StepsDone:     stepsDone,
+			KVBlocks:      (req.ProgressIndex + blockSize - 1) / blockSize,
+			TrueRemaining: trueRemaining,
+		})
+	}
+	return out
 }
 
 // NewSimulator creates a Simulator from a SimConfig struct and pre-built dependencies.
