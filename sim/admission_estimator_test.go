@@ -48,6 +48,37 @@ func TestFluidEstimator(t *testing.T) {
 	}
 }
 
+func TestRollforwardEstimator(t *testing.T) {
+	e, _ := NewAdmissionEstimator("rollforward")
+	// Batch full (2/2), no free KV. Two running reqs with remaining steps 3 and 5,
+	// holding 10 and 10 KV blocks. Request needs 8 blocks.
+	// Roll forward at T_iter=1000µs: after 3 iters (3000µs) req A departs → frees 10 blocks
+	// AND a slot. 10 ≥ 8 and slot free → admit. T_adm = 3·1000 = 3000µs.
+	ctx := AdmissionContext{
+		BatchSize: 2, MaxBatchSize: 2, FreeKVBlocks: 0, ReqKVNeed: 8, TIter: 1000,
+		Running:           []RunningReqState{{TrueRemaining: 3, KVBlocks: 10}, {TrueRemaining: 5, KVBlocks: 10}},
+		RemainingStepsEst: 4,
+	}
+	got := e.EstimateTAdm(ctx)
+	if got < 2999 || got > 3001 {
+		t.Fatalf("rollforward = %v, want ~3000", got)
+	}
+}
+
+func TestRollforwardEstimator_UsesEstimateWhenNoOracle(t *testing.T) {
+	e, _ := NewAdmissionEstimator("rollforward")
+	// TrueRemaining=-1 (no oracle) → use RemainingStepsEst for each running req.
+	ctx := AdmissionContext{
+		BatchSize: 1, MaxBatchSize: 1, FreeKVBlocks: 0, ReqKVNeed: 5, TIter: 1000,
+		Running: []RunningReqState{{TrueRemaining: -1, KVBlocks: 10}}, RemainingStepsEst: 4,
+	}
+	// Single req departs after est 4 steps → frees slot+KV → T_adm = 4000µs.
+	got := e.EstimateTAdm(ctx)
+	if got < 3999 || got > 4001 {
+		t.Fatalf("rollforward(est) = %v, want ~4000", got)
+	}
+}
+
 func TestNewAdmissionEstimator_UnknownIsError(t *testing.T) {
 	if _, err := NewAdmissionEstimator("nope"); err == nil {
 		t.Fatal("expected error for unknown estimator")

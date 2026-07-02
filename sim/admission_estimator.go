@@ -1,6 +1,9 @@
 package sim
 
-import "fmt"
+import (
+	"fmt"
+	"sort"
+)
 
 // RunningReqState is one running decode request's state for the roll-forward
 // estimator. TrueRemaining is the oracle remaining step count (-1 when the
@@ -76,6 +79,46 @@ func (fluidEstimator) EstimateTAdm(ctx AdmissionContext) float64 {
 	return nAhead / xDep
 }
 
+type rollforwardEstimator struct{}
+
+func (rollforwardEstimator) Name() string { return "rollforward" }
+func (rollforwardEstimator) EstimateTAdm(ctx AdmissionContext) float64 {
+	if ctx.BatchSize < ctx.MaxBatchSize && ctx.FreeKVBlocks >= ctx.ReqKVNeed {
+		return 0
+	}
+	// Deterministic look-ahead: each running req departs after its remaining steps
+	// (oracle TrueRemaining if ≥0, else the N̂_out estimate), freeing its KV. Accumulate
+	// elapsed = departureStep·T_iter until a slot AND enough free KV exist.
+	type dep struct{ step, kv int64 }
+	deps := make([]dep, 0, len(ctx.Running))
+	for _, r := range ctx.Running {
+		rem := r.TrueRemaining
+		if rem < 0 {
+			rem = int64(ctx.RemainingStepsEst)
+			if rem < 1 {
+				rem = 1
+			}
+		}
+		deps = append(deps, dep{step: rem, kv: r.KVBlocks})
+	}
+	// Sort by departure step ascending (soonest first); stable tie-break for determinism (INV-6).
+	sort.SliceStable(deps, func(i, j int) bool { return deps[i].step < deps[j].step })
+	freeSlots := ctx.MaxBatchSize - ctx.BatchSize
+	freeKV := ctx.FreeKVBlocks
+	for _, d := range deps {
+		freeSlots++
+		freeKV += d.kv
+		if freeSlots >= 1 && freeKV >= ctx.ReqKVNeed {
+			return float64(d.step) * ctx.TIter
+		}
+	}
+	// Batch never frees enough within its current occupants — cap at the last departure.
+	if len(deps) > 0 {
+		return float64(deps[len(deps)-1].step) * ctx.TIter
+	}
+	return 0
+}
+
 // NewAdmissionEstimator returns the estimator by name. Little/fluid/rollforward
 // and the oracle variants are added in later tasks.
 func NewAdmissionEstimator(name string) (AdmissionDelayEstimator, error) {
@@ -86,6 +129,8 @@ func NewAdmissionEstimator(name string) (AdmissionDelayEstimator, error) {
 		return littleEstimator{}, nil
 	case "fluid":
 		return fluidEstimator{}, nil
+	case "rollforward":
+		return rollforwardEstimator{}, nil
 	default:
 		return nil, fmt.Errorf("unknown admission estimator %q", name)
 	}
