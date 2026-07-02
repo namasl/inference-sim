@@ -284,3 +284,58 @@ switch to the causal basis; the accumulator already reads whichever model is act
 **Reproduce:** `bash campaigns/edpp-study/repro_stage_b.sh` → `campaigns/edpp-study/out/stage_b/{synth,rag}_bias.json`
 (~4 min, deterministic). Checkpoint: single-chunk prefill and decode `max_abs_rel_err` < 1e-6 on both;
 chunked residual is the `Σs²` term.
+
+## Stage C — occupancy-aware admission estimator + fidelity ablation (2026-07-02)
+
+Made EDPP's admission-delay estimate pluggable (replacing the occupancy-blind `qD/muDec`·`qP/muPf`
+terms in `ttft_d`/`ttft_p`) with four deployable variants — `waiting` (shipped strawman), `little`
+(Little's law, aggregate), `fluid` (occupancy-conditioned mean-field `N_ahead/X̂_dep`), `rollforward`
+(true per-request deterministic batch look-ahead) — plus `fluid_oracle`/`rollforward_oracle`
+(true-`o_r`, logging-only; INV-9 guard forbids them as routing drivers). New `--edpp-admission-trace`
+logs, per request×pool, the realized admission delay + all six predictions. `local_t_adm` capture
+(Stage A gap) closed. Default `waiting` → decider byte-identical.
+
+**Microbenchmark** (`repro_stage_c.sh`): 1P1D, `--pd-decider edpp`, synth rate 2.0; T1 forces all-local
+(`--edpp-c-xfer 100s`) to isolate `ttft_d`; T2 forces all-disagg (`--edpp-c-xfer 0s`). Routing is
+forced via the transfer-penalty knob (EDPP's `Decide` must run to assemble the estimator contexts, so
+`never`/`always` deciders can't be used). Median ratio realized/predicted (>1 = under-prediction):
+
+**T1 local pool — `ttft_d` isolation, saturated (realized p50 ≈ 560s):**
+| estimator | median ratio realized/pred |
+|---|---|
+| waiting (shipped) | **57.3×** under-predicts |
+| little | n/a (predicts 0) |
+| fluid | 2.6e6× (anomalous — see below) |
+| **rollforward** | **1.29× — near-exact** |
+
+**Headline: the true `rollforward` estimator collapses the shipped estimator's ~57× admission
+under-prediction to ~1.3× on the saturated local decode pool** — the direct fix for the mechanism
+Stage A measured (~905×). N̂_out-prediction error was ~0 here (`rollforward` ≈ `rollforward_oracle`),
+so the residual 1.3× is estimator *form*, not output-length prediction.
+
+**Open issues the ablation surfaced (the clean 4-point monotonic collapse is NOT yet achieved):**
+1. **`fluid` is anomalous** — it under-predicts by ~1e6× (predicts ~µs where reality is ~100s). The
+   mean-field `N_ahead/X̂_dep` with the current `RemainingStepsEst`/free-slot inputs collapses to
+   near-zero on the local path. Needs debugging (likely `RemainingStepsEst` mis-scaled or the free-slot
+   early-return misfiring). It should sit between `waiting` and `rollforward`, not below both.
+2. **`little` is inert** — predicts 0 (ratio n/a). Despite the Task-3 `DispatchRate→AdmissionRate`
+   wiring, the admission rate is effectively unavailable at decision time in this run (DispatchRate 0
+   until first completion, and/or not surfacing). Needs a reliable per-instance admission-rate signal.
+3. **Prefill-pool estimators are broken** — realized prefill admission is a constant ~15.5ms and no
+   estimator tracks it; the snapshot enrichment added only the *decode* running batch (`RunningDecode`),
+   so the prefill-pool context has no occupancy. `ttft_p` cannot be validated until the prefill pool is
+   enriched symmetrically.
+4. **`rollforward` OVER-predicts on the disagg decode path** (T2 decode: 0.41×, i.e. predicts ~2.5×
+   too high). In disaggregation the decode sub-request is admitted quickly after transfer, so the
+   full-batch-drain assumption over-estimates; the 905×-analog under-prediction lives on the *local*
+   (kept-local-under-saturation) path, which T1 captures and `rollforward` fixes.
+
+**Status:** the estimator infrastructure (pluggable interface, four variants + oracle, INV-9 guard,
+`--edpp-admission-trace`, `local_t_adm`) is complete and reviewed. The **proposed `rollforward`
+estimator is validated on its target scenario** (57×→1.3× on the saturated local pool). The `fluid`
+under-prediction, `little` inactivity, and prefill-pool enrichment are **follow-ups required before the
+full monotonic ablation and the paper's fidelity figure are publishable**.
+
+**Reproduce:** `bash campaigns/edpp-study/repro_stage_c.sh` → `out/stage_c/{t1,t2}_ablation.json`.
+Checkpoint: T1 local `waiting` median ratio ≈ 57×, `rollforward` ≈ 1.3×.
+Limitations carry Stage B's (trained-physics attention basis); single saturating operating point.
