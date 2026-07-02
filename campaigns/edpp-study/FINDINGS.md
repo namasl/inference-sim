@@ -228,3 +228,59 @@ the analysis joins are produced by `--edpp-decision-trace` (needs `--trace-level
 4. PD+EDPP *replay* on this full config completed 4545/5000 (2-decode-node saturation, expected) —
    NOT a parity bug. An earlier smoke run's 23/50 was a small-config horizon artifact, not an
    engine defect. `--pd-outcome-trace` admission-time columns match run byte-for-byte.
+
+## Stage B — corrected work model + per-request validation (2026-07-02)
+
+Corrected the EDPP work formulas to equal the work the **active (trained-physics) latency model
+actually charges**, and validated per-request against realized trajectory work via a new
+`--edpp-work-trace` CSV (run + replay). Same frozen coeffs, no refit.
+
+**Corrected formulas** (`sim/edpp_coeffs.go`):
+- `Wp(a_p, a_r) = C_pf·a_p + C_attn·a_p·(a_r + a_p/2)` — the trained-physics basis (**+ a_p/2**), matching
+  `trained_physics_model.go`'s per-step attention charge `ti·(si + ti/2)` (si = full prompt) that
+  `C_attn` was calibrated to. Replaces the old no-cache `C_pf·a_p + (C_attn/2)·a_p²`.
+- `Wd(a_r, o) = C0·o + C1·o·(a_r + (o−1)/2)` — exact discrete decode sum `Σ_{k=0}^{o−1}(C0+C1(a_r+k))`,
+  matching the model's per-decode-step charge `C0 + C1·ProgressIndex`. Replaces the old
+  `N̂_out·(C0 + C1·NomDecodeCtx)` fixed-nominal form (`NomDecodeCtx` retained only for the
+  `selectedDecodeState` fallback).
+
+**Validation (synth@2P2D and rag@2P2D, rate 2.0, 5000 reqs each; `bash campaigns/edpp-study/repro_stage_b.sh`):**
+
+| workload | single-chunk prefill `max_abs_rel_err` | decode `max_abs_rel_err` | chunked prefill (n, max err) |
+|---|---|---|---|
+| synth | 5.6e-16 (n=4701) | median 0, p90 2.5e-4 (n=4456; small preemption-tail, max ~10%) | n=299, max 0.28 |
+| rag   | 5.8e-16 (n=1418) | 1.2e-15 (n=5000, fully exact) | n=3582, max 0.22 |
+
+**Model is exact.** Single-chunk prefill and decode work match realized to float precision on both
+workloads — the corrected `W_p`/`W_d` ARE the closed forms of the active latency model's per-request
+charge. The chunked-prefill residual (realized < closed, median ~−0.9%) is the **documented,
+expected** `C_attn·(a_p² − Σs_r²)/2` term: the closed form assumes single-chunk prefill, so chunked
+requests accrue slightly less attention work. This is reported, not an error.
+
+**Correction effect:** per-request `wp_closed / wp_closed_nocache_old` median ≈ 1.04 on both (the linear
+`C_pf·a_p` term dominates at these operating points; the ~3× attention-basis change is only visible
+where `a_p ≈ a_r`). NOTE: synth here shows median `cache_hit_frac` 0.91 (heavy prefix reuse — synth is
+NOT a no-cache workload as earlier assumed), rag 0.18. The corrected cross term (`a_r` dependence) is
+what the old no-cache form dropped.
+
+**Expected decision shift (NOT a regression):** the corrected `W_p` attention term differs ~3× from the
+old form at no-cache, so EDPP routing decisions shift vs pre-Stage-B. This is the correction working.
+Precise pre/post disagg-fraction quantification is a deferred follow-up (requires a pre-Task-1 rebuild);
+the per-request work exactness above is the correctness gate, not the decision delta.
+
+### Documented latency-model fidelity gap (deferred, NOT fixed here)
+
+The default trained-physics latency model charges prefill attention on a **full-input-length** basis
+(`ti·(a_r + ti/2)`), which over-counts physically-causal (triangular, `≈ N²/2`) attention by up to ~3×
+at single-chunk. `C_attn` is calibrated to this basis, and Stage B's `W_p` matches it **deliberately**
+so EDPP's congestion estimate is consistent with the simulator it runs in — the correct choice for
+routing-decision fidelity. The **roofline** backend (`roofline.go`) uses the physically-causal
+prior-context basis (`≈ a_r − a_p/2`), which matches design-doc §3.6. So §3.6's causal form is
+physics-pure but inconsistent with the default model; Stage B's `+a_p/2` matches the default model.
+Fixing the trained-physics basis to causal + refitting `C_attn` (invalidating the frozen coeffs and all
+prior findings) is a separate, deferred task. If a future study runs the roofline backend, `W_p` must
+switch to the causal basis; the accumulator already reads whichever model is active.
+
+**Reproduce:** `bash campaigns/edpp-study/repro_stage_b.sh` → `campaigns/edpp-study/out/stage_b/{synth,rag}_bias.json`
+(~4 min, deterministic). Checkpoint: single-chunk prefill and decode `max_abs_rel_err` < 1e-6 on both;
+chunked residual is the `Σs²` term.
