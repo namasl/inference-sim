@@ -455,13 +455,19 @@ func (d *EDPPDecider) Decide(req *Request, state *RouterState) DisaggregationDec
 	if len(prefillSnaps) > 0 {
 		prefillSnap = prefillSnaps[0]
 	}
+	// AdmissionRate (req/µs) for the little estimator: prefer the explicit field if a
+	// source ever populates it, else fall back to the observed completion rate
+	// (DispatchRate, req/s → req/µs). In steady state admission ≈ completion (§3.8),
+	// so DispatchRate is the arrival-free observable for L̄_q/λ_adm.
+	decAdmRate := admissionRateFromSnapshot(decSnap)
+	prefillAdmRate := admissionRateFromSnapshot(prefillSnap)
 
 	tAdmP := d.tadmEstimator.EstimateTAdm(AdmissionContext{
 		QWork: qP, Mu: muPf,
 		BatchSize: prefillSnap.BatchSize, MaxBatchSize: int(prefillSnap.MaxBatchSize),
 		FreeKVBlocks: prefillSnap.FreeKVBlocks, ReqKVNeed: reqKVNeed,
 		TIter: d.coeffs.tIterPrefill(sPfPrefill), QueueDepth: prefillSnap.QueueDepth,
-		AdmissionRate: prefillSnap.AdmissionRate, RemainingStepsEst: remStepsEst,
+		AdmissionRate: prefillAdmRate, RemainingStepsEst: remStepsEst,
 		Running: prefillSnap.RunningDecode,
 	})
 	tAdmD := d.tadmEstimator.EstimateTAdm(AdmissionContext{
@@ -469,7 +475,7 @@ func (d *EDPPDecider) Decide(req *Request, state *RouterState) DisaggregationDec
 		BatchSize: decSnap.BatchSize, MaxBatchSize: int(decSnap.MaxBatchSize),
 		FreeKVBlocks: decSnap.FreeKVBlocks, ReqKVNeed: reqKVNeed,
 		TIter: tBminus1, QueueDepth: decSnap.QueueDepth,
-		AdmissionRate: decSnap.AdmissionRate, RemainingStepsEst: remStepsEst,
+		AdmissionRate: decAdmRate, RemainingStepsEst: remStepsEst,
 		Running: decSnap.RunningDecode,
 	})
 	ttftP := tAdmP + nChunks*(d.coeffs.tIterPrefill(sPfPrefill)+deltaPfChunk) + float64(d.cfg.CXferUs)
@@ -530,6 +536,20 @@ func (d *EDPPDecider) selectedDecodeSnapshot(state *RouterState) (snap RoutingSn
 		return snaps[0], true
 	}
 	return RoutingSnapshot{}, false
+}
+
+// admissionRateFromSnapshot returns the admission rate (req/µs) for the little
+// estimator. It prefers the explicit AdmissionRate field when populated, else
+// derives it from the observed completion rate DispatchRate (req/s → req/µs);
+// admission ≈ completion in steady state (§3.8). Returns 0 when neither is available.
+func admissionRateFromSnapshot(snap RoutingSnapshot) float64 {
+	if snap.AdmissionRate > 0 {
+		return snap.AdmissionRate
+	}
+	if snap.DispatchRate > 0 {
+		return snap.DispatchRate / 1e6
+	}
+	return 0
 }
 
 // selectedDecodeState returns (B_dec, KV, S_pf) for the decode pod this request

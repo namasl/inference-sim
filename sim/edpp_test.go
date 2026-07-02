@@ -247,6 +247,33 @@ func TestDecide_PopulatesAdmissionContext(t *testing.T) {
 	}
 }
 
+func TestDecide_AdmissionRateFromDispatchRate(t *testing.T) {
+	// When the explicit AdmissionRate field is 0, Decide must fall back to the
+	// observed completion rate (DispatchRate, req/s → req/µs), so the `little`
+	// estimator (QueueDepth/AdmissionRate) is not a dead point.
+	var seen AdmissionContext
+	spy := admissionSpy{onCall: func(c AdmissionContext) { seen = c }}
+	d := newTestEDPPDeciderWithEstimator(t, spy)
+	state := &RouterState{
+		SelectedInstance: "d0",
+		Snapshots: []RoutingSnapshot{{
+			ID: "d0", BatchSize: 4, MaxBatchSize: 4, QueueDepth: 8,
+			DispatchRate: 20, // req/s; AdmissionRate field left 0
+		}},
+	}
+	d.Decide(makeReq("r1", 100, "batch"), state)
+	want := 20.0 / 1e6
+	if seen.AdmissionRate != want {
+		t.Fatalf("AdmissionRate = %v, want DispatchRate/1e6 = %v", seen.AdmissionRate, want)
+	}
+	// Explicit AdmissionRate takes precedence when non-zero.
+	state.Snapshots[0].AdmissionRate = 0.005
+	d.Decide(makeReq("r2", 100, "batch"), state)
+	if seen.AdmissionRate != 0.005 {
+		t.Fatalf("AdmissionRate = %v, want explicit 0.005", seen.AdmissionRate)
+	}
+}
+
 func TestEDPP_NOutIndependence(t *testing.T) {
 	// §11 N_out-independence anchor: the decision must not read Request.OutputTokens (INV-9).
 	d := NewEDPPDecider(defaultTestEDPPConfig(), newTestAffineModel(), nil, nil)

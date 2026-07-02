@@ -225,6 +225,12 @@ func (i *InstanceSimulator) RunningDecodeState() []sim.RunningReqState {
 	return i.sim.RunningDecodeState()
 }
 
+// AdmissionDetailEnabled reports whether the underlying Simulator has admission-detail
+// population enabled. Returns false when the instance has no simulator.
+func (i *InstanceSimulator) AdmissionDetailEnabled() bool {
+	return i.sim != nil && i.sim.AdmissionDetailEnabled()
+}
+
 // TotalKVBlocks returns the total number of KV cache blocks for this instance.
 func (i *InstanceSimulator) TotalKVBlocks() int64 {
 	if i.sim == nil || i.sim.KVCache == nil {

@@ -162,6 +162,11 @@ func (sim *Simulator) SetAdmissionDetail(oracle bool) {
 	sim.admissionDetailOracle = oracle
 }
 
+// AdmissionDetailEnabled reports whether admission-detail population is enabled
+// (see SetAdmissionDetail). Used by the cluster snapshot-build path to decide
+// whether to pay for extra occupancy signals (e.g. per-instance DispatchRate).
+func (sim *Simulator) AdmissionDetailEnabled() bool { return sim.recordAdmissionDetail }
+
 // RunningDecodeState returns per-running-decode-request state for the roll-forward
 // admission estimator. Returns nil when admission detail is disabled (zero-cost
 // default) or there is no running batch. StepsDone = ProgressIndex − len(InputTokens);

@@ -84,6 +84,13 @@ func buildRouterState(cs *ClusterSimulator, req *sim.Request) *sim.RouterState {
 		snap.TPDegree = inst.TPDegree
 		snap.CostPerHour = inst.CostPerHour
 		snap.MaxBatchSize = float64(inst.MaxBatchSize()) // float64: QueueingModelAnalyzer uses it in float arithmetic
+		// DispatchRate feeds the `little` admission estimator (λ_adm ≈ completion rate,
+		// §3.8). LatencyStats() was removed from the default path in #1382 for cost, so we
+		// only pay for it when admission detail is explicitly enabled (zero-cost default).
+		// Non-zero once the instance has completed at least one request mid-run.
+		if inst.AdmissionDetailEnabled() {
+			snap.DispatchRate = inst.LatencyStats().DispatchRate
+		}
 		snapshots = append(snapshots, snap)
 	}
 	// Collect Loading instances as pending supply information for the autoscaler.
