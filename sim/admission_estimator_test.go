@@ -84,3 +84,28 @@ func TestNewAdmissionEstimator_UnknownIsError(t *testing.T) {
 		t.Fatal("expected error for unknown estimator")
 	}
 }
+
+func TestOracleVariants(t *testing.T) {
+	// Oracle variants exist and use TrueRemaining even when an estimate is also present.
+	e, err := NewAdmissionEstimator("rollforward_oracle")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := AdmissionContext{
+		BatchSize: 1, MaxBatchSize: 1, FreeKVBlocks: 0, ReqKVNeed: 5, TIter: 1000,
+		Running: []RunningReqState{{TrueRemaining: 2, KVBlocks: 10}}, RemainingStepsEst: 99,
+	}
+	// Oracle uses TrueRemaining=2 (not est 99) → 2000µs.
+	if got := e.EstimateTAdm(ctx); got < 1999 || got > 2001 {
+		t.Fatalf("rollforward_oracle = %v, want ~2000 (uses TrueRemaining)", got)
+	}
+}
+
+func TestDeployableGuard(t *testing.T) {
+	if IsDeployableEstimator("rollforward") != true {
+		t.Fatal("rollforward is deployable")
+	}
+	if IsDeployableEstimator("rollforward_oracle") != false {
+		t.Fatal("oracle is NOT deployable")
+	}
+}

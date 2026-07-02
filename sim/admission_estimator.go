@@ -131,7 +131,25 @@ func NewAdmissionEstimator(name string) (AdmissionDelayEstimator, error) {
 		return fluidEstimator{}, nil
 	case "rollforward":
 		return rollforwardEstimator{}, nil
+	case "fluid_oracle":
+		// Oracle variant: same impl, run against a true-remaining-populated context
+		// (Task 3 oracle mode). Logging-only — rejected as a routing driver by INV-9.
+		return fluidEstimator{}, nil
+	case "rollforward_oracle":
+		return rollforwardEstimator{}, nil
 	default:
 		return nil, fmt.Errorf("unknown admission estimator %q", name)
+	}
+}
+
+// IsDeployableEstimator reports whether an estimator name may drive routing. The
+// deployable estimators read only production-observable state; the oracle variants
+// (and unknown names) read TRUE remaining output and so are logging-only (INV-9).
+func IsDeployableEstimator(name string) bool {
+	switch name {
+	case "", "waiting", "little", "fluid", "rollforward":
+		return true
+	default:
+		return false // oracle variants and unknowns
 	}
 }

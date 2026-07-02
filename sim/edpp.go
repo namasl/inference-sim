@@ -295,6 +295,11 @@ func NewEDPPDecider(cfg EDPPConfig, model LatencyModel, cacheQuery map[string]fu
 		awaitingFirstToken: make(map[string]*edppAwaiting),
 	}
 
+	// INV-9 guard: oracle admission estimators read TRUE remaining output, so they
+	// may only be logged (via NewAdmissionEstimator directly), never drive routing.
+	if !IsDeployableEstimator(cfg.TAdmEstimator) {
+		panic(fmt.Sprintf("NewEDPPDecider: oracle admission estimators are logging-only, not routing drivers (TAdmEstimator=%q)", cfg.TAdmEstimator))
+	}
 	est, err := NewAdmissionEstimator(cfg.TAdmEstimator)
 	if err != nil {
 		// Library boundary: mirror cfg.validate()'s panic-on-invalid-config style (R3).
