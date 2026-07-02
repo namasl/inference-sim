@@ -135,6 +135,13 @@ type Simulator struct {
 	// latency-law regressors to a CSV for offline coefficient calibration.
 	// nil by default — no effect on the deterministic result channel.
 	stepRec *stepRecorder
+
+	// Work-trace accumulator (off unless --edpp-work-trace). Sums each resident
+	// request's per-step δ (active latency-model basis) into per-request totals,
+	// so realized trajectory work can be compared to the closed-form W_p/W_d.
+	recordWorkTrace bool
+	workCoeffs      EDPPCoeffs
+	workAcc         map[string]*reqWorkAccum
 }
 
 // NewSimulator creates a Simulator from a SimConfig struct and pre-built dependencies.
@@ -787,6 +794,12 @@ func (sim *Simulator) executeBatchStep(now int64) int64 {
 		sim.stepRec.record(sim.stepCount, currStepAdvance, bDec, kv, sPf, pfCtx, len(scheduled))
 	}
 
+	if sim.recordWorkTrace {
+		for _, req := range scheduled {
+			sim.accumulateStepWork(req.ID, req.SLOClass, req)
+		}
+	}
+
 	// Add transfer latency from CPU→GPU reloads (0 for single-tier)
 	currStepAdvance += sim.KVCache.ConsumePendingTransferLatency()
 
@@ -840,6 +853,75 @@ func (sim *Simulator) executeBatchStep(now int64) int64 {
 	sim.recordKVUsageMetrics(currStepAdvance)
 
 	return currStepAdvance
+}
+
+// reqWorkAccum accumulates one request's realized trajectory work.
+type reqWorkAccum struct {
+	slo           string
+	ar            int64
+	apRealized    int64
+	oRealized     int64
+	prefillChunks int
+	prefillWork   float64
+	decodeWork    float64
+}
+
+// ReqWork is an exported snapshot of a request's accumulated work (for the cluster
+// builder / --edpp-work-trace).
+type ReqWork struct {
+	SLOClass            string
+	Ar                  int64
+	ApRealized          int64
+	ORealized           int64
+	PrefillChunks       int
+	RealizedPrefillWork float64
+	RealizedDecodeWork  float64
+}
+
+// SetWorkTrace enables per-request work accumulation with the given coeffs.
+func (sim *Simulator) SetWorkTrace(coeffs EDPPCoeffs) {
+	sim.recordWorkTrace = true
+	sim.workCoeffs = coeffs
+	if sim.workAcc == nil {
+		sim.workAcc = make(map[string]*reqWorkAccum)
+	}
+}
+
+// accumulateStepWork adds one scheduled request's per-step δ to its accumulator,
+// mirroring the active latency model's charge (prefill C_pf·s + C_attn·s·(a_r+s/2)
+// with a_r = full input length; decode C0 + C1·ProgressIndex). No-op when disabled.
+func (sim *Simulator) accumulateStepWork(id, slo string, req *Request) {
+	if !sim.recordWorkTrace {
+		return
+	}
+	a := sim.workAcc[id]
+	if a == nil {
+		a = &reqWorkAccum{slo: slo, ar: util.Len64(req.InputTokens)}
+		sim.workAcc[id] = a
+	}
+	si := util.Len64(req.InputTokens)
+	if req.ProgressIndex < si {
+		s := float64(req.NumNewTokens)
+		a.prefillWork += sim.workCoeffs.CPf*s + sim.workCoeffs.CAttn*s*(float64(si)+s/2.0)
+		a.apRealized += int64(req.NumNewTokens)
+		a.prefillChunks++
+	} else if len(req.OutputTokens) > 0 {
+		a.decodeWork += sim.workCoeffs.C0 + sim.workCoeffs.C1*float64(req.ProgressIndex)
+		a.oRealized++
+	}
+}
+
+// WorkAccumulators returns a snapshot of accumulated per-request work (empty when disabled).
+func (sim *Simulator) WorkAccumulators() map[string]ReqWork {
+	out := make(map[string]ReqWork, len(sim.workAcc))
+	for id, a := range sim.workAcc {
+		out[id] = ReqWork{
+			SLOClass: a.slo, Ar: a.ar, ApRealized: a.apRealized, ORealized: a.oRealized,
+			PrefillChunks:       a.prefillChunks,
+			RealizedPrefillWork: a.prefillWork, RealizedDecodeWork: a.decodeWork,
+		}
+	}
+	return out
 }
 
 // processCompletions handles Phase 3: identifies completed requests, performs state
