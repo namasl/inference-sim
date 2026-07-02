@@ -77,6 +77,7 @@ type EDPPConfig struct {
 	ChunkTokens      int              // per-step prefill token budget (max_num_batched_tokens); caps δ_pf-chunk. 0 = no cap (whole prefill counts as one chunk)
 	Coeffs           EDPPCoeffs       // frozen E3 latency-law coefficients (design §1.1); required
 	TraceEnabled     bool             // when true, Decide attaches an EDPPDecisionTrace (intermediate rule terms) to each decision. Off ⇒ zero allocation.
+	TAdmEstimator    string           // admission-delay estimator name ("" ⇒ waiting, the current formula)
 }
 
 // EDPPDecisionTrace records the intermediate terms of one E14 rule evaluation, for
@@ -252,6 +253,9 @@ type EDPPDecider struct {
 	// Frozen calibrated coefficients stored for use by downstream tasks.
 	coeffs EDPPCoeffs
 
+	// Pluggable admission-delay estimator (default "waiting" reproduces QWork/Mu).
+	tadmEstimator AdmissionDelayEstimator
+
 	// Per-class controller state: virtual queues keyed by SLO class. Lazily created.
 	zByClass map[string]*edppClassState
 
@@ -290,6 +294,13 @@ func NewEDPPDecider(cfg EDPPConfig, model LatencyModel, cacheQuery map[string]fu
 
 		awaitingFirstToken: make(map[string]*edppAwaiting),
 	}
+
+	est, err := NewAdmissionEstimator(cfg.TAdmEstimator)
+	if err != nil {
+		// Library boundary: mirror cfg.validate()'s panic-on-invalid-config style (R3).
+		panic(fmt.Sprintf("NewEDPPDecider: %v", err))
+	}
+	d.tadmEstimator = est
 
 	// μ_p^nom = 1 − α_p/(α_p + c_pf·S_pf^nom) (design §7): from frozen coefficients.
 	d.muPNom = d.coeffs.muPNom(cfg.NomPrefillTokens)
@@ -417,8 +428,10 @@ func (d *EDPPDecider) Decide(req *Request, state *RouterState) DisaggregationDec
 	}
 	nChunks := math.Ceil(float64(ap) / float64(chunk))
 	deltaPfChunk := d.coeffs.CPf * float64(chunk)
-	ttftP := qP/muPf + nChunks*(d.coeffs.tIterPrefill(sPfPrefill)+deltaPfChunk) + float64(d.cfg.CXferUs)
-	ttftD := qD/muDec + nChunks*(tBminus1+deltaPfChunk)
+	tAdmP := d.tadmEstimator.EstimateTAdm(AdmissionContext{QWork: qP, Mu: muPf}) // occupancy fields added in Task 3
+	tAdmD := d.tadmEstimator.EstimateTAdm(AdmissionContext{QWork: qD, Mu: muDec})
+	ttftP := tAdmP + nChunks*(d.coeffs.tIterPrefill(sPfPrefill)+deltaPfChunk) + float64(d.cfg.CXferUs)
+	ttftD := tAdmD + nChunks*(tBminus1+deltaPfChunk)
 
 	// Per-class virtual queues.
 	var zTTFT, zITL float64
