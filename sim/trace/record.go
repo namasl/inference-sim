@@ -176,6 +176,26 @@ type PDOutcomeRecord struct {
 	Completed       bool
 }
 
+// WorkTraceRecord is one request's realized trajectory work vs the closed-form
+// work model (Stage B validation). Times/work in µs. Emitted only under
+// --edpp-work-trace. See docs/superpowers/specs/2026-07-01-edpp-work-model-design.md.
+type WorkTraceRecord struct {
+	RequestID     string
+	SLOClass      string
+	Ar            int64   // full prompt length len(InputTokens)
+	ApRealized    int64   // Σ new prefill tokens actually processed (excludes cached prefix)
+	ORealized     int64   // realized output length (decode steps)
+	PrefillChunks int     // number of prefill steps (1 = single-chunk)
+	CacheHitFrac  float64 // 1 - ApRealized/Ar
+
+	RealizedPrefillWork float64 // Σ per-step prefill δ (active latency model basis)
+	RealizedDecodeWork  float64 // Σ per-step decode δ
+
+	WpClosed           float64 // Wp(ApRealized, Ar) — corrected closed form
+	WdClosed           float64 // Wd(Ar, ORealized) — corrected closed form
+	WpClosedNoCacheOld float64 // old shipped form C_pf·ApRealized + (C_attn/2)·ApRealized² (for delta reporting)
+}
+
 // RoutingTraceCandidate is one candidate instance considered during a routing
 // target selection, captured for the --routing-decision-trace CSV.
 type RoutingTraceCandidate struct {
