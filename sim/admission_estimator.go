@@ -45,12 +45,24 @@ func (waitingEstimator) EstimateTAdm(ctx AdmissionContext) float64 {
 	return ctx.QWork / ctx.Mu
 }
 
+type littleEstimator struct{}
+
+func (littleEstimator) Name() string { return "little" }
+func (littleEstimator) EstimateTAdm(ctx AdmissionContext) float64 {
+	if ctx.AdmissionRate <= 0 {
+		return 0
+	}
+	return float64(ctx.QueueDepth) / ctx.AdmissionRate
+}
+
 // NewAdmissionEstimator returns the estimator by name. Little/fluid/rollforward
 // and the oracle variants are added in later tasks.
 func NewAdmissionEstimator(name string) (AdmissionDelayEstimator, error) {
 	switch name {
 	case "", "waiting":
 		return waitingEstimator{}, nil
+	case "little":
+		return littleEstimator{}, nil
 	default:
 		return nil, fmt.Errorf("unknown admission estimator %q", name)
 	}
