@@ -382,7 +382,7 @@ func (d *EDPPDecider) Decide(req *Request, state *RouterState) DisaggregationDec
 	}
 
 	// W_p = full prefill demand of this request (E6), from frozen coeffs.
-	wp := d.coeffs.Wp(ap)
+	wp := d.coeffs.Wp(ap, len(req.InputTokens))
 
 	// Live decode-server state from the pre-selected decode snapshot (the pod this
 	// request would land on); fall back to the first snapshot, else nominal.
@@ -560,8 +560,9 @@ func (d *EDPPDecider) OnRoute(req *Request, key string, toPrefill bool, apTokens
 	if apTokens <= 0 {
 		return
 	}
-	wp := d.coeffs.Wp(apTokens)
-	wd := d.nHatFor(req.SLOClass).mean() * d.coeffs.deltaBarDecode(float64(d.cfg.NomDecodeCtx))
+	wp := d.coeffs.Wp(apTokens, len(req.InputTokens))
+	// W_d now uses the exact discrete decode sum Wd(a_r, N̂_out); it no longer uses NomDecodeCtx.
+	wd := d.coeffs.Wd(len(req.InputTokens), d.nHatFor(req.SLOClass).mean())
 	pw := edppPendingWork{toPrefill: toPrefill}
 	if toPrefill {
 		pw.wp = wp // prefill work lands on the prefill pool

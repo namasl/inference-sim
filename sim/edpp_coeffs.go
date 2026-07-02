@@ -58,10 +58,27 @@ func LoadEDPPCoeffs(path string) (EDPPCoeffs, error) {
 	return c, nil
 }
 
-// Wp is the prefill demand of a_p uncached tokens (design §3, E6), in µs.
-func (c EDPPCoeffs) Wp(ap int) float64 {
+// Wp is the prefill demand of a_p uncached tokens for a prompt of full length
+// a_r, in µs. It is the trajectory sum of the active (trained-physics) latency
+// model's per-step prefill charge C_pf·s + C_attn·s·(a_r + s/2) — hence the
+// (a_r + a_p/2) form (see docs/superpowers/specs/2026-07-01-edpp-work-model-design.md
+// §2, §7). At a_p = a_r (no cache) this is C_pf·a_r + 1.5·C_attn·a_r².
+func (c EDPPCoeffs) Wp(ap, ar int) float64 {
 	a := float64(ap)
-	return c.CPf*a + (c.CAttn/2.0)*a*a
+	r := float64(ar)
+	return c.CPf*a + c.CAttn*a*(r+a/2.0)
+}
+
+// Wd is the decode demand for a prompt of length a_r generating o output tokens,
+// in µs: the exact discrete per-step sum Σ_{k=0}^{o-1}(C0 + C1·(a_r+k)) =
+// C0·o + C1·o·(a_r + (o-1)/2). Matches the active latency model's per-decode-step
+// charge (context = ProgressIndex = a_r + k). o is the N̂_out estimate at routing.
+func (c EDPPCoeffs) Wd(ar int, o float64) float64 {
+	if o <= 0 {
+		return 0
+	}
+	r := float64(ar)
+	return c.C0*o + c.C1*o*(r+(o-1)/2.0)
 }
 
 // tIterDecode is the E3 decode iteration time (µs) at the given batch state.

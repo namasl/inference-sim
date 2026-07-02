@@ -37,14 +37,58 @@ func TestLoadEDPPCoeffs_FrozenLlama70b(t *testing.T) {
 
 func TestEDPPCoeffs_Wp(t *testing.T) {
 	c := EDPPCoeffs{CPf: 10, CAttn: 0}
-	// linear-only (test model): W_p(300) = 10·300 = 3000
-	if got := c.Wp(300); math.Abs(got-3000) > 1e-9 {
-		t.Errorf("Wp(300) = %v, want 3000", got)
+	// linear-only (test model), no cache: W_p(300,300) = 10·300 = 3000
+	if got := c.Wp(300, 300); math.Abs(got-3000) > 1e-9 {
+		t.Errorf("Wp(300,300) = %v, want 3000", got)
 	}
-	// with attention curvature: W_p(100) = 6·100 + (0.5/2)·100² = 600 + 0.25·10000 = 3100
+	// trained-physics basis, no cache: W_p(100,100) = 6·100 + 0.5·100·(100+50) = 600 + 7500 = 8100
 	c2 := EDPPCoeffs{CPf: 6, CAttn: 0.5}
-	if got := c2.Wp(100); math.Abs(got-3100) > 1e-9 {
-		t.Errorf("Wp(100) = %v, want 3100", got)
+	if got := c2.Wp(100, 100); math.Abs(got-8100) > 1e-9 {
+		t.Errorf("Wp(100,100) = %v, want 8100", got)
+	}
+}
+
+func TestWp_TrainedPhysicsBasis(t *testing.T) {
+	c := EDPPCoeffs{CPf: 6.0, CAttn: 0.001}
+	// No cache (a_p = a_r = 1000): C_pf·1000 + C_attn·1000·(1000 + 500) = 6000 + 0.001·1000·1500 = 6000 + 1500.
+	got := c.Wp(1000, 1000)
+	want := 6.0*1000 + 0.001*1000*(1000+1000.0/2)
+	if got != want {
+		t.Fatalf("Wp(1000,1000) = %v, want %v", got, want)
+	}
+	// This is NOT the old (C_attn/2)·a² form: old attention would be 0.001/2·1000² = 500, not 1500.
+	oldAttn := (0.001 / 2) * 1000 * 1000
+	newAttn := got - 6.0*1000
+	if newAttn == oldAttn {
+		t.Fatalf("Wp attention term must differ from old (C_attn/2)a²=%v; got %v", oldAttn, newAttn)
+	}
+	// Cached prefix (a_p=200 uncached of a_r=1000): C_pf·200 + C_attn·200·(1000 + 100).
+	gotc := c.Wp(200, 1000)
+	wantc := 6.0*200 + 0.001*200*(1000+200.0/2)
+	if gotc != wantc {
+		t.Fatalf("Wp(200,1000) = %v, want %v", gotc, wantc)
+	}
+}
+
+func TestWd_DiscreteDecodeSum(t *testing.T) {
+	c := EDPPCoeffs{C0: 5.0, C1: 0.05}
+	// Wd = Σ_{k=0}^{o-1}(C0 + C1·(a_r+k)) = C0·o + C1·o·(a_r + (o-1)/2).
+	sum := func(ar int, o int) float64 {
+		var s float64
+		for k := 0; k < o; k++ {
+			s += 5.0 + 0.05*float64(ar+k)
+		}
+		return s
+	}
+	for _, tc := range []struct{ ar, o int }{{1000, 0}, {1000, 1}, {500, 10}, {2000, 128}} {
+		got := c.Wd(tc.ar, float64(tc.o))
+		want := sum(tc.ar, tc.o)
+		if diff := got - want; diff < -1e-6 || diff > 1e-6 {
+			t.Fatalf("Wd(%d,%d) = %v, want %v (discrete sum)", tc.ar, tc.o, got, want)
+		}
+	}
+	if c.Wd(1000, 0) != 0 {
+		t.Fatalf("Wd with o=0 must be 0, got %v", c.Wd(1000, 0))
 	}
 }
 
