@@ -226,6 +226,27 @@ func makeReq(id string, nInput int, class string) *Request {
 	return &Request{ID: id, InputTokens: make([]int, nInput), SLOClass: class}
 }
 
+// The deployable remaining-steps must NOT collapse to 1 under saturation: with running
+// requests whose StepsDone exceed a stale N̂_out, N̂_out is floored by the max in-flight
+// elapsed (censored lower bound: o_r ≥ tokens already produced), so the estimate reflects
+// the running occupants' scale rather than 1.
+func TestDecide_CensoredRemainingSteps(t *testing.T) {
+	var seen AdmissionContext
+	spy := admissionSpy{onCall: func(c AdmissionContext) { seen = c }}
+	d := newTestEDPPDeciderWithEstimator(t, spy)
+	// N̂_out starts at its default (small/0); running requests are deep into decode.
+	state := &RouterState{SelectedInstance: "d0", Snapshots: []RoutingSnapshot{{
+		ID: "d0", BatchSize: 3, MaxBatchSize: 4,
+		RunningDecode: []RunningReqState{{StepsDone: 2000, TrueRemaining: -1}, {StepsDone: 2200, TrueRemaining: -1}, {StepsDone: 1800, TrueRemaining: -1}},
+	}}}
+	d.Decide(makeReq("r1", 100, "batch"), state)
+	// Censored floor: N̂_out_eff ≥ max StepsDone (2200); remaining_i = max(N̂_out_eff − StepsDone_i, 1).
+	// Mean over {2200-2000, 2200-2200→1, 2200-1800} = mean(200,1,400) ≈ 200.3 — NOT 1.
+	if seen.RemainingStepsEst < 100 {
+		t.Fatalf("remaining-steps collapsed to ~1 (%v); censored floor should keep it ~200", seen.RemainingStepsEst)
+	}
+}
+
 func TestDecide_PopulatesAdmissionContext(t *testing.T) {
 	var seen AdmissionContext
 	spy := admissionSpy{onCall: func(c AdmissionContext) { seen = c }}

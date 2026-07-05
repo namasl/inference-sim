@@ -452,20 +452,24 @@ func (d *EDPPDecider) Decide(req *Request, state *RouterState) DisaggregationDec
 	if d.cfg.BlockSize > 0 {
 		reqKVNeed = int64((len(req.InputTokens) + d.cfg.BlockSize - 1) / d.cfg.BlockSize)
 	}
-	// RemainingStepsEst: prefer the snapshot's aggregate remaining decode work; else fall
-	// back to max(N̂_out − mean(StepsDone over running decode), 1).
-	remStepsEst := decSnap.RemainingDecodeWork
-	if remStepsEst == 0 {
+	// RemainingStepsEst (deployable): per-running-request censored estimate, NOT a mean that
+	// can go negative. A request that has produced StepsDone tokens has o_r ≥ StepsDone
+	// (censored lower bound), so floor the class output estimate by the max in-flight elapsed.
+	remStepsEst := 1.0
+	if n := len(decSnap.RunningDecode); n > 0 {
 		nHatOut := d.nHatFor(req.SLOClass).mean()
-		var meanSteps float64
-		if len(decSnap.RunningDecode) > 0 {
-			var sum int64
-			for _, r := range decSnap.RunningDecode {
-				sum += r.StepsDone
+		var maxSteps int64
+		for _, r := range decSnap.RunningDecode {
+			if r.StepsDone > maxSteps {
+				maxSteps = r.StepsDone
 			}
-			meanSteps = float64(sum) / float64(len(decSnap.RunningDecode))
 		}
-		remStepsEst = math.Max(nHatOut-meanSteps, 1)
+		nHatEff := math.Max(nHatOut, float64(maxSteps)) // censored: N̂_out ≥ longest in-flight elapsed
+		var sum float64
+		for _, r := range decSnap.RunningDecode {
+			sum += math.Max(nHatEff-float64(r.StepsDone), 1) // per-request remaining, floored at 1
+		}
+		remStepsEst = sum / float64(n)
 	}
 	var prefillSnap RoutingSnapshot
 	if len(prefillSnaps) > 0 {

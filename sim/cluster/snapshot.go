@@ -155,6 +155,7 @@ func (p *CachedSnapshotProvider) Snapshot(id InstanceID, clock int64) sim.Routin
 	}
 	if p.shouldRefresh(p.config.BatchSize, lr.BatchSize, clock) {
 		snap.BatchSize = inst.BatchSize()
+		snap.MaxBatchSize = float64(inst.MaxBatchSize())
 		snap.ResidentPrefillTokens = inst.ResidentPrefillTokens()
 		// nil unless the instance's Simulator has admission detail enabled (zero-cost default).
 		snap.RunningDecode = inst.RunningDecodeState()
@@ -181,6 +182,7 @@ func (p *CachedSnapshotProvider) RefreshAll(clock int64) {
 		snap.PreemptionCount = inst.PreemptionCount()
 		snap.QueueDepth = inst.QueueDepth()
 		snap.BatchSize = inst.BatchSize()
+		snap.MaxBatchSize = float64(inst.MaxBatchSize())
 		snap.ResidentPrefillTokens = inst.ResidentPrefillTokens()
 		snap.RunningDecode = inst.RunningDecodeState()
 		snap.KVUtilization = inst.KVUtilization()
