@@ -367,3 +367,46 @@ and `N̂_out` is biased low under saturation (survivorship — only short reques
 inherently limits the *deployable* estimators. These are being addressed as a fix-cluster (fluid wave
 mean-field + oracle/deployable separation + N̂_out handling + little admission-rate + prefill enrichment
 + CLI flag). Treat all Stage C ablation numbers above as PROVISIONAL until the fix-cluster lands.
+
+### Stage C — DE-CONFOUNDED RESULTS after fix-cluster (2026-07-05, supersedes the provisional/1.29× numbers)
+
+All six fix-cluster items landed (fluid wave form; censored per-request remaining-steps; windowed
+admission-rate; oracle/deployable separation; prefill enrichment; `--edpp-tadm-estimator`) plus the
+second round (rollforward queue-waves; `little` pool-filtered-snapshot fix). `repro_stage_c.sh` re-run,
+median ratio realized/predicted (>1 = under-prediction, <1 = over-prediction; ~1 = accurate):
+
+| pool (workload) | waiting | little | fluid | rollforward | rollforward_oracle |
+|---|---|---|---|---|---|
+| **local (T1, realized p50 ≈ 560s)** | **57.3×** | 1.30× | **1.16×** | **1.16×** | 1.25× |
+| decode (T1) | 12.9× | 1.81× | 0.98× | 0.98× | 0.98× |
+| decode (T2) | 4.05× | 2.70× | 0.34× | 0.34× | 0.34× |
+| local (T2) | 1430× | 8.4× | 0.35× | 0.35× | 0.35× |
+
+**Findings:**
+- **Occupancy-blindness is the dominant error.** `waiting` (waiting-backlog ÷ drain) under-predicts
+  admission delay 57×–1430× on saturated pools — the mechanism Stage A first measured.
+- **The occupancy-aware estimators fix it.** On the target T1 local pool, `fluid`/`rollforward` reach
+  1.16× (near-exact) and `little` 1.30×. The key ingredient is accounting for the queue-ahead
+  (`fluid`'s wave form; `rollforward`'s queue-depth-aware departure walk).
+- **`fluid` and `rollforward` converge** (identical on T1 local/decode): once `rollforward` rolls
+  through `⌈(QueueDepth+1)/BatchSize⌉` waves, its deep-queue behavior IS the fluid wave form — so the
+  "true per-request" estimator and the mean-field agree where the queue dominates. The per-request
+  walk's extra fidelity matters only for shallow queues.
+- **Oracle ≈ deployable** (T1 local 1.16 vs 1.25; decode identical): after the **censored `N̂_out`
+  floor** (a request that produced `k` tokens has `o_r ≥ k`), the deployable estimate closes almost all
+  of the gap to the true-remaining oracle. The `N̂_out`-prediction residual is small here.
+- **T2 (disaggregated) decode/local slightly OVER-predict (0.34–0.35×):** a disaggregated decode
+  sub-request is admitted quickly after transfer, so realized decode admission is smaller than the
+  full-queue-drain the occupancy estimators assume. Still far better than `waiting`.
+- **Prefill pool reads ~0 (nan ratio) — correct physics, not a bug.** The prefill pool is unsaturated
+  at this operating point (QueueDepth=0, free slot), so the occupancy estimators correctly return ~0
+  (`waiting` is live on 2086 prefill rows). Validating prefill estimators requires a prefill-saturating
+  workload (follow-up).
+
+**Retraction:** the earlier "rollforward fixes 57×→1.3×" headline was oracle-contaminated (deployable
+estimators were reading the oracle `TrueRemaining`). De-confounded, the honest headline is:
+**occupancy-blind `waiting` (57×–1430×) → occupancy-aware `fluid`/`rollforward` (~1.16× on the saturated
+local pool, converging), with `little` a decent aggregate (1.3×) and the censored-`N̂_out` deployable
+estimate ≈ the oracle.** Remaining follow-ups: the utilization sweep (bounded/stationary operating
+points), prefill-saturating validation, and the prefill oracle-semantics nuance (prefill "remaining" is
+known input length, not a hidden variable — the oracle/deployable split is decode-specific).
