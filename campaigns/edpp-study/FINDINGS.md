@@ -351,3 +351,19 @@ tracks the growing delay while the aggregate `little` cannot. REQUIRED FOLLOW-UP
 fidelity figure: a **utilization sweep** at loads approaching but below single-engine capacity, where
 admission delay is large but bounded/stationary, so predicted-vs-realized has a well-defined
 steady-state meaning. Pair it with the fluid/little/prefill fixes.
+
+### Stage C CORRECTION (2026-07-05): the 57×→1.3× headline is oracle-contaminated
+
+A root-cause investigation of `fluid`'s under-prediction surfaced a **measurement-validity bug**: the
+deployable `rollforward`/`fluid` and their `_oracle` variants are the same impl and read
+`RunningReqState.TrueRemaining` whenever it is ≥0. Enabling `--edpp-admission-trace` turns on oracle
+mode, which POPULATES `TrueRemaining`. So in the T1/T2 microbenchmark the "deployable" `rollforward`
+was actually reading oracle remaining — which is why `rollforward` and `rollforward_oracle` were
+identical (both 1.29×) and the decomposition showed ~0 N̂_out error. **The 1.29× "rollforward fixes
+57×→1.3×" result is oracle-fed; the true deployable-`N̂_out` number is UNKNOWN pending a fix that
+prevents deployable estimators from reading `TrueRemaining`.** Also found: `RemainingStepsEst` collapses
+to 1 (RemainingDecodeWork never populated + a mean-based fallback that goes negative under saturation),
+and `N̂_out` is biased low under saturation (survivorship — only short requests have completed), which
+inherently limits the *deployable* estimators. These are being addressed as a fix-cluster (fluid wave
+mean-field + oracle/deployable separation + N̂_out handling + little admission-rate + prefill enrichment
++ CLI flag). Treat all Stage C ablation numbers above as PROVISIONAL until the fix-cluster lands.
