@@ -186,6 +186,18 @@ func TestEDPP_Constructor_RejectsInvalidConfig(t *testing.T) {
 	}
 }
 
+// Selecting an oracle estimator as the routing driver must be rejected (INV-9 guard runtime path).
+func TestNewEDPPDecider_RejectsOracleDriver(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Fatal("expected panic when oracle estimator is the routing driver")
+		}
+	}()
+	cfg := defaultTestEDPPConfig()
+	cfg.TAdmEstimator = "rollforward_oracle"
+	_ = NewEDPPDecider(cfg, newTestAffineModel(), nil, nil)
+}
+
 // --- Decide rule + §11 behavioral anchors (Tasks 3 & 5) ---
 
 func decodeState(selected string, queue, batch int, itlUs float64) *RouterState {

@@ -445,6 +445,7 @@ func NewClusterSimulator(config DeploymentConfig, requests []*sim.Request, onReq
 				ChunkTokens:      int(config.BatchConfig.MaxScheduledTokens),
 				TraceEnabled:     trace.TraceLevel(config.TraceLevel) == trace.TraceLevelDecisions,
 				Coeffs:           config.EDPPCoeffs,
+				TAdmEstimator:    config.EDPPTAdmEstimator,
 			}, lm, cs.cacheQueryFn, prefillSnapshots)
 		default:
 			cs.disaggregationDecider = sim.NewDisaggregationDecider(config.PDDecider)

@@ -160,6 +160,7 @@ var (
 	edppTauTTFTClasses     string        // EDPP per-class τ_ttft overrides ("critical=100ms,batch=10s")
 	edppTauITLClasses      string        // EDPP per-class τ_itl overrides ("critical=20ms,batch=500ms")
 	edppCoeffsPath         string        // path to frozen EDPP E3 coefficients JSON
+	edppTAdmEstimator      string        // EDPP admission-delay estimator that drives routing ("" ⇒ waiting)
 	prefillRoutingScorers  string        // Scorer weights for prefill pool routing
 	decodeRoutingScorers   string        // Scorer weights for decode pool routing
 
@@ -1267,6 +1268,7 @@ func registerSimConfigFlags(cmd *cobra.Command) {
 	cmd.Flags().StringVar(&edppTauTTFTClasses, "edpp-tau-ttft-classes", "", "EDPP per-SLO-class τ_ttft overrides (e.g. \"critical=100ms,batch=10s\"); unlisted classes use --edpp-tau-ttft")
 	cmd.Flags().StringVar(&edppTauITLClasses, "edpp-tau-itl-classes", "", "EDPP per-SLO-class τ_itl overrides (e.g. \"critical=20ms,batch=500ms\"); unlisted classes use --edpp-tau-itl")
 	cmd.Flags().StringVar(&edppCoeffsPath, "edpp-coeffs", "", "Path to frozen EDPP E3 coefficients JSON (required with --pd-decider edpp). See scripts/calibration/.")
+	cmd.Flags().StringVar(&edppTAdmEstimator, "edpp-tadm-estimator", "", "EDPP admission-delay estimator that DRIVES routing: waiting|little|fluid|rollforward (default waiting). Oracle variants are logging-only and rejected here.")
 	cmd.Flags().StringVar(&prefillRoutingScorers, "prefill-routing-scorers", "", "Scorer weights for prefill pool routing (e.g., queue-depth:2,kv-utilization:2)")
 	cmd.Flags().StringVar(&decodeRoutingScorers, "decode-routing-scorers", "", "Scorer weights for decode pool routing (e.g., queue-depth:2,kv-utilization:2)")
 
@@ -1880,6 +1882,7 @@ var runCmd = &cobra.Command{
 			EDPPNomPrefillTokens:            edppNomPrefillTokens,
 			EDPPNomDecodeCtx:                edppNomDecodeCtx,
 			EDPPCoeffs:                      resolveEDPPCoeffs(pdDecider, edppCoeffsPath),
+			EDPPTAdmEstimator:               edppTAdmEstimator,
 			PDTransferBandwidthGBps:         pdTransferBandwidth,
 			PDTransferBaseLatencyMs:         pdTransferBaseLatency,
 			PDTransferContention:            pdTransferContention,

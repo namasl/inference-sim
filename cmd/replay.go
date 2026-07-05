@@ -486,6 +486,7 @@ Example:
 			EDPPNomPrefillTokens:            edppNomPrefillTokens,
 			EDPPNomDecodeCtx:                edppNomDecodeCtx,
 			EDPPCoeffs:                      resolveEDPPCoeffs(pdDecider, edppCoeffsPath),
+			EDPPTAdmEstimator:               edppTAdmEstimator,
 			PDTransferBandwidthGBps:         pdTransferBandwidth,
 			PDTransferBaseLatencyMs:         pdTransferBaseLatency,
 			PDTransferContention:            pdTransferContention,
