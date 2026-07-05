@@ -90,6 +90,11 @@ func buildRouterState(cs *ClusterSimulator, req *sim.Request) *sim.RouterState {
 		// Non-zero once the instance has completed at least one request mid-run.
 		if inst.AdmissionDetailEnabled() {
 			snap.DispatchRate = inst.LatencyStats().DispatchRate
+			// WindowedAdmissionRate (req/µs) feeds the `little` estimator directly and is
+			// non-zero from the first admission — unlike DispatchRate, which stays 0 until
+			// the first completion. Decide prefers snap.AdmissionRate when >0, else falls
+			// back to DispatchRate.
+			snap.AdmissionRate = inst.WindowedAdmissionRate(cs.clock)
 		}
 		snapshots = append(snapshots, snap)
 	}

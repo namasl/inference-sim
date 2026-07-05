@@ -45,7 +45,19 @@ type InstanceSimulator struct {
 	// maxRunningReqs stores cfg.BatchConfig.MaxRunningReqs at construction time.
 	// Exposed via MaxBatchSize() for the autoscaler pipeline.
 	maxRunningReqs int64
+
+	// admissionWindow is a rolling record of recent admission timestamps (ticks = µs).
+	// Fed by recordAdmission (wired to the Simulator's internal admission hook when
+	// admission detail is enabled) and consumed by WindowedAdmissionRate. This gives a
+	// req/µs admission-rate signal that is non-zero from the first admission — unlike
+	// DispatchRate (completion rate), which is 0 until the first request completes.
+	admissionWindow []int64
 }
+
+// admissionWindowUs is the rolling window over which admissions are counted for the
+// windowed admission-rate signal (1 s). Wide enough to hold several admissions at
+// realistic arrival rates, narrow enough to track recent load.
+const admissionWindowUs int64 = 1_000_000
 
 // NewInstanceSimulator creates an InstanceSimulator from a SimConfig struct.
 //
@@ -62,12 +74,66 @@ func NewInstanceSimulator(id InstanceID, cfg sim.SimConfig) *InstanceSimulator {
 	if err != nil {
 		panic(fmt.Sprintf("NewInstanceSimulator(%s): %v", id, err))
 	}
-	return &InstanceSimulator{
+	inst := &InstanceSimulator{
 		id:             id,
 		sim:            s,
 		gpu:            cfg.GPU,
 		maxRunningReqs: cfg.MaxRunningReqs,
 	}
+	// Feed the rolling admission-rate counter from the Simulator's internal admission
+	// hook. The counter itself only records when admission detail is enabled (see
+	// recordAdmission); the hook is cheap and independent of the public OnAdmit callback.
+	s.SetOnAdmitInternal(func(_ *sim.Request, tick int64) {
+		inst.recordAdmission(tick)
+	})
+	return inst
+}
+
+// SetAdmissionDetail enables population of the occupancy-aware admission-detail
+// snapshot fields on the underlying Simulator (per-running-decode-request state,
+// remaining decode work) and activates the windowed admission-rate counter.
+// Off by default (zero-cost). No-op when the instance has no simulator.
+func (i *InstanceSimulator) SetAdmissionDetail(oracle bool) {
+	if i.sim == nil {
+		return
+	}
+	i.sim.SetAdmissionDetail(oracle)
+}
+
+// recordAdmission appends an admission timestamp (tick = µs) to the rolling window,
+// evicting entries older than admissionWindowUs relative to now. Gated on admission
+// detail so the default path pays nothing (empty slice, no allocation).
+func (i *InstanceSimulator) recordAdmission(now int64) {
+	if i.sim != nil && !i.sim.AdmissionDetailEnabled() {
+		return
+	}
+	i.admissionWindow = append(i.admissionWindow, now)
+	i.evictOldAdmissions(now)
+}
+
+// evictOldAdmissions drops admission timestamps older than the rolling window.
+func (i *InstanceSimulator) evictOldAdmissions(now int64) {
+	cutoff := now - admissionWindowUs
+	keep := 0
+	for _, t := range i.admissionWindow {
+		if t > cutoff {
+			i.admissionWindow[keep] = t
+			keep++
+		}
+	}
+	i.admissionWindow = i.admissionWindow[:keep]
+}
+
+// WindowedAdmissionRate returns the recent admission rate in req/µs: admissions within
+// the trailing admissionWindowUs window divided by the window duration. Non-zero from
+// the first admission (unlike DispatchRate, which is 0 until the first completion).
+// Returns 0 when no admissions have been recorded in the window.
+func (i *InstanceSimulator) WindowedAdmissionRate(now int64) float64 {
+	i.evictOldAdmissions(now)
+	if len(i.admissionWindow) == 0 {
+		return 0
+	}
+	return float64(len(i.admissionWindow)) / float64(admissionWindowUs)
 }
 
 // GPU returns the GPU type this instance was constructed with.

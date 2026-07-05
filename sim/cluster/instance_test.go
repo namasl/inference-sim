@@ -30,6 +30,28 @@ func newTestInstanceSimConfig() sim.SimConfig {
 	return newTestSimConfig()
 }
 
+// newTestInstanceWithAdmissionDetail builds an instance with admission-detail
+// enabled so the windowed admission-rate counter is live.
+func newTestInstanceWithAdmissionDetail(t *testing.T) *InstanceSimulator {
+	t.Helper()
+	inst := NewInstanceSimulator(InstanceID("adm-test"), newTestSimConfig())
+	inst.SetAdmissionDetail(false)
+	return inst
+}
+
+// A rolling admission-rate signal is non-zero after admissions occur, even with zero completions.
+func TestAdmissionRate_NonZeroBeforeCompletions(t *testing.T) {
+	inst := newTestInstanceWithAdmissionDetail(t) // helper: instance with admission detail enabled
+	// Simulate 3 admissions over a 300ms window with no completions.
+	inst.recordAdmission(0)
+	inst.recordAdmission(100_000)
+	inst.recordAdmission(200_000)
+	rate := inst.WindowedAdmissionRate(300_000) // now=300ms
+	if rate <= 0 {
+		t.Fatalf("windowed admission rate must be > 0 after admissions with no completions, got %v", rate)
+	}
+}
+
 // === Equivalence Tests (Critical for BC-1) ===
 
 // TestInstanceSimulator_GoldenDataset_Equivalence verifies:

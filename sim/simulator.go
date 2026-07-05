@@ -150,6 +150,20 @@ type Simulator struct {
 	// from OutputTokens (measurement-only; INV-9 keeps this out of the deployable path).
 	recordAdmissionDetail bool
 	admissionDetailOracle bool
+
+	// onAdmitInternal is an internal admission observer fired for each newly
+	// scheduled request alongside the public OnAdmit callback. Unlike OnAdmit
+	// (caller-settable, wired only for SLO-feedback deciders), this hook is owned
+	// by the wrapping InstanceSimulator so the windowed admission-rate counter is
+	// always fed when admission detail is enabled. nil ⇒ no-op.
+	onAdmitInternal func(req *Request, tick int64)
+}
+
+// SetOnAdmitInternal registers an internal admission observer that fires for each
+// newly scheduled request. Distinct from the public OnAdmit callback so both can
+// coexist. Used by InstanceSimulator to feed the windowed admission-rate counter.
+func (sim *Simulator) SetOnAdmitInternal(fn func(req *Request, tick int64)) {
+	sim.onAdmitInternal = fn
 }
 
 // SetAdmissionDetail enables population of the occupancy-aware admission-detail
@@ -793,6 +807,9 @@ func (sim *Simulator) scheduleBatch(now int64) {
 
 	// Schedule events for newly scheduled requests and record scheduling metrics
 	for _, s := range batchResult.NewlyScheduled {
+		if sim.onAdmitInternal != nil {
+			sim.onAdmitInternal(s.Request, now)
+		}
 		if sim.OnAdmit != nil {
 			sim.OnAdmit(s.Request, now)
 		}
