@@ -475,6 +475,23 @@ func (d *EDPPDecider) Decide(req *Request, state *RouterState) DisaggregationDec
 	if len(prefillSnaps) > 0 {
 		prefillSnap = prefillSnaps[0]
 	}
+	// Prefill-pool RemainingStepsEst: symmetric to the decode censored estimate, but
+	// derived from the prefill snapshot's own running-prefill occupants (RunningPrefill)
+	// so the ttft_p estimators are live on the prefill pool. StepsDone/TrueRemaining here
+	// are prefill-chunk counts (see Simulator.RunningPrefillState). Floors at 1 so fluid's
+	// wave term is non-zero when the prefill batch is full.
+	prefillRemStepsEst := 1.0
+	if n := len(prefillSnap.RunningPrefill); n > 0 {
+		var sum float64
+		for _, r := range prefillSnap.RunningPrefill {
+			rem := r.TrueRemaining
+			if rem < 1 {
+				rem = 1
+			}
+			sum += float64(rem)
+		}
+		prefillRemStepsEst = sum / float64(n)
+	}
 	// AdmissionRate (req/µs) for the little estimator: prefer the explicit field if a
 	// source ever populates it, else fall back to the observed completion rate
 	// (DispatchRate, req/s → req/µs). In steady state admission ≈ completion (§3.8),
@@ -487,8 +504,8 @@ func (d *EDPPDecider) Decide(req *Request, state *RouterState) DisaggregationDec
 		BatchSize: prefillSnap.BatchSize, MaxBatchSize: int(prefillSnap.MaxBatchSize),
 		FreeKVBlocks: prefillSnap.FreeKVBlocks, ReqKVNeed: reqKVNeed,
 		TIter: d.coeffs.tIterPrefill(sPfPrefill), QueueDepth: prefillSnap.QueueDepth,
-		AdmissionRate: prefillAdmRate, RemainingStepsEst: remStepsEst,
-		Running: prefillSnap.RunningDecode,
+		AdmissionRate: prefillAdmRate, RemainingStepsEst: prefillRemStepsEst,
+		Running: prefillSnap.RunningPrefill,
 	}
 	decodeCtx := AdmissionContext{
 		QWork: qD, Mu: muDec,

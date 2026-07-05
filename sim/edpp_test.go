@@ -295,6 +295,42 @@ func TestDecide_AdmissionRateFromDispatchRate(t *testing.T) {
 	}
 }
 
+// The prefill AdmissionContext must carry real prefill-pool occupancy so the
+// ttft_p estimators (fluid/rollforward) are not inert on the prefill pool. A
+// prefill snapshot with a full batch and running prefill work must produce a
+// prefill context whose RemainingStepsEst reflects the prefill occupants (not a
+// decode-derived value) and whose Running is the prefill running-state.
+func TestDecide_PrefillContextPopulated(t *testing.T) {
+	// Prefill pool: batch full (BatchSize == MaxBatchSize) with running prefill
+	// requests, and no free KV — so fluid/rollforward cannot short-circuit to 0
+	// and must consult RemainingStepsEst / Running.
+	prefill := RoutingSnapshot{
+		ID: "p0", BatchSize: 2, MaxBatchSize: 2, QueueDepth: 3, FreeKVBlocks: 0,
+		RunningPrefill: []RunningReqState{
+			{StepsDone: 1, KVBlocks: 4, TrueRemaining: 3},
+			{StepsDone: 0, KVBlocks: 2, TrueRemaining: 5},
+		},
+	}
+	d := NewEDPPDecider(defaultTestEDPPConfig(), newTestAffineModel(), nil,
+		func() []RoutingSnapshot { return []RoutingSnapshot{prefill} })
+	d.SetCaptureAdmissionContext(true)
+	// Decode side: no running decode work, so any prefill occupancy must come from
+	// the prefill snapshot itself, not from a decode-derived RemainingStepsEst.
+	state := &RouterState{SelectedInstance: "d0", Snapshots: []RoutingSnapshot{{ID: "d0"}}}
+	dec := d.Decide(makeReq("r1", 4000, "batch"), state)
+	if dec.AdmissionCtxPrefill == nil {
+		t.Fatalf("prefill admission context not captured")
+	}
+	seenPrefill := *dec.AdmissionCtxPrefill
+	if seenPrefill.BatchSize == 0 && seenPrefill.RemainingStepsEst == 0 {
+		t.Fatalf("prefill context inert: %+v", seenPrefill)
+	}
+	// The prefill running-state must be the prefill occupants, not decode's (nil here).
+	if len(seenPrefill.Running) != len(prefill.RunningPrefill) {
+		t.Fatalf("prefill Running not propagated from prefill snapshot: %+v", seenPrefill.Running)
+	}
+}
+
 func TestEDPP_NOutIndependence(t *testing.T) {
 	// §11 N_out-independence anchor: the decision must not read Request.OutputTokens (INV-9).
 	d := NewEDPPDecider(defaultTestEDPPConfig(), newTestAffineModel(), nil, nil)

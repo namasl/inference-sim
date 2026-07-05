@@ -36,6 +36,7 @@ type RoutingSnapshot struct {
 	RemainingDecodeWork   float64           // Σ estimated remaining decode steps over running decode reqs (N̂_out-based); 0 if not populated
 	AdmissionRate         float64           // req/µs admitted at this instance (for the little estimator); 0 if not available
 	RunningDecode         []RunningReqState // per-running-decode-request state for the roll-forward estimator; nil unless admission detail enabled
+	RunningPrefill        []RunningReqState // per-running-prefill-request state (prefill-phase occupants) for the prefill-pool ttft_p estimators; nil unless admission detail enabled
 }
 
 // EffectiveLoad returns the total effective load on this instance:

@@ -291,6 +291,16 @@ func (i *InstanceSimulator) RunningDecodeState() []sim.RunningReqState {
 	return i.sim.RunningDecodeState()
 }
 
+// RunningPrefillState returns per-running-prefill-request state for the prefill-pool
+// ttft_p admission estimators, delegating to the underlying Simulator. Returns nil when
+// the instance has no simulator or admission detail is disabled (zero-cost default).
+func (i *InstanceSimulator) RunningPrefillState() []sim.RunningReqState {
+	if i.sim == nil {
+		return nil
+	}
+	return i.sim.RunningPrefillState()
+}
+
 // AdmissionDetailEnabled reports whether the underlying Simulator has admission-detail
 // population enabled. Returns false when the instance has no simulator.
 func (i *InstanceSimulator) AdmissionDetailEnabled() bool {

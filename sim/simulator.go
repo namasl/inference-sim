@@ -214,6 +214,40 @@ func (sim *Simulator) RunningDecodeState() []RunningReqState {
 	return out
 }
 
+// RunningPrefillState returns per-running-prefill-request state for the prefill-pool
+// admission estimators (ttft_p). Returns nil when admission detail is disabled
+// (zero-cost default) or there is no running batch. It is the prefill-phase mirror of
+// RunningDecodeState: only requests still in prefill (ProgressIndex < len(InputTokens))
+// are reported. StepsDone = prefill chunks (tokens) already processed = ProgressIndex;
+// KVBlocks ≈ ⌈ProgressIndex / blockSize⌉; TrueRemaining = remaining prefill tokens
+// (len(InputTokens) − ProgressIndex) only in oracle mode, else −1.
+func (sim *Simulator) RunningPrefillState() []RunningReqState {
+	if !sim.recordAdmissionDetail || sim.RunningBatch == nil {
+		return nil
+	}
+	blockSize := int64(1)
+	if sim.KVCache != nil && sim.KVCache.BlockSize() > 0 {
+		blockSize = sim.KVCache.BlockSize()
+	}
+	var out []RunningReqState
+	for _, req := range sim.RunningBatch.Requests {
+		inLen := int64(len(req.InputTokens))
+		if req.ProgressIndex >= inLen {
+			continue // past prefill — a decode request, not a prefill occupant
+		}
+		trueRemaining := int64(-1)
+		if sim.admissionDetailOracle {
+			trueRemaining = inLen - req.ProgressIndex
+		}
+		out = append(out, RunningReqState{
+			StepsDone:     req.ProgressIndex,
+			KVBlocks:      (req.ProgressIndex + blockSize - 1) / blockSize,
+			TrueRemaining: trueRemaining,
+		})
+	}
+	return out
+}
+
 // NewSimulator creates a Simulator from a SimConfig struct and pre-built dependencies.
 // All workload generation now happens externally — callers inject requests via InjectArrival.
 func NewSimulator(cfg SimConfig, kvStore KVStore, latencyModel LatencyModel) (*Simulator, error) {

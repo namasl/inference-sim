@@ -159,6 +159,7 @@ func (p *CachedSnapshotProvider) Snapshot(id InstanceID, clock int64) sim.Routin
 		snap.ResidentPrefillTokens = inst.ResidentPrefillTokens()
 		// nil unless the instance's Simulator has admission detail enabled (zero-cost default).
 		snap.RunningDecode = inst.RunningDecodeState()
+		snap.RunningPrefill = inst.RunningPrefillState()
 		lr.BatchSize = clock
 	}
 	if p.shouldRefresh(p.config.KVUtilization, lr.KVUtilization, clock) {
@@ -185,6 +186,7 @@ func (p *CachedSnapshotProvider) RefreshAll(clock int64) {
 		snap.MaxBatchSize = float64(inst.MaxBatchSize())
 		snap.ResidentPrefillTokens = inst.ResidentPrefillTokens()
 		snap.RunningDecode = inst.RunningDecodeState()
+		snap.RunningPrefill = inst.RunningPrefillState()
 		snap.KVUtilization = inst.KVUtilization()
 		snap.FreeKVBlocks = inst.FreeKVBlocks()
 		snap.CacheHitRate = inst.CacheHitRate()
