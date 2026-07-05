@@ -2522,22 +2522,37 @@ func (cs *ClusterSimulator) BuildAdmissionRecords() []trace.AdmissionRecord {
 		}
 		return 0
 	}
+	// stripOracle returns a deployable copy of the captured context with every running
+	// request's oracle TrueRemaining censored to -1, forcing the deployable estimators to
+	// fall back to the N̂_out-based RemainingStepsEst (INV-9: deployable path never sees
+	// oracle remaining). The Running slice is deep-copied so the original/captured context
+	// — used unchanged for the _oracle variants — is not mutated.
+	stripOracle := func(c sim.AdmissionContext) sim.AdmissionContext {
+		rc := make([]sim.RunningReqState, len(c.Running))
+		copy(rc, c.Running)
+		for i := range rc {
+			rc[i].TrueRemaining = -1
+		}
+		c.Running = rc
+		return c
+	}
 	mk := func(id, pool string, realized float64, ctx sim.AdmissionContext) trace.AdmissionRecord {
-		p := func(name string) float64 {
+		deployable := stripOracle(ctx)
+		p := func(name string, c sim.AdmissionContext) float64 {
 			est, err := sim.NewAdmissionEstimator(name)
 			if err != nil {
 				return 0
 			}
-			return est.EstimateTAdm(ctx)
+			return est.EstimateTAdm(c)
 		}
 		return trace.AdmissionRecord{
 			RequestID: id, Pool: pool, RealizedTAdm: realized,
-			TAdmPredWaiting:           p("waiting"),
-			TAdmPredLittle:            p("little"),
-			TAdmPredFluid:             p("fluid"),
-			TAdmPredRollforward:       p("rollforward"),
-			TAdmPredFluidOracle:       p("fluid_oracle"),
-			TAdmPredRollforwardOracle: p("rollforward_oracle"),
+			TAdmPredWaiting:           p("waiting", deployable),
+			TAdmPredLittle:            p("little", deployable),
+			TAdmPredFluid:             p("fluid", deployable),
+			TAdmPredRollforward:       p("rollforward", deployable),
+			TAdmPredFluidOracle:       p("fluid_oracle", ctx),
+			TAdmPredRollforwardOracle: p("rollforward_oracle", ctx),
 		}
 	}
 

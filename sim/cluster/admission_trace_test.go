@@ -4,11 +4,23 @@ import (
 	"testing"
 
 	"github.com/inference-sim/inference-sim/sim"
+	"github.com/inference-sim/inference-sim/sim/trace"
 )
 
-// wantPreds runs all six estimators against ctx and returns the expected predictions.
+// wantPreds returns the six expected predictions with the same oracle/deployable
+// separation BuildAdmissionRecords applies: the four deployable variants
+// (waiting/little/fluid/rollforward) see a context with every running request's
+// TrueRemaining censored to -1, while the two _oracle variants see the raw context.
 func wantPreds(t *testing.T, ctx sim.AdmissionContext) [6]float64 {
 	t.Helper()
+	deployable := ctx
+	rc := make([]sim.RunningReqState, len(ctx.Running))
+	copy(rc, ctx.Running)
+	for i := range rc {
+		rc[i].TrueRemaining = -1
+	}
+	deployable.Running = rc
+
 	names := [6]string{"waiting", "little", "fluid", "rollforward", "fluid_oracle", "rollforward_oracle"}
 	var out [6]float64
 	for i, n := range names {
@@ -16,7 +28,11 @@ func wantPreds(t *testing.T, ctx sim.AdmissionContext) [6]float64 {
 		if err != nil {
 			t.Fatalf("NewAdmissionEstimator(%q): %v", n, err)
 		}
-		out[i] = est.EstimateTAdm(ctx)
+		c := deployable
+		if n == "fluid_oracle" || n == "rollforward_oracle" {
+			c = ctx
+		}
+		out[i] = est.EstimateTAdm(c)
 	}
 	return out
 }
@@ -63,6 +79,46 @@ func TestBuildAdmissionRecords_Local(t *testing.T) {
 	want := wantPreds(t, ctx)
 	got := [6]float64{r.TAdmPredWaiting, r.TAdmPredLittle, r.TAdmPredFluid, r.TAdmPredRollforward, r.TAdmPredFluidOracle, r.TAdmPredRollforwardOracle}
 	checkPreds(t, got, want)
+}
+
+// The deployable rollforward must NOT read TrueRemaining even when it is populated
+// (oracle mode); only rollforward_oracle may. With RemainingStepsEst ≠ TrueRemaining,
+// the two predictions differ, and the oracle one uses TrueRemaining=2 → ~2000µs.
+func TestBuildAdmissionRecords_OracleDeployableSeparation(t *testing.T) {
+	// One running req: TrueRemaining=2 (oracle) but RemainingStepsEst=50 (deployable estimate).
+	// Batch full and no free KV so rollforward must look ahead (not short-circuit to 0).
+	ctx := sim.AdmissionContext{
+		BatchSize: 1, MaxBatchSize: 1, FreeKVBlocks: 0, ReqKVNeed: 5, TIter: 1000,
+		RemainingStepsEst: 50,
+		Running:           []sim.RunningReqState{{StepsDone: 100, KVBlocks: 10, TrueRemaining: 2}},
+	}
+	cs := &ClusterSimulator{
+		recordAdmissionTrace: true,
+		parentRequests:       map[string]*ParentRequest{},
+		localAdmitTimes:      map[string]int64{"r1": 2000},
+		localEnqueueTimes:    map[string]int64{"r1": 0},
+		admissionCtx: map[string]*capturedAdmission{
+			"r1": {decodeCtx: ctx},
+		},
+	}
+	recs := cs.BuildAdmissionRecords()
+	var r trace.AdmissionRecord
+	for _, x := range recs {
+		if x.RequestID == "r1" && x.Pool == "local" {
+			r = x
+		}
+	}
+	// deployable rollforward uses RemainingStepsEst=50 → ~50000µs; oracle uses TrueRemaining=2 → ~2000µs.
+	if r.TAdmPredRollforward == r.TAdmPredRollforwardOracle {
+		t.Fatalf("deployable and oracle rollforward must differ (oracle leakage); got both %v", r.TAdmPredRollforward)
+	}
+	if r.TAdmPredRollforwardOracle < 1999 || r.TAdmPredRollforwardOracle > 2001 {
+		t.Fatalf("oracle should use TrueRemaining=2 → ~2000, got %v", r.TAdmPredRollforwardOracle)
+	}
+	// The captured context must not be mutated (still readable as oracle).
+	if ctx.Running[0].TrueRemaining != 2 {
+		t.Fatalf("captured context Running[0].TrueRemaining mutated: got %v want 2", ctx.Running[0].TrueRemaining)
+	}
 }
 
 // A disaggregated parent yields two rows (prefill + decode), sorted by request_id,
