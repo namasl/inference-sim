@@ -505,7 +505,7 @@ func (d *EDPPDecider) Decide(req *Request, state *RouterState) DisaggregationDec
 		FreeKVBlocks: prefillSnap.FreeKVBlocks, ReqKVNeed: reqKVNeed,
 		TIter: d.coeffs.tIterPrefill(sPfPrefill), QueueDepth: prefillSnap.QueueDepth,
 		AdmissionRate: prefillAdmRate, RemainingStepsEst: prefillRemStepsEst,
-		Running: prefillSnap.RunningPrefill,
+		Running: censorOracleRemaining(prefillSnap.RunningPrefill),
 	}
 	decodeCtx := AdmissionContext{
 		QWork: qD, Mu: muDec,
@@ -513,7 +513,7 @@ func (d *EDPPDecider) Decide(req *Request, state *RouterState) DisaggregationDec
 		FreeKVBlocks: decSnap.FreeKVBlocks, ReqKVNeed: reqKVNeed,
 		TIter: tBminus1, QueueDepth: decSnap.QueueDepth,
 		AdmissionRate: decAdmRate, RemainingStepsEst: remStepsEst,
-		Running: decSnap.RunningDecode,
+		Running: censorOracleRemaining(decSnap.RunningDecode),
 	}
 	tAdmP := d.tadmEstimator.EstimateTAdm(prefillCtx)
 	tAdmD := d.tadmEstimator.EstimateTAdm(decodeCtx)
@@ -583,6 +583,26 @@ func (d *EDPPDecider) selectedDecodeSnapshot(state *RouterState) (snap RoutingSn
 		return snaps[0], true
 	}
 	return RoutingSnapshot{}, false
+}
+
+// censorOracleRemaining returns a deep copy of the running-request slice with every
+// TrueRemaining censored to -1, so the runtime routing driver (the deployable
+// admission-delay estimator) can never consume oracle output-length info via
+// Running[].TrueRemaining (INV-9 on the control path). This mirrors the logging-path
+// stripOracle in cluster.BuildAdmissionRecords. The deployable RemainingStepsEst is the
+// only remaining-steps signal the routing estimators may read. The copy is required
+// because the snapshot slice (e.g. decSnap.RunningDecode) is shared and read elsewhere;
+// mutating it in place would corrupt the shared state. Returns nil for an empty input.
+func censorOracleRemaining(running []RunningReqState) []RunningReqState {
+	if len(running) == 0 {
+		return nil
+	}
+	out := make([]RunningReqState, len(running))
+	copy(out, running)
+	for i := range out {
+		out[i].TrueRemaining = -1
+	}
+	return out
 }
 
 // admissionRateFromSnapshot returns the admission rate (req/µs) for the little

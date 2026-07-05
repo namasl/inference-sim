@@ -259,6 +259,49 @@ func TestDecide_CensoredRemainingSteps(t *testing.T) {
 	}
 }
 
+// INV-9 (control path): even in oracle mode (which populates RunningDecode/RunningPrefill
+// TrueRemaining), the runtime routing driver (deployable estimator) must NEVER see the
+// oracle remaining. Decide must censor Running[].TrueRemaining to -1 before feeding the
+// estimator, mirroring the logging-path stripOracle. The default estimator is deployable
+// (rollforward), so this asserts the strip happens on the routing path.
+func TestDecide_StripsOracleFromRoutingContext(t *testing.T) {
+	var seen []AdmissionContext
+	spy := admissionSpy{onCall: func(c AdmissionContext) { seen = append(seen, c) }}
+	d := NewEDPPDecider(defaultTestEDPPConfig(), newTestAffineModel(), nil,
+		func() []RoutingSnapshot {
+			return []RoutingSnapshot{{
+				ID: "p0", BatchSize: 2, MaxBatchSize: 2, FreeKVBlocks: 0,
+				RunningPrefill: []RunningReqState{{StepsDone: 0, KVBlocks: 2, TrueRemaining: 7}},
+			}}
+		})
+	d.tadmEstimator = spy
+	// Oracle mode would populate TrueRemaining on the running requests.
+	decSnap := RoutingSnapshot{
+		ID: "d0", BatchSize: 2, MaxBatchSize: 4, FreeKVBlocks: 0,
+		RunningDecode: []RunningReqState{
+			{StepsDone: 5, KVBlocks: 5, TrueRemaining: 11},
+			{StepsDone: 8, KVBlocks: 5, TrueRemaining: 13},
+		},
+	}
+	state := &RouterState{SelectedInstance: "d0", Snapshots: []RoutingSnapshot{decSnap}}
+	d.Decide(makeReq("r1", 4000, "batch"), state)
+
+	if len(seen) == 0 {
+		t.Fatalf("estimator was never called")
+	}
+	for _, c := range seen {
+		for i, r := range c.Running {
+			if r.TrueRemaining != -1 {
+				t.Fatalf("routing path leaked oracle TrueRemaining=%d to estimator (Running[%d]); INV-9 violation", r.TrueRemaining, i)
+			}
+		}
+	}
+	// The shared snapshot slices must not be mutated (deep-copy required).
+	if decSnap.RunningDecode[0].TrueRemaining != 11 || decSnap.RunningDecode[1].TrueRemaining != 13 {
+		t.Fatalf("Decide mutated the shared decode snapshot: %+v", decSnap.RunningDecode)
+	}
+}
+
 func TestDecide_PopulatesAdmissionContext(t *testing.T) {
 	var seen AdmissionContext
 	spy := admissionSpy{onCall: func(c AdmissionContext) { seen = c }}
