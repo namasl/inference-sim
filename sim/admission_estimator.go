@@ -2,6 +2,7 @@ package sim
 
 import (
 	"fmt"
+	"math"
 	"sort"
 )
 
@@ -66,17 +67,14 @@ func (fluidEstimator) EstimateTAdm(ctx AdmissionContext) float64 {
 	if ctx.BatchSize < ctx.MaxBatchSize && ctx.FreeKVBlocks >= ctx.ReqKVNeed {
 		return 0
 	}
-	// Occupancy-conditioned departure rate X̂_dep = B / (R̄ · T_iter) departures per µs.
-	if ctx.RemainingStepsEst <= 0 || ctx.TIter <= 0 || ctx.BatchSize <= 0 {
+	if ctx.BatchSize <= 0 || ctx.RemainingStepsEst <= 0 || ctx.TIter <= 0 {
 		return 0
 	}
-	xDep := float64(ctx.BatchSize) / (ctx.RemainingStepsEst * ctx.TIter)
-	if xDep <= 0 {
-		return 0
-	}
-	// N_ahead: at least one departure needed for a slot; add KV-driven departures if KV-bound.
-	nAhead := 1.0
-	return nAhead / xDep
+	// Synchronized batch: occupants finish ~R̄ steps together, so slots free in WAVES of
+	// BatchSize every ~R̄ iterations. A request at queue position QueueDepth waits
+	// ⌈(QueueDepth+1)/BatchSize⌉ waves. (Not the naive fluid-drain /BatchSize.)
+	waves := math.Ceil(float64(ctx.QueueDepth+1) / float64(ctx.BatchSize))
+	return waves * ctx.RemainingStepsEst * ctx.TIter
 }
 
 type rollforwardEstimator struct{}

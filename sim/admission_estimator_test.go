@@ -35,16 +35,34 @@ func TestFluidEstimator(t *testing.T) {
 		t.Fatalf("free slot must give 0, got %v", got)
 	}
 	// Full batch, zero waiting work: waiting would give 0; fluid must give a large T_adm.
-	// N_ahead=1 slot needed; X̂_dep = B/(R̄·T_iter) = 4/(20·1000)=2e-4 dep/µs → T_adm=1/2e-4=5000µs.
+	// Wave mean-field: QueueDepth=0 → ⌈(0+1)/4⌉=1 wave → 1·20·1000 = 20000µs.
 	full := AdmissionContext{BatchSize: 4, MaxBatchSize: 4, FreeKVBlocks: 0, ReqKVNeed: 10, TIter: 1000, RemainingStepsEst: 20}
 	got := e.EstimateTAdm(full)
-	if got < 4999 || got > 5001 {
-		t.Fatalf("full-batch fluid = %v, want ~5000", got)
+	if got < 19999 || got > 20001 {
+		t.Fatalf("full-batch fluid = %v, want ~20000", got)
 	}
 	// Contrast: waiting on the same full/zero-waiting state gives 0 (the bug).
 	w, _ := NewAdmissionEstimator("waiting")
 	if w.EstimateTAdm(full) != 0 {
 		t.Fatal("waiting must give 0 here (documents the bug fluid fixes)")
+	}
+}
+
+func TestFluidEstimator_WaveMeanField(t *testing.T) {
+	e, _ := NewAdmissionEstimator("fluid")
+	// Free slot + KV → 0.
+	if got := e.EstimateTAdm(AdmissionContext{BatchSize: 2, MaxBatchSize: 4, FreeKVBlocks: 100, ReqKVNeed: 10, QueueDepth: 0, RemainingStepsEst: 20, TIter: 1000}); got != 0 {
+		t.Fatalf("free slot → 0, got %v", got)
+	}
+	// Full batch, short queue (QueueDepth+1 <= BatchSize → 1 wave): ⌈(0+1)/4⌉·20·1000 = 20000.
+	full1 := AdmissionContext{BatchSize: 4, MaxBatchSize: 4, FreeKVBlocks: 0, ReqKVNeed: 10, QueueDepth: 0, RemainingStepsEst: 20, TIter: 1000}
+	if got := e.EstimateTAdm(full1); got < 19999 || got > 20001 {
+		t.Fatalf("short-queue 1 wave → ~20000, got %v", got)
+	}
+	// Deep queue: QueueDepth=9, BatchSize=4 → ⌈10/4⌉=3 waves → 3·20·1000 = 60000.
+	deep := AdmissionContext{BatchSize: 4, MaxBatchSize: 4, FreeKVBlocks: 0, ReqKVNeed: 10, QueueDepth: 9, RemainingStepsEst: 20, TIter: 1000}
+	if got := e.EstimateTAdm(deep); got < 59999 || got > 60001 {
+		t.Fatalf("deep-queue 3 waves → ~60000, got %v", got)
 	}
 }
 
