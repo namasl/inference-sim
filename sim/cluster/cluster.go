@@ -1216,6 +1216,17 @@ func (c *ClusterSimulator) buildPoolFilteredSnapshots(role PoolRole) []sim.Routi
 		}
 		snap := c.snapshotProvider.Snapshot(inst.ID(), c.clock)
 		snap.InFlightRequests = c.inFlightRequests[string(inst.ID())]
+		// Admission-rate signals feed the EDPP `little` estimator (λ_adm ≈ completion
+		// rate, §3.8). The EDPP disaggregation path sources its snapshots here (decode-pool
+		// state via DisaggregationDecisionEvent, prefill-pool state via the decider's
+		// prefillSnapshots closure) rather than via buildRouterState, so these fields must
+		// be populated here too for parity — otherwise AdmissionContext.AdmissionRate is
+		// always 0 and `little` predicts 0 on every decision. Gated on admission detail so
+		// the default path pays nothing (zero-cost; LatencyStats() only when enabled).
+		if inst.AdmissionDetailEnabled() {
+			snap.DispatchRate = inst.LatencyStats().DispatchRate
+			snap.AdmissionRate = inst.WindowedAdmissionRate(c.clock)
+		}
 		allSnapshots = append(allSnapshots, snap)
 	}
 	return FilterSnapshotsByPool(allSnapshots, c.poolMembership, role)

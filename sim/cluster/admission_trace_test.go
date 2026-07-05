@@ -176,3 +176,69 @@ func TestBuildAdmissionRecords_Disaggregated(t *testing.T) {
 	gd := [6]float64{recs[di].TAdmPredWaiting, recs[di].TAdmPredLittle, recs[di].TAdmPredFluid, recs[di].TAdmPredRollforward, recs[di].TAdmPredFluidOracle, recs[di].TAdmPredRollforwardOracle}
 	checkPreds(t, gd, wd)
 }
+
+// TestPoolFilteredSnapshots_CarryAdmissionRate is the regression for the `little`
+// estimator producing 0 on every EDPP disaggregation decision. The EDPP decode-first
+// routing path (DisaggregationDecisionEvent / executeDisaggregatedRouting) and the
+// prefill-pool snapshot closure both source their snapshots from
+// buildPoolFilteredSnapshots, NOT buildRouterState. buildRouterState populates
+// snap.AdmissionRate (from WindowedAdmissionRate) and snap.DispatchRate when admission
+// detail is enabled; buildPoolFilteredSnapshots did not, so the AdmissionContext the
+// decider assembled always had AdmissionRate=0 → littleEstimator returns 0
+// unconditionally. This test records admissions on an instance with admission detail
+// enabled and asserts the pool-filtered snapshot carries the same non-zero
+// AdmissionRate that buildRouterState reports (parity).
+func TestPoolFilteredSnapshots_CarryAdmissionRate(t *testing.T) {
+	config := newTestEDPPDeploymentConfig(2, 1, 1)
+	cs := NewClusterSimulator(config, newTestRequests(1), nil)
+	// Enable admission detail on every instance (as --edpp-admission-trace does), so the
+	// windowed admission-rate counter records and snapshots may carry it.
+	for _, inst := range cs.instances {
+		inst.SetAdmissionDetail(false)
+	}
+	// Record admissions on the prefill-pool instance within the rolling window.
+	var prefillInst *InstanceSimulator
+	for _, inst := range cs.instances {
+		if cs.poolMembership[string(inst.ID())].Has(PoolRolePrefill) {
+			prefillInst = inst
+			break
+		}
+	}
+	if prefillInst == nil {
+		t.Fatal("no prefill-pool instance found")
+	}
+	cs.clock = 500_000
+	prefillInst.recordAdmission(100_000)
+	prefillInst.recordAdmission(200_000)
+	prefillInst.recordAdmission(300_000)
+
+	wantRate := prefillInst.WindowedAdmissionRate(cs.clock)
+	if wantRate <= 0 {
+		t.Fatalf("precondition: WindowedAdmissionRate should be >0 after admissions, got %v", wantRate)
+	}
+
+	// buildRouterState (the non-PD path) already carries it — establish the target.
+	rs := buildRouterState(cs, nil)
+	var rsRate float64
+	for _, s := range rs.Snapshots {
+		if s.ID == string(prefillInst.ID()) {
+			rsRate = s.AdmissionRate
+		}
+	}
+	if rsRate <= 0 {
+		t.Fatalf("buildRouterState should carry AdmissionRate>0, got %v", rsRate)
+	}
+
+	// The PD path must reach parity: the pool-filtered snapshot for the same instance
+	// must carry the same non-zero AdmissionRate.
+	pool := cs.buildPoolFilteredSnapshots(PoolRolePrefill)
+	var pfRate float64
+	for _, s := range pool {
+		if s.ID == string(prefillInst.ID()) {
+			pfRate = s.AdmissionRate
+		}
+	}
+	if pfRate != rsRate {
+		t.Fatalf("buildPoolFilteredSnapshots AdmissionRate = %v, want parity with buildRouterState %v (little estimator reads 0 otherwise)", pfRate, rsRate)
+	}
+}
