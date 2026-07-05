@@ -259,11 +259,11 @@ func TestDecide_CensoredRemainingSteps(t *testing.T) {
 	}
 }
 
-// INV-9 (control path): even in oracle mode (which populates RunningDecode/RunningPrefill
-// TrueRemaining), the runtime routing driver (deployable estimator) must NEVER see the
-// oracle remaining. Decide must censor Running[].TrueRemaining to -1 before feeding the
-// estimator, mirroring the logging-path stripOracle. The default estimator is deployable
-// (rollforward), so this asserts the strip happens on the routing path.
+// INV-9 (control path) ASYMMETRY: the runtime routing driver must never see DECODE's
+// oracle remaining (o_r-derived, hidden), so Decide censors the decode Running slice to
+// -1 before feeding the estimator. PREFILL remaining (inLen − ProgressIndex) is KNOWN
+// input, so it is deployable-legitimate and must NOT be censored. This asserts both:
+// decode Running stripped, prefill Running preserved.
 func TestDecide_StripsOracleFromRoutingContext(t *testing.T) {
 	var seen []AdmissionContext
 	spy := admissionSpy{onCall: func(c AdmissionContext) { seen = append(seen, c) }}
@@ -289,14 +289,29 @@ func TestDecide_StripsOracleFromRoutingContext(t *testing.T) {
 	if len(seen) == 0 {
 		t.Fatalf("estimator was never called")
 	}
+	// Identify prefill vs decode contexts by their running-occupant fingerprint:
+	// the prefill snapshot's single occupant has KVBlocks==2 (from RunningPrefill),
+	// the decode occupants have KVBlocks==5 (from RunningDecode).
+	sawPrefill, sawDecode := false, false
 	for _, c := range seen {
 		for i, r := range c.Running {
-			if r.TrueRemaining != -1 {
-				t.Fatalf("routing path leaked oracle TrueRemaining=%d to estimator (Running[%d]); INV-9 violation", r.TrueRemaining, i)
+			if r.KVBlocks == 2 { // prefill occupant: known remaining, must be preserved
+				sawPrefill = true
+				if r.TrueRemaining != 7 {
+					t.Fatalf("prefill remaining censored (Running[%d]=%d); prefill remaining is known input, must NOT be stripped", i, r.TrueRemaining)
+				}
+			} else { // decode occupant: oracle remaining, must be censored
+				sawDecode = true
+				if r.TrueRemaining != -1 {
+					t.Fatalf("routing path leaked oracle DECODE TrueRemaining=%d (Running[%d]); INV-9 violation", r.TrueRemaining, i)
+				}
 			}
 		}
 	}
-	// The shared snapshot slices must not be mutated (deep-copy required).
+	if !sawPrefill || !sawDecode {
+		t.Fatalf("expected both prefill and decode contexts (prefill=%v decode=%v)", sawPrefill, sawDecode)
+	}
+	// The shared snapshot slices must not be mutated (deep-copy required on the decode path).
 	if decSnap.RunningDecode[0].TrueRemaining != 11 || decSnap.RunningDecode[1].TrueRemaining != 13 {
 		t.Fatalf("Decide mutated the shared decode snapshot: %+v", decSnap.RunningDecode)
 	}

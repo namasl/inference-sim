@@ -2549,7 +2549,13 @@ func (cs *ClusterSimulator) BuildAdmissionRecords() []trace.AdmissionRecord {
 		return c
 	}
 	mk := func(id, pool string, realized float64, ctx sim.AdmissionContext) trace.AdmissionRecord {
-		deployable := stripOracle(ctx)
+		// INV-9 asymmetry: only decode Running carries oracle (o_r-derived) remaining, so
+		// only decode/local rows are stripped for the deployable prediction. Prefill
+		// remaining is known input (inLen − ProgressIndex) — deployable == oracle, no strip.
+		deployable := ctx
+		if pool != "prefill" {
+			deployable = stripOracle(ctx)
+		}
 		p := func(name string, c sim.AdmissionContext) float64 {
 			est, err := sim.NewAdmissionEstimator(name)
 			if err != nil {

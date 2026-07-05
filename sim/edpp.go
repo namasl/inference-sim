@@ -505,7 +505,9 @@ func (d *EDPPDecider) Decide(req *Request, state *RouterState) DisaggregationDec
 		FreeKVBlocks: prefillSnap.FreeKVBlocks, ReqKVNeed: reqKVNeed,
 		TIter: d.coeffs.tIterPrefill(sPfPrefill), QueueDepth: prefillSnap.QueueDepth,
 		AdmissionRate: prefillAdmRate, RemainingStepsEst: prefillRemStepsEst,
-		Running: censorOracleRemaining(prefillSnap.RunningPrefill),
+		// INV-9 asymmetry: prefill remaining (inLen − ProgressIndex) is known input, so
+		// it is deployable — NOT censored. Decode's Running below stays censored.
+		Running: prefillSnap.RunningPrefill,
 	}
 	decodeCtx := AdmissionContext{
 		QWork: qD, Mu: muDec,

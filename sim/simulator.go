@@ -220,7 +220,8 @@ func (sim *Simulator) RunningDecodeState() []RunningReqState {
 // RunningDecodeState: only requests still in prefill (ProgressIndex < len(InputTokens))
 // are reported. StepsDone = prefill chunks (tokens) already processed = ProgressIndex;
 // KVBlocks ≈ ⌈ProgressIndex / blockSize⌉; TrueRemaining = remaining prefill tokens
-// (len(InputTokens) − ProgressIndex) only in oracle mode, else −1.
+// (len(InputTokens) − ProgressIndex), populated unconditionally (INV-9 asymmetry:
+// prefill remaining is known input, deployable — not oracle-gated like decode).
 func (sim *Simulator) RunningPrefillState() []RunningReqState {
 	if !sim.recordAdmissionDetail || sim.RunningBatch == nil {
 		return nil
@@ -235,10 +236,11 @@ func (sim *Simulator) RunningPrefillState() []RunningReqState {
 		if req.ProgressIndex >= inLen {
 			continue // past prefill — a decode request, not a prefill occupant
 		}
-		trueRemaining := int64(-1)
-		if sim.admissionDetailOracle {
-			trueRemaining = inLen - req.ProgressIndex
-		}
+		// INV-9 asymmetry: prefill remaining = inLen − ProgressIndex = remaining prompt
+		// tokens, which is KNOWN at routing (input length is known). Unlike decode's
+		// remaining (depends on hidden o_r), this is deployable-legitimate, so it is NOT
+		// oracle-gated: populated whenever admission detail is on, and never censored.
+		trueRemaining := inLen - req.ProgressIndex
 		out = append(out, RunningReqState{
 			StepsDone:     req.ProgressIndex,
 			KVBlocks:      (req.ProgressIndex + blockSize - 1) / blockSize,
