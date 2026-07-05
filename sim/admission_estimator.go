@@ -101,16 +101,27 @@ func (rollforwardEstimator) EstimateTAdm(ctx AdmissionContext) float64 {
 	}
 	// Sort by departure step ascending (soonest first); stable tie-break for determinism (INV-6).
 	sort.SliceStable(deps, func(i, j int) bool { return deps[i].step < deps[j].step })
-	freeSlots := ctx.MaxBatchSize - ctx.BatchSize
+	// The request sits at queue position QueueDepth: the QueueDepth requests ahead fill
+	// the first QueueDepth freed slots, ours takes the next — so we need QueueDepth+1
+	// slots to free (plus our KV) before we admit.
+	needSlots := int64(ctx.QueueDepth + 1)
+	freeSlots := int64(ctx.MaxBatchSize - ctx.BatchSize)
 	freeKV := ctx.FreeKVBlocks
 	for _, d := range deps {
 		freeSlots++
 		freeKV += d.kv
-		if freeSlots >= 1 && freeKV >= ctx.ReqKVNeed {
+		if freeSlots >= needSlots && freeKV >= ctx.ReqKVNeed {
 			return float64(d.step) * ctx.TIter
 		}
 	}
-	// Batch never frees enough within its current occupants — cap at the last departure.
+	// The current running set's departures were exhausted before freeing QueueDepth+1
+	// slots (queue deeper than one batch-drain). Fall back to the fluid wave form for
+	// the deep tail: slots free in waves of BatchSize every ~RemainingStepsEst iters.
+	if ctx.BatchSize > 0 {
+		waves := math.Ceil(float64(ctx.QueueDepth+1) / float64(ctx.BatchSize))
+		return waves * ctx.RemainingStepsEst * ctx.TIter
+	}
+	// BatchSize<=0: no wave cadence available — cap at the last known departure.
 	if len(deps) > 0 {
 		return float64(deps[len(deps)-1].step) * ctx.TIter
 	}

@@ -1,6 +1,9 @@
 package sim
 
-import "testing"
+import (
+	"math"
+	"testing"
+)
 
 func TestWaitingEstimator_ReproducesFormula(t *testing.T) {
 	e, err := NewAdmissionEstimator("waiting")
@@ -94,6 +97,31 @@ func TestRollforwardEstimator_UsesEstimateWhenNoOracle(t *testing.T) {
 	got := e.EstimateTAdm(ctx)
 	if got < 3999 || got > 4001 {
 		t.Fatalf("rollforward(est) = %v, want ~4000", got)
+	}
+}
+
+func TestRollforwardEstimator_DeepQueueFallsBackToWave(t *testing.T) {
+	e, _ := NewAdmissionEstimator("rollforward")
+	// Queue much deeper than one batch drain: QueueDepth=20, BatchSize=4, running set of
+	// 4 with small remaining steps. Needing QueueDepth+1=21 slots is never reached by
+	// draining the current 4 occupants, so the estimator must fall back to the fluid
+	// wave form for the deep tail, NOT return the first (soon) departure.
+	// Wave: ⌈21/4⌉·RemainingStepsEst·TIter = 6·10·1000 = 60000µs.
+	ctx := AdmissionContext{
+		BatchSize: 4, MaxBatchSize: 4, FreeKVBlocks: 0, ReqKVNeed: 5, TIter: 1000,
+		QueueDepth:        20,
+		RemainingStepsEst: 10,
+		Running: []RunningReqState{
+			{TrueRemaining: 2, KVBlocks: 10},
+			{TrueRemaining: 3, KVBlocks: 10},
+			{TrueRemaining: 4, KVBlocks: 10},
+			{TrueRemaining: 5, KVBlocks: 10},
+		},
+	}
+	want := math.Ceil(float64(20+1)/4.0) * 10 * 1000 // 60000
+	got := e.EstimateTAdm(ctx)
+	if got < want-1 || got > want+1 {
+		t.Fatalf("rollforward(deep) = %v, want ~%v (wave fallback, not first departure)", got, want)
 	}
 }
 
