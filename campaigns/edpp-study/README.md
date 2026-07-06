@@ -191,8 +191,17 @@ makes the predictor pluggable and adds fidelity levels that model the running ba
 ### 7.3 How it is evaluated — isolation microbenchmark
 To measure a *predictor* with zero routing noise: one engine per role (1P1D), routing FORCED so the
 estimator's value doesn't change where requests go.
-- **T1 (isolate `ttft_d`):** force all-local → every request queues on the single decode engine.
-- **T2 (isolate `ttft_p` + decode):** force all-disaggregate → single P engine + single D engine.
+- **T1 (isolate the decode-pool admission delay):** force all-local → every request queues on the
+  single decode engine; one `local` admission event per request.
+- **T2 (isolate BOTH pools):** force all-disaggregate → single P engine + single D engine. Each
+  disaggregated request has TWO admission events — a `prefill` sub-req on P and a `decode` sub-req on
+  D (after KV transfer) — so T2 validates the estimator on both. The decode-pool wait is part of TTFT
+  because the first token comes from the D engine.
+
+> **Naming note.** A `pool` (`local`/`prefill`/`decode`) is an *admission event*, not an instance
+> role — see §7.5. The decode-pool admission delay is NOT Stage A's `ttft_d` (which meant "TTFT if
+> routed local"); it's the wait for a disaggregated request's decode sub-request to get a batch slot
+> on the decode engine. This doc says "decode-pool / prefill-pool admission delay," not `ttft_d`/`ttft_p`.
 
 Routing is forced with the transfer-penalty knob while EDPP still runs (see FAQ Q2): `--edpp-c-xfer
 100s` ⇒ all-local (T1); `--edpp-c-xfer 0s` ⇒ all-disagg (T2).
@@ -215,19 +224,37 @@ Analysis: `python3 campaigns/edpp-study/analyze/admission_ablation.py --admissio
 One-command reproduction (writes to `out/stage_c/`): `bash campaigns/edpp-study/repro_stage_c.sh`.
 
 ### 7.5 Reading the outputs
+**What `pool` is:** an *admission event*, not an instance role. Instances are typed P (prefill-only)
+or M (mixed prefill+decode); there is no decode-only instance. A request emits one row per admission
+it undergoes: `local` (whole request admitted on an M instance — one event), or `prefill` **+**
+`decode` (the two sub-requests of a disaggregated request; the `decode` row is the decode sub-req's
+admission onto an M instance after KV transfer). So `pool="decode"` means "decode-side admission of a
+disaggregated request," not "a decode-only engine."
+
 `--edpp-admission-trace` columns: `request_id, pool, realized_t_adm, t_adm_pred_{waiting, little, fluid,
 rollforward, fluid_oracle, rollforward_oracle}` (µs; `pool` ∈ decode/prefill/local). `admission_ablation.py`
 JSON: per pool×estimator `median_ratio_real_over_pred` (>1 = under-prediction — the headline metric) +
 `decomposition` (`rollforward` residual split into estimator-*form* error vs `N̂_out`-*prediction* error).
 
-### 7.6 Result (see FINDINGS "Stage C" for the full table + checkpoint)
-T1 local pool (saturated, realized p50 ≈ 560s): **`waiting` under-predicts 57×; `rollforward` → 1.29×
-(near-exact)** — the proposed estimator fixes the Stage A mechanism. Open follow-ups before the paper's
-fidelity figure: `fluid` under-predicts ~1e6× (bug), `little` predicts 0 (no live admission-rate
-signal), prefill-pool estimators inert (only the *decode* batch was enriched → `ttft_p` unvalidated),
-`rollforward` over-predicts on the disagg decode path, and there is **no CLI flag yet to select the
-routing estimator** (`TAdmEstimator` is programmatic-only — add `--edpp-tadm-estimator` before Stage D
-deploys `rollforward` as the driver).
+### 7.6 Result (DE-CONFOUNDED — see FINDINGS "Stage C — DE-CONFOUNDED" for the full table + checkpoint)
+T1 local pool (saturated, realized p50 ≈ 560s), median ratio realized/pred: **`waiting` 57.3×**
+(occupancy-blind — the Stage A mechanism) → **`little` 1.30×**, **`fluid` 1.16×**, **`rollforward`
+1.16×** (occupancy-aware estimators fix it; `fluid` ≈ `rollforward` because the per-request walk's
+deep-queue behavior collapses to the wave form), **`rollforward_oracle` 1.25×** (oracle ≈ deployable —
+the censored `N̂_out` floor closed the gap). T2 disagg decode over-predicts slightly (~0.34×, decode
+admitted fast post-transfer). Prefill pool reads ~0 = **correct physics** (unsaturated: `QueueDepth=0`,
+free slot), not empty occupancy.
+
+> **History.** An earlier version of this section reported `rollforward` → 1.29× as the headline. That
+> number was **oracle-contaminated** (the "deployable" estimator was reading true remaining output via
+> the admission-trace's oracle mode) and is **RETRACTED**. The fix-cluster (2026-07-05) separated
+> oracle from deployable on both the logging and routing paths, fixed `fluid` (wave form, was ~1e6×
+> off), activated `little` (`buildPoolFilteredSnapshots` never populated `AdmissionRate`), and added
+> the `--edpp-tadm-estimator` CLI flag. The numbers above are the de-confounded result.
+
+Open follow-ups before the paper's fidelity figure (in FINDINGS): the **utilization sweep** (the
+saturating point above is a non-stationary stress test — see FAQ Q3), **prefill-saturating validation**
+(prefill estimators unproven under a prefill queue), and the parallel **Layer-2** analytical track.
 
 ## 8. FAQ (why things are the way they are)
 

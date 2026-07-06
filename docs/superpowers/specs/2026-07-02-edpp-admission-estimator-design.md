@@ -27,8 +27,11 @@ Today (`sim/edpp.go:420-421`): `ttft_d = qD/muDec + compute`, `ttft_p = qP/muPf 
 occupancy-aware rate**, blind to the RUNNING batch that holds the slots/KV. When waiting work ≈ 0 but
 the batch is full, these give ≈ 0 while reality is the wait for a running request to finish (the ~905×
 miss). Stage C replaces **only these two terms** with `estimator.EstimateTAdm(poolState)`, keeping the
-`+compute` term (`nChunks·(T_iter+δ)`). The same interface serves both the decode pool (`ttft_d`) and
-the prefill pool (`ttft_p`).
+`+compute` term (`nChunks·(T_iter+δ)`). The same interface serves the admission term inside both
+estimators: the decode-side estimate `ttft_d` uses the **decode-pool** admission delay, and the
+prefill-side estimate `ttft_p` uses the **prefill-pool** admission delay. (Note: `ttft_d`/`ttft_p`
+here are code symbols in `sim/edpp.go`; the *pools* they consume are the admission-event axis defined
+in §5, NOT the local-vs-disagg routing alternatives those symbols denoted in Stage A.)
 
 ## 3. Estimators
 
@@ -77,12 +80,25 @@ Both topologies **force routing** (no per-request choice), so the estimator is a
 not a control input. This lets us **log all six variants side-by-side in one run per topology** against
 the same executions.
 
-- **T1 — decode isolation:** a single decode-capable instance, `--pd-decider never` (never
-  disaggregate) → every request prefills+decodes on that one engine. Measures the `ttft_d` admission
-  term vs the **realized local admission delay** on that engine.
+**Terminology (read this — the symbols are not what Stage A meant).** `pool` here is an *admission
+event*, not an instance role. A request incurs one admission per pool it passes through: `local` (a
+non-disaggregated request admitted on a mixed instance, one event), or `prefill` **then** `decode`
+(the two sub-requests of a disaggregated request — prefill on the P instance, decode on the mixed
+instance after KV transfer). The **decode-pool admission delay** is a real component of a
+disaggregated request's TTFT because the first token is emitted by the decode instance, so its
+decode sub-request must win a batch slot there. This is DISTINCT from Stage A's `ttft_d`/`ttft_p`,
+which were *whole-path* TTFT estimates for the local vs disaggregated routing alternatives. Below we
+say **decode-pool** / **prefill-pool admission-delay estimate**, never `ttft_d`/`ttft_p`.
+
+- **T1 — decode-pool isolation:** a single decode-capable instance, `--pd-decider never` (never
+  disaggregate) → every request prefills+decodes on that one engine. Measures the **decode-pool
+  admission-delay estimate** vs the **realized local admission delay** on that engine.
 - **T2 — both pools, disagg path:** `--prefill-instances 1 --decode-instances 1 --pd-decider always`
-  → every request prefills on the single P, transfers, decodes on the single D. Measures `ttft_p` vs
-  realized **prefill** sub-req admission AND `ttft_d` vs realized **decode** sub-req admission.
+  → every request prefills on the single P, transfers, decodes on the single D. A disaggregated
+  request has TWO admission events, so this measures BOTH: the **prefill-pool admission-delay
+  estimate** vs realized **prefill** sub-req admission, AND the **decode-pool admission-delay
+  estimate** vs realized **decode** sub-req admission (the decode sub-request still queues for a
+  slot on the D engine — that wait is part of TTFT).
 
 One decode-capable engine / one prefill engine, no balancing → predicted-vs-realized gap is *purely*
 estimator quality.
