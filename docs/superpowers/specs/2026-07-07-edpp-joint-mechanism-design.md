@@ -28,10 +28,13 @@ the joint rule operating on cost + load heterogeneity that the simulator actuall
 a measured target (**recover the ~0.06 counterfactual regret**, occupancy-driven) *and* a cost-lever target
 (the cache-asymmetric case, §6).
 
-**Success criterion (deliberately not "joint beats scorer" — see §5).** On the workloads tested, joint's
-divergences from the scorer are explained and net-beneficial (lower counterfactual regret than reduced-EDPP
-on cache-uniform synth), AND we characterize where joint does *not* win (the adversarial cache-asymmetric
-case). Honest and falsifiable.
+**Success criterion (descriptive, not a predicted win).** Sub-project 1 succeeds when (a) the mechanism is
+*correct* — the §5 invariants hold (per-node cache-aware `a_p`, deterministic tie-break, byte-identical
+reduced path, INV-9) — and (b) it produces an honest **characterization** of what the joint rule does vs the
+scorer across a topology × workload sweep: where it diverges, in which direction, and the observed effect on
+regret/goodput. We do **not** pre-commit to "joint wins." The open questions the sweep answers include: does
+joint recover the measured ~0.06 counterfactual regret on cache-uniform synth? what does it do when cache is
+asymmetric across nodes? — but the answers are whatever the runs show.
 
 ## 2. What's new (infra)
 
@@ -82,49 +85,58 @@ cache. `ô = N̂_out` (INV-9-safe). argmin over `(d,p)`.
   simulator-side change + `θ_i` loading/indexing + the heterogeneous decode-node "cost" lever is sub-project 2.
 - **Per-instance ITL-deficit `Z^I_i`** (gap 2) — keep per-class scalar `z_itl` here.
 
-## 5. Rigor: edge cases where "joint > scorer" can fail (test, don't assume)
+## 5. Correctness requirements + methodology (we do NOT pre-judge behavior)
 
-The claim is **not** "joint always picks the idle node." `J` trades congestion, cache-warmth, TTFT, and
-transfer. Enumerated failure modes and how this design addresses each:
+**Correctness (engineering invariants the mechanism must satisfy regardless of outcome):**
+- **Per-candidate cache-aware `a_p` for BOTH pools.** Prefill-only nodes also hold prefixes, so the prefill
+  pool is cache-heterogeneous just like the decode pool. `a_p` is computed from *each candidate location's*
+  cache — the decode node's cache for `p=local`, and *each prefill node's* cache for `p∈𝒫` (so the `p`-choice
+  is a real cost decision, not just balance). Both via the instance-keyed `d.cacheQuery`.
+- **Deterministic tie-break** (lowest instance index) so identical candidates never introduce nondeterminism
+  (INV-6); the divergence study does not count a tie as an "improvement".
+- **Occupancy-aware `T̂` per candidate** (`rollforward` driver) — the validated estimator, evaluated per
+  candidate snapshot.
+- **Reduced path byte-identical** when `--edpp-joint` is off; **INV-9** (per-candidate `a_p`/`T̂` read only
+  input-side quantities + cache + `N̂_out`, never `OutputTokens`).
 
-1. **Cache asymmetry (the headline edge case).** A large *unique* prompt on an idle but **cache-cold** node
-   pays full prefill (large `a_p` → large `W_p`/`T̂`), while a busier node holding the prefix has small `a_p`.
-   A cache-*blind* joint rule would mispick the idle-cold node and **lose to the cache-aware
-   `precise-prefix-cache` scorer**. → Addressed by **per-candidate `a_p`** (§2.4): `J` sees each node's cache
-   warmth and can prefer warm-but-busy over idle-cold. **Must be tested** on an adversarial cache-asymmetric
-   workload (§6), not assumed.
-2. **`z=0` regime (no SLO pressure).** The TTFT/ITL terms vanish; `J` reduces to congestion + transfer. Cache
-   still enters via `W_p` (congestion), so per-candidate `a_p` keeps this correct; but note the decode-node
-   choice is then occupancy+cache only.
-3. **True ties.** Identical candidates → arbitrary argmin "divergence" that isn't a real win. → **Deterministic
-   tie-break** (lowest instance index, INV-6), and the divergence study excludes ties from "improvement".
-4. **Per-candidate estimator error.** `T̂` is an estimate; under saturation a candidate's `T̂` can be biased,
-   skewing the argmin. → The occupancy-aware estimator is the validated one; the divergence study logs
-   `J_scorer` vs `J_joint` so a bad argmin is visible.
+**Methodology — run and observe, don't theorize the outcome.** We make **no a-priori claim** about when joint
+beats, ties, or loses to the scorer. `J` trades occupancy, cache-warmth (both pools), TTFT/ITL deficit, and
+transfer cost — and how those compose depends on the topology and workload in ways not worth predicting on
+paper. The validation (§6) is therefore an **exploratory sweep**: set up a topology, run a workload, observe
+what joint does vs the scorer; change the topology or workload, observe again. The counterfactual-regret
+harness and the scorer-vs-joint divergence log are the *instruments*; the *findings* are whatever the sweep
+shows. The dimensions worth varying (because they change which term dominates `J`) are: cache warmth /
+asymmetry across nodes, per-instance occupancy, SLO pressure (`z` zero vs positive), prompt size, and transfer
+cost — but these are knobs to sweep, not verdicts to confirm.
 
-## 6. Validation
+## 6. Validation — an exploratory topology × workload sweep
 
-- **Counterfactual regret, cache-uniform (the win):** run `--edpp-joint --edpp-tadm-estimator rollforward` on
-  1P2D synth (shared prefix ⇒ cache ~uniform across decode nodes), through `repro_counterfactual.sh`. Expect
-  regret **below** reduced-EDPP's 0.06 (ideally ~0 — joint recovers the `instance_1` decode placement),
-  baseline goodput ≥ 0.99. This is the primary target.
-- **Counterfactual regret, cache-asymmetric (the cost-lever demonstration AND honesty test):** a workload of
-  **unique large prompts** where one decode node is cache-warm and another idle-cold — a *real* per-instance
-  cost heterogeneity the simulator serves faithfully (no hardware change needed). This is the positive test of
-  the **cache-cost lever**: joint's per-candidate `a_p` should make it prefer the warm node (or accept a busier
-  warm node over an idle-cold one) — a decision the occupancy-only reduced balance term cannot express but the
-  `precise-prefix-cache` scorer can, so it is also the fair head-to-head. Report joint vs reduced regret and
-  the scorer-divergence direction. If joint mispicks (cache-blind failure resurfacing), that is a recorded
-  finding, not hidden.
-- **Scorer-vs-joint divergence study:** from the §2.5 log, report divergence rate (`d` and `p`), and on
-  divergent decisions the direction (does joint pick lower-occupancy / lower-`a_p` / lower-`J`?), and whether
-  divergence correlates with recovered regret. This is the mechanism figure.
-- **§5.5 reduction (refactor-safety unit test):** joint `J` restricted to the scorer's `d` reproduces the
-  reduced decider's local-vs-disagg decision on that `d`.
-- **Hand cases:** two decode nodes, one loaded → joint picks the emptier for a kept-local request; idle
-  cluster → local; large-prompt + one warm node → joint picks warm (cache case in miniature).
-- **Invariants:** INV-6 determinism (deterministic tie-break); **reduced path byte-identical when flag off**;
-  INV-9 (per-candidate `a_p`/`T̂` read only input-side + cache + `N̂_out`, never `OutputTokens`).
+Two things are *pass/fail* (the mechanism must be correct); the rest is *observe and report* (run the sweep,
+see what happens):
+
+**Correctness gates (pass/fail, no behavior claim):**
+- **§5.5 reduction (unit test):** joint `J` restricted to the scorer's `d` reproduces the reduced decider's
+  local-vs-disagg decision on that `d`.
+- **Reduced path byte-identical** when `--edpp-joint` is off; **INV-6** determinism (deterministic tie-break);
+  **INV-9** (per-candidate `a_p`/`T̂` read only input-side + cache + `N̂_out`, never `OutputTokens`).
+- **Instrument sanity:** the scorer-vs-joint divergence log is populated (`scorer_d/p`, `joint_d/p`, `J`s);
+  the self-consistency gate of the regret harness still passes on the joint plan.
+
+**Exploratory sweep (observe, don't predict).** Run joint vs reduced (+ the divergence log + counterfactual
+regret) across a small matrix, and *report what happens* — no pre-committed winner:
+- **Topologies:** at least 1P2D and one other (e.g. 2P2D or 1P3D) — varying the number of decode candidates
+  and prefill candidates the argmin ranges over.
+- **Workloads:** at least (i) cache-uniform synth (shared prefix — the setup where the existing 0.06 regret
+  was measured; does joint recover it?), and (ii) cache-asymmetric unique-large-prompt (one node warm, one
+  cold — what does joint's per-node `a_p` do?). Add others as questions arise.
+- **Per cell, report:** counterfactual regret (joint vs reduced), baseline goodput, scorer-vs-joint divergence
+  rate (`d` and `p`), and on divergent decisions the observed direction (occupancy? `a_p`? `J`?). These are
+  *observations*, not confirmations.
+- **The dimensions to vary** (they change which `J` term dominates): cache warmth/asymmetry, occupancy, SLO
+  pressure (`z`=0 vs >0), prompt size, transfer cost. Change one, re-run, see the effect. Expect surprises —
+  record them as findings (the step-function and estimator-driver findings this session came exactly this way).
+- **Hand cases (tiny, for intuition/debug, not claims):** idle cluster → local; two decode nodes, one loaded;
+  large prompt + one warm node. Use them to sanity-check the mechanism, not to assert general behavior.
 
 ## 7. Deliverables & staging (for the plan)
 
