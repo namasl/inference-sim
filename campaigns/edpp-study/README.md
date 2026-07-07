@@ -263,7 +263,7 @@ sweeps ρ = {0.5…0.98}·λ* on the T1 topology, and aggregates via `analyze/ut
 **Result:** the admission-delay curve is a **step function**, not a smooth fidelity curve — a small
 (~30–47 ms ≈ one decode step / `T_iter`, tracks ITL), routing-irrelevant floor for all ρ̂ below the
 saturation cliff, then the Stage C explosion above it. Below the cliff the occupancy-aware estimators
-predict 0 (their free-slot early-return at `admission_estimator.go:66` fires — a slot is free — so they
+predict 0 (their free-slot early-return fires (`fluid` at `admission_estimator.go:66`, `rollforward` at `:84`) — a slot is free — so they
 model slot/KV wait but not the residual-step wait for the next `FormBatch`). This is why Stage C's
 57×→1.16× win is **regime-specific** (heavy overload, where slot-wait dominates) and why the gap is
 routing-irrelevant here (floor ≪ τ_ttft = 2 s ⇒ z_ttft never engages on it). Read the **signed error**,

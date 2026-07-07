@@ -442,8 +442,8 @@ half)/median(1st half) ≈ 1.0 throughout), and grows only gently with load:
 error** at these points — it ≈ the full realized floor, i.e. the estimators contribute ~0.)
 
 **Mechanism (why the occupancy estimators predict 0 below the cliff).** Every occupancy-aware estimator
-opens with a free-slot early-return (`sim/admission_estimator.go:66`): `if BatchSize < MaxBatchSize &&
-FreeKVBlocks >= ReqKVNeed { return 0 }`. Below saturation a slot and KV are free, so it fires and
+opens with the same free-slot early-return (`fluid` at `sim/admission_estimator.go:66`, `rollforward` at
+`:84`): `if BatchSize < MaxBatchSize && FreeKVBlocks >= ReqKVNeed { return 0 }`. Below saturation a slot and KV are free, so it fires and
 returns **exactly 0** — modelling "a slot is free ⇒ admitted instantly." But the next `FormBatch` only
 runs after the **current in-progress decode step finishes**, so a request enqueued mid-step still waits
 the residual of that step (≈ one `T_iter`) plus dispatch-tick cadence before admission. The estimators
