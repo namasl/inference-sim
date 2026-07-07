@@ -478,12 +478,37 @@ the topology changed. **Numerical caveat:** below the cliff the realized delay i
 estimators predict 0, so the *ratio* is meaningless — read the **signed error** (ms), not the ratio, in
 this regime (the analyzer flags `ratio_meaningful` against a `ratio_floor_us` for exactly this reason).
 
-**PLANNED FOLLOW-UP (scoped, not yet implemented) — add the floor to the estimators.** The sub-saturation
-floor is a real modelling gap: the occupancy-aware estimators (`fluid`/`rollforward`/`little`) should
-lower-bound their admission estimate by one `T_iter` (the wait for the current decode step to finish
-before the next `FormBatch`), instead of returning 0 on the free-slot path. `waiting` stays unfloored (it
-is the occupancy-blind strawman, and leaving it untouched preserves the byte-identical default driver).
-This is estimator-fidelity only — routing-irrelevant (floor ≪ τ_ttft = 2 s) — and a no-op above
-saturation, so the Stage C 57×→1.16× headline is unchanged. Design:
-`docs/superpowers/specs/2026-07-06-edpp-admission-floor-design.md`. When implemented, this section's
-STABLE-band ratios should move from `predict 0`/NaN to ≈ 1×.
+**FLOOR IMPLEMENTED (2026-07-06, commit 1f2d4bd; design
+`docs/superpowers/specs/2026-07-06-edpp-admission-floor-design.md`).** The occupancy-aware estimators
+(`fluid`/`rollforward`/`little`, + oracles) now lower-bound their admission estimate by one `T_iter` via
+`flooredTAdm(est,ctx)=max(est,TIter)` (the wait for the current decode step to finish before the next
+`FormBatch`). `waiting` is left unfloored — it is the occupancy-blind strawman, and leaving it untouched
+preserves the byte-identical default driver.
+
+Re-run result (`repro_utilization_sweep.sh`) — the floor closes the sub-saturation gap:
+
+| ρ̂ | verdict | realized p50 | `waiting` | `fluid`/`rollforward`/`little` (floored) |
+|------|-----------|-------------|-----------|------------------------------------------|
+| 0.50 | STABLE    | 29.0 ms | ≈0 (huge ratio) | **1.26×** |
+| 0.69 | STABLE    | 33.1 ms | ≈0 | **1.17×** |
+| 0.84 | STABLE    | 38.8 ms | ≈0 | **1.12×** |
+| 0.88 | STABLE    | 40.8 ms | ≈0 | **1.06×** |
+| 0.93 | STABLE    | 44.2 ms | ≈0 | **1.06×** |
+| 0.95 | OVERLOADED| 46.8 ms | ≈0 | **1.05×** |
+
+The occupancy-aware estimators now track the realized floor to ≈1.05–1.26× across the whole STABLE band
+(best near ρ→1; slightly high at low load because one `T_iter` marginally under-shoots the realized
+floor); `waiting` still predicts ≈0 (unfloored strawman, still the occupancy-blind baseline).
+
+**Stage C overload headline preserved, with one honest nuance.** Re-running `repro_stage_c.sh`: T1 local
+`waiting` = **57.3×** (unchanged), occupancy-aware `fluid`/`rollforward` = **~1.24×** (`little` 1.30×,
+oracles ≈ deployable). The occupancy-aware figure shifted slightly from the pre-floor **1.16×** — this is
+NOT the floor leaking into the saturated path: `max(est, T_iter)` is a no-op for genuinely saturated rows
+(est ≈ 560 s ≫ `T_iter`), so no saturated prediction changed. The T1 run aggregates over the whole
+trajectory including the sub-saturation ramp-up, and those early free-slot rows now floor to `T_iter`
+instead of 0, nudging the median. Per-row the saturated predictions are identical; the headline (blind
+`waiting` 57× vs occupancy-aware ~1.2×) stands, and the occupancy-aware estimators are now consistent
+(~1.05–1.26×) across the entire load range instead of collapsing to 0 below the cliff.
+
+The floor is estimator-fidelity only — routing-irrelevant (the floored delay ~30–47 ms ≪ τ_ttft = 2 s, so
+`z_ttft` never engages on it) — and `waiting` (the default driver) is byte-identical.
