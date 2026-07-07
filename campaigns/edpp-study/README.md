@@ -268,6 +268,9 @@ model slot/KV wait but not the residual-step wait for the next `FormBatch`). Thi
 57×→1.16× win is **regime-specific** (heavy overload, where slot-wait dominates) and why the gap is
 routing-irrelevant here (floor ≪ τ_ttft = 2 s ⇒ z_ttft never engages on it). Read the **signed error**,
 not the ratio, below the cliff (the analyzer's `ratio_meaningful`/`ratio_floor_us` flags this).
+**Planned follow-up (scoped):** floor the occupancy-aware estimators by one `T_iter` so they track the
+sub-saturation delay (`waiting` stays unfloored as the strawman; routing-irrelevant, no-op above
+saturation). Spec: `docs/superpowers/specs/2026-07-06-edpp-admission-floor-design.md`.
 
 ## 8. FAQ (why things are the way they are)
 

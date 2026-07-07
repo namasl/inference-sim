@@ -477,3 +477,13 @@ the sole OVERLOADED point at ρ̂≈0.95. If instead a smooth monotonic bias cur
 the topology changed. **Numerical caveat:** below the cliff the realized delay is a small floor and the
 estimators predict 0, so the *ratio* is meaningless — read the **signed error** (ms), not the ratio, in
 this regime (the analyzer flags `ratio_meaningful` against a `ratio_floor_us` for exactly this reason).
+
+**PLANNED FOLLOW-UP (scoped, not yet implemented) — add the floor to the estimators.** The sub-saturation
+floor is a real modelling gap: the occupancy-aware estimators (`fluid`/`rollforward`/`little`) should
+lower-bound their admission estimate by one `T_iter` (the wait for the current decode step to finish
+before the next `FormBatch`), instead of returning 0 on the free-slot path. `waiting` stays unfloored (it
+is the occupancy-blind strawman, and leaving it untouched preserves the byte-identical default driver).
+This is estimator-fidelity only — routing-irrelevant (floor ≪ τ_ttft = 2 s) — and a no-op above
+saturation, so the Stage C 57×→1.16× headline is unchanged. Design:
+`docs/superpowers/specs/2026-07-06-edpp-admission-floor-design.md`. When implemented, this section's
+STABLE-band ratios should move from `predict 0`/NaN to ≈ 1×.
