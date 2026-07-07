@@ -39,6 +39,16 @@ type AdmissionDelayEstimator interface {
 	Name() string
 }
 
+// flooredTAdm lower-bounds an admission-delay estimate by one iteration: even with a
+// free slot, a request waits for the current decode step to finish before the next
+// FormBatch admits it (~T_iter). No-op when TIter is unavailable (<=0) or already exceeded.
+func flooredTAdm(est float64, ctx AdmissionContext) float64 {
+	if ctx.TIter > est {
+		return ctx.TIter
+	}
+	return est
+}
+
 type waitingEstimator struct{}
 
 func (waitingEstimator) Name() string { return "waiting" }
@@ -54,9 +64,9 @@ type littleEstimator struct{}
 func (littleEstimator) Name() string { return "little" }
 func (littleEstimator) EstimateTAdm(ctx AdmissionContext) float64 {
 	if ctx.AdmissionRate <= 0 {
-		return 0
+		return flooredTAdm(0, ctx)
 	}
-	return float64(ctx.QueueDepth) / ctx.AdmissionRate
+	return flooredTAdm(float64(ctx.QueueDepth)/ctx.AdmissionRate, ctx)
 }
 
 type fluidEstimator struct{}
@@ -65,16 +75,16 @@ func (fluidEstimator) Name() string { return "fluid" }
 func (fluidEstimator) EstimateTAdm(ctx AdmissionContext) float64 {
 	// Admit next iteration if a slot AND enough KV already fit.
 	if ctx.BatchSize < ctx.MaxBatchSize && ctx.FreeKVBlocks >= ctx.ReqKVNeed {
-		return 0
+		return flooredTAdm(0, ctx)
 	}
 	if ctx.BatchSize <= 0 || ctx.RemainingStepsEst <= 0 || ctx.TIter <= 0 {
-		return 0
+		return flooredTAdm(0, ctx)
 	}
 	// Synchronized batch: occupants finish ~R̄ steps together, so slots free in WAVES of
 	// BatchSize every ~R̄ iterations. A request at queue position QueueDepth waits
 	// ⌈(QueueDepth+1)/BatchSize⌉ waves. (Not the naive fluid-drain /BatchSize.)
 	waves := math.Ceil(float64(ctx.QueueDepth+1) / float64(ctx.BatchSize))
-	return waves * ctx.RemainingStepsEst * ctx.TIter
+	return flooredTAdm(waves*ctx.RemainingStepsEst*ctx.TIter, ctx)
 }
 
 type rollforwardEstimator struct{}
@@ -82,7 +92,7 @@ type rollforwardEstimator struct{}
 func (rollforwardEstimator) Name() string { return "rollforward" }
 func (rollforwardEstimator) EstimateTAdm(ctx AdmissionContext) float64 {
 	if ctx.BatchSize < ctx.MaxBatchSize && ctx.FreeKVBlocks >= ctx.ReqKVNeed {
-		return 0
+		return flooredTAdm(0, ctx)
 	}
 	// Deterministic look-ahead: each running req departs after its remaining steps
 	// (oracle TrueRemaining if ≥0, else the N̂_out estimate), freeing its KV. Accumulate
@@ -111,7 +121,7 @@ func (rollforwardEstimator) EstimateTAdm(ctx AdmissionContext) float64 {
 		freeSlots++
 		freeKV += d.kv
 		if freeSlots >= needSlots && freeKV >= ctx.ReqKVNeed {
-			return float64(d.step) * ctx.TIter
+			return flooredTAdm(float64(d.step)*ctx.TIter, ctx)
 		}
 	}
 	// The current running set's departures were exhausted before freeing QueueDepth+1
@@ -119,13 +129,13 @@ func (rollforwardEstimator) EstimateTAdm(ctx AdmissionContext) float64 {
 	// the deep tail: slots free in waves of BatchSize every ~RemainingStepsEst iters.
 	if ctx.BatchSize > 0 {
 		waves := math.Ceil(float64(ctx.QueueDepth+1) / float64(ctx.BatchSize))
-		return waves * ctx.RemainingStepsEst * ctx.TIter
+		return flooredTAdm(waves*ctx.RemainingStepsEst*ctx.TIter, ctx)
 	}
 	// BatchSize<=0: no wave cadence available — cap at the last known departure.
 	if len(deps) > 0 {
-		return float64(deps[len(deps)-1].step) * ctx.TIter
+		return flooredTAdm(float64(deps[len(deps)-1].step)*ctx.TIter, ctx)
 	}
-	return 0
+	return flooredTAdm(0, ctx)
 }
 
 // NewAdmissionEstimator returns the estimator by name. Little/fluid/rollforward

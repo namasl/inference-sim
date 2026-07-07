@@ -34,8 +34,8 @@ func TestFluidEstimator(t *testing.T) {
 	e, _ := NewAdmissionEstimator("fluid")
 	// Slot + KV already free → ~0.
 	free := AdmissionContext{BatchSize: 2, MaxBatchSize: 4, FreeKVBlocks: 100, ReqKVNeed: 10, TIter: 1000, RemainingStepsEst: 20}
-	if got := e.EstimateTAdm(free); got != 0 {
-		t.Fatalf("free slot must give 0, got %v", got)
+	if got := e.EstimateTAdm(free); got != 1000 {
+		t.Fatalf("free slot must give T_iter (1000, one-iter floor), got %v", got)
 	}
 	// Full batch, zero waiting work: waiting would give 0; fluid must give a large T_adm.
 	// Wave mean-field: QueueDepth=0 → ⌈(0+1)/4⌉=1 wave → 1·20·1000 = 20000µs.
@@ -54,8 +54,8 @@ func TestFluidEstimator(t *testing.T) {
 func TestFluidEstimator_WaveMeanField(t *testing.T) {
 	e, _ := NewAdmissionEstimator("fluid")
 	// Free slot + KV → 0.
-	if got := e.EstimateTAdm(AdmissionContext{BatchSize: 2, MaxBatchSize: 4, FreeKVBlocks: 100, ReqKVNeed: 10, QueueDepth: 0, RemainingStepsEst: 20, TIter: 1000}); got != 0 {
-		t.Fatalf("free slot → 0, got %v", got)
+	if got := e.EstimateTAdm(AdmissionContext{BatchSize: 2, MaxBatchSize: 4, FreeKVBlocks: 100, ReqKVNeed: 10, QueueDepth: 0, RemainingStepsEst: 20, TIter: 1000}); got != 1000 {
+		t.Fatalf("free slot → T_iter (1000, one-iter floor), got %v", got)
 	}
 	// Full batch, short queue (QueueDepth+1 <= BatchSize → 1 wave): ⌈(0+1)/4⌉·20·1000 = 20000.
 	full1 := AdmissionContext{BatchSize: 4, MaxBatchSize: 4, FreeKVBlocks: 0, ReqKVNeed: 10, QueueDepth: 0, RemainingStepsEst: 20, TIter: 1000}
@@ -122,6 +122,40 @@ func TestRollforwardEstimator_DeepQueueFallsBackToWave(t *testing.T) {
 	got := e.EstimateTAdm(ctx)
 	if got < want-1 || got > want+1 {
 		t.Fatalf("rollforward(deep) = %v, want ~%v (wave fallback, not first departure)", got, want)
+	}
+}
+
+func TestFlooredTAdm(t *testing.T) {
+	// est below the floor -> lifted to TIter
+	if got := flooredTAdm(0, AdmissionContext{TIter: 100}); got != 100 {
+		t.Fatalf("floor(0, TIter=100) = %v, want 100", got)
+	}
+	// est above the floor -> unchanged
+	if got := flooredTAdm(500, AdmissionContext{TIter: 100}); got != 500 {
+		t.Fatalf("floor(500, TIter=100) = %v, want 500", got)
+	}
+	// TIter unavailable -> no-op
+	if got := flooredTAdm(500, AdmissionContext{TIter: 0}); got != 500 {
+		t.Fatalf("floor(500, TIter=0) = %v, want 500", got)
+	}
+}
+
+func TestFloor_FreeSlotEstimatorsReturnTIter(t *testing.T) {
+	// A free-slot context: fluid and rollforward must now return TIter, not 0.
+	free := AdmissionContext{BatchSize: 2, MaxBatchSize: 4, FreeKVBlocks: 100, ReqKVNeed: 10, TIter: 1000, RemainingStepsEst: 20}
+	if got := (fluidEstimator{}).EstimateTAdm(free); got != 1000 {
+		t.Fatalf("fluid free-slot = %v, want 1000 (one TIter floor)", got)
+	}
+	if got := (rollforwardEstimator{}).EstimateTAdm(free); got != 1000 {
+		t.Fatalf("rollforward free-slot = %v, want 1000 (one TIter floor)", got)
+	}
+	// little with a tiny queue floored to TIter.
+	if got := (littleEstimator{}).EstimateTAdm(AdmissionContext{QueueDepth: 0, AdmissionRate: 0.002, TIter: 1000}); got != 1000 {
+		t.Fatalf("little tiny-queue = %v, want 1000 (one TIter floor)", got)
+	}
+	// waiting is NOT floored: still 0 when QWork is 0.
+	if got := (waitingEstimator{}).EstimateTAdm(free); got != 0 {
+		t.Fatalf("waiting free-slot = %v, want 0 (strawman unfloored)", got)
 	}
 }
 
