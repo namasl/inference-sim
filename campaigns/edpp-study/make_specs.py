@@ -23,3 +23,12 @@ for name, base in BASE.items():
     for r in RATES:
         (OUT / f"{name}_rate{r}.yaml").write_text(rewrite(src, r, name))
         print(f"wrote {name}_rate{r}.yaml")
+
+# synth_cf.yaml: small saturating synth trace for the counterfactual-regret harness
+# (repro_counterfactual.sh). 800 requests at rate 2.0 saturates 1P2D (baseline
+# goodput ~0.98, not 1.0) while keeping each single-request deviation's aggregate
+# leverage measurable and K*(|A|-1) full sims fast; the 5000-req trace dilutes a
+# one-request deviation to ~0. Same decode-bound workload as synth_rate2.0.yaml.
+_synth = pathlib.Path(BASE["synth"]).read_text()
+(OUT / "synth_cf.yaml").write_text(rewrite(_synth, 2.0, "synth", nreq=800))
+print("wrote synth_cf.yaml")

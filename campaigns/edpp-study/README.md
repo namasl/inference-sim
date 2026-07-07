@@ -275,6 +275,31 @@ STABLE band now reads ≈1.05–1.26× (was `predict 0`/NaN); `waiting` stays un
 no-op above saturation (routing-irrelevant, ≪ τ_ttft). Spec:
 `docs/superpowers/specs/2026-07-06-edpp-admission-floor-design.md`.
 
+## 7.8 Counterfactual-regret harness — per-decision hindsight diagnosis
+
+`bash campaigns/edpp-study/repro_counterfactual.sh` measures the **exact one-step-deviation regret**
+of the shipped (reduced) EDPP decider: it captures EDPP's realized per-request `(decode, prefill)`
+plan, then re-runs the whole plan with one request's action changed to each alternative and reads the
+aggregate-goodput delta. Positive regret ⇒ a single different decision would have improved total
+goodput in hindsight.
+
+- **Fixed-plan decider + `--pd-plan`.** The infra is `blis --pd-plan <csv>` (columns
+  `request_id,decode_instance,prefill_instance`; empty/`local` prefill ⇒ prefill on the decode
+  instance). It **overrides `--pd-decider`** and forces the supplied per-request routing; the plan must
+  be *total* (a missing request is fatal — R1, no silent fallback). It reads only the plan (INV-9) and
+  is wired on both `run` and `replay` (INV-13). This is the shared substrate for (a) recording/replaying
+  any decider's plan, (b) this regret diagnostic, and (c) the later **full-joint decider** and **MILP
+  yardstick** (which emit plans the same decider replays).
+- **Pipeline.** capture-plan (`analyze/counterfactual_regret.py capture-plan`) → **self-consistency
+  gate** (replay the captured plan; `slo_attainment` must equal the baseline, else STOP) → K-sampled
+  deviation sweep → `regret` aggregation. Cost `K·(|𝒜|−1)` sims; `|𝒜|=4` at 1P2D.
+- **Config knobs (env):** `K`, `TARGET_POLICY` (default `edpp`), `SPEC` (default the small saturating
+  `specs/synth_cf.yaml`), `OUT`, `MODEL`, `COEFFS`.
+- **Result & interpretation:** see FINDINGS "Counterfactual regret". Headline: the self-consistency
+  gate passes; reduced-EDPP's positive regret concentrates entirely on its **kept-local** decisions
+  (decode placement left to default routing), while its explicit disaggregation calls are locally
+  near-optimal. Diagnostic only (local deviation), **not** the global optimum.
+
 ## 8. FAQ (why things are the way they are)
 
 **Q1. Why are there separate `--slo-*` and `--edpp-tau-*` flags?** They are mechanically distinct.

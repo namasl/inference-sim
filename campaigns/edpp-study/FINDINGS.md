@@ -512,3 +512,62 @@ instead of 0, nudging the median. Per-row the saturated predictions are identica
 
 The floor is estimator-fidelity only — routing-irrelevant (the floored delay ~30–47 ms ≪ τ_ttft = 2 s, so
 `z_ttft` never engages on it) — and `waiting` (the default driver) is byte-identical.
+
+## Counterfactual regret — per-decision hindsight diagnosis of reduced-EDPP (2026-07-07)
+
+**Purpose.** An *exact* per-decision one-step-deviation regret for the shipped (reduced) EDPP
+decider. Capture the policy's realized per-request `(decode, prefill)` plan, then for each sampled
+request replay the *entire* plan with only that one request's action changed to each alternative
+`a ∈ 𝒜 \ {plan(r)}`, and measure the change in aggregate goodput (`slo_attainment`). Regret(r) =
+`max_a goodput(dev_{r,a}) − goodput(baseline)`, clamped at 0. Positive regret ⇒ some single
+alternative decision would have improved total goodput in hindsight, i.e. EDPP left goodput on the
+table at that decision. This is a *local* diagnostic (one decision moves at a time), **not** the
+global P/D optimum — that is the later MILP yardstick's job.
+
+**Setup.** Topology **1P2D** (`--num-instances 3 --prefill-instances 1 --decode-instances 2`),
+decider `edpp` with the frozen Llama-70B/H100-TP4 coeffs, `τ_ttft=2s`, `τ_itl=150ms`,
+SLO `ttft batch=2s, itl batch=150ms`. Trace: `specs/synth_cf.yaml` — the decode-bound synthetic-data
+workload, shrunk to **800 requests at aggregate_rate 2.0** so the cluster saturates
+(baseline goodput 0.9775, not 1.0) while each single-request deviation still has measurable leverage
+on the aggregate (with the full 5000-req trace one row is diluted to ≈0). `|𝒜| = 2 decode × (1 prefill
++ local) = 4`, so 3 deviations per sampled request. First end-to-end run used **K=10** (30–36 sim
+runs); scale K up for tighter statistics.
+
+**Self-consistency gate (REQUIRED, passed).** Replaying the captured plan via `--pd-plan` reproduced
+the baseline exactly: replay `slo_attainment = 0.9775` == baseline `0.9775` (INV-6/INV-13). The
+fixed-plan decider is a faithful record/replay of EDPP's decisions, so the regret below is meaningful.
+
+**Result (K=10).** baseline_goodput **0.9775**, mean_regret **0.0139**, total_regret **0.1387**,
+frac_positive **0.70**. Where it concentrates:
+
+| baseline decision | # sampled | regret | hindsight-best |
+|---|---|---|---|
+| kept **local** (decode unassigned, left to default routing) | 5 | **0.0225 each** (→ goodput 1.0) | pin decode to `instance_1` (local or disagg) |
+| **disaggregated** (explicit decode + prefill=instance_0) | 5 | 4×`0.000`, 1×`0.0037` | mostly `baseline` |
+
+**Interpretation.** *All* of reduced-EDPP's positive one-step regret sits on its **kept-local**
+decisions — the requests it declined to disaggregate. On those, EDPP records no decode instance and
+leaves decode placement to the default weighted router; pinning the decode instead (to `instance_1`)
+recovers the last ~0.0225 of goodput and reaches 1.0. Its **explicit disaggregation** decisions are
+locally near-optimal (regret ≈0; the largest is 0.0037). So the goodput reduced-EDPP leaves on the
+table here is **not** a wrong disaggregate-or-not call — it is *unresolved decode-instance placement on
+the local path*. This is consistent with the pool-average structure critique: EDPP scores against
+pool aggregates and does not commit a per-instance decode target when it keeps a request local, and
+that placement is exactly where a hindsight-better single decision exists. The effect is small in
+absolute goodput (mean 0.0139) but systematic (0.70 of sampled decisions), and it is a decode-placement
+gap rather than a P/D-split gap.
+
+*Caveat:* because EDPP's local decisions carry an empty decode instance in the outcome trace, a
+"deviation" on a local request also *pins* a decode target the baseline had left free — so this
+regret blends "should have disaggregated" with "should have pinned a better decode". The gate passing
+(empty-override replay == baseline) confirms the baseline is captured faithfully; the deviations are
+genuine alternatives to it.
+
+**Hand-case validation.** On a tiny idle 2-request 1P2D trace the harness reproduces the known answers
+(recorded in `repro_counterfactual.sh`): all-local baseline under a loose SLO ⇒ regret 0 (local is
+already optimal, no invented gains); all-disaggregate baseline under a tight `ttft=40ms` SLO (so the
+KV-transfer hop misses while local meets) ⇒ positive regret with a *local* hindsight-best.
+
+**Reproduce:** `bash campaigns/edpp-study/repro_counterfactual.sh` (`K=…`, `TARGET_POLICY=…`,
+`SPEC=…` overridable). Diagnostic only (local one-step deviation), not the global optimum; it is the
+shared fixed-plan (`--pd-plan`) infrastructure for the later full-joint decider and the MILP yardstick.
