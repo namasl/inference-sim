@@ -1,8 +1,13 @@
 # Joint Routing + Disaggregation Decision: Problem Formulation and System Model
 
 **Date:** 2026-06-30
-**Status:** Draft — problem/system model only. No algorithm or implementation committed yet.
-**Branch:** `design/pd-joint-routing`
+**Status:** Formulation (the physically-true design of record) **+ implementation reconciliation
+(2026-07-07).** The algorithm is now implemented in BLIS (branch `feat/edpp-estimator-validation`).
+Where the shipped code deviates from this formulation, the deviation is recorded **additively** — the
+original formulas below are left intact as the physically-true record, and the "as implemented in
+BLIS" companion sections (**§3.6-BLIS**, **§3.8-BLIS**) state what the shipped code actually computes
+and why.
+**Branch:** `design/pd-joint-routing` (formulation) / `feat/edpp-estimator-validation` (implementation)
 
 > In this document we fix the **system model** and the **problem statement** for prefill/decode
 > (P/D) routing in a disaggregated LLM-serving deployment. We adopt one stance throughout: we
@@ -10,6 +15,22 @@
 > evaluates from measured state (§3.7–§3.8), and a *tractable, analytical* layer we use for
 > closed-form reasoning and then validate against the first. We deliberately stop short of
 > committing a specific estimator for each latency term; those choices are deferred (§9).
+
+> **Reconciliation note (2026-07-07).** The formulation below is the *physically-true* system model —
+> it is intentionally preserved verbatim. BLIS's default latency model (**trained-physics**) charges
+> work on a slightly different basis than the causal physics, and the deferred estimator choices (§9)
+> have since been made and empirically studied. Rather than rewrite the physics, we record what BLIS
+> actually implements in two companion sections:
+> - **§3.6-BLIS** — the work formulas as implemented (trained-physics basis: `W_p` uses `+a_p/2`,
+>   `W_d` is the exact discrete sum), and why they differ from the causal §3.6 forms.
+> - **§3.8-BLIS** — the admission-delay estimator family as implemented (waiting/little/fluid/
+>   rollforward + oracle logging variants), the `fluid` *wave* refinement, and the empirical finding
+>   that admission delay is a **step function** of load (the occupancy-blind→occupancy-aware win is
+>   overload-regime-specific).
+>
+> Full provenance lives in the tracked specs `docs/superpowers/specs/2026-07-0{1,2,5}-edpp-*.md`,
+> `campaigns/edpp-study/FINDINGS.md`, and `campaigns/edpp-study/README.md` §7–8. Layer-2 (the analytical
+> closed form) remains unwritten (§9).
 
 ---
 
@@ -219,6 +240,40 @@ from a queue the moment it enters the running batch, so a backlog that counts on
 omits the *currently-running* batch entirely — the very thing that decides how long a new arrival
 waits. We therefore develop the time model with that residual occupancy in view.
 
+### 3.6-BLIS Work model **as implemented** (trained-physics basis)
+
+*Additive companion to §3.6 — the formulas above are the physically-true (causal) forms and are left
+unchanged. This section records what BLIS's shipped code (`sim/edpp_coeffs.go`) actually computes, and
+why. Design decision + float-precision validation: `docs/superpowers/specs/2026-07-01-edpp-work-model-design.md`,
+FINDINGS "Stage B".*
+
+The subtlety is that **the coefficients `C0,C1,C_pf,C_attn` were calibrated against BLIS's default
+`trained-physics` latency model, whose per-step attention charge uses the *full* sequence length, not
+the causal prefix.** Concretely, that model charges a prefill chunk of `s` new tokens
+`C_pf·s + C_attn·s·(a_r + s/2)` — note `a_r + s/2`, using the full prompt length `a_r`, whereas the
+causal §3.6 form uses `a_r − a_p/2`. For the policy's congestion estimate to be consistent with the
+simulator it actually runs in (the backlog `Q_i` and drain `μ_i` are derived from the same model), the
+shipped work formulas must match that basis:
+
+$$W_p^{\text{BLIS}}(q) \;=\; C_{\!pf,q}\,a_p \;+\; C_{\!attn,q}\,a_p\,(a_r + a_p/2) \qquad(\text{note } {+}a_p/2)$$
+$$W_d^{\text{BLIS}}(d) \;=\; C0_d\,o_r \;+\; C1_d\,o_r\,\bigl(a_r + \tfrac{o_r-1}{2}\bigr) \;=\; \textstyle\sum_{k=0}^{o_r-1}\bigl(C0_d + C1_d\,(a_r+k)\bigr)\quad(\text{exact discrete sum})$$
+
+- **Prefill (`+a_p/2` vs the causal `−a_p/2`).** This is the trajectory sum of the trained-physics
+  per-step charge. It over-counts *physically-causal* attention by up to ~3× at single-chunk — but it
+  is the basis `C_attn` was fit to, so used with the frozen `C_attn` it reproduces the work the
+  simulator charges. The causal §3.6 form is what the **roofline** backend implements; if a study runs
+  `--latency-model roofline`, `W_p` should use the §3.6 causal form instead.
+- **Decode (exact discrete sum vs the continuous integral).** §3.6's `o_r(a_r+o_r/2)` is the continuous
+  integral; BLIS uses the exact per-step sum `o_r(a_r+(o_r-1)/2)`, matching the model's per-decode-step
+  charge `C0 + C1·ProgressIndex` (context `= a_r + k` at step `k`). The two differ by `C1·o_r/2`.
+- **No refit.** Same `C0,C1,C_pf,C_attn` as §3.6. Stage B validated that realized per-request work
+  (accumulated from the actual per-step charges) equals these closed forms **to float precision**
+  (`~5e-16`) on both synth (no-cache) and RAG (shared-prefix), using the frozen coefficients.
+
+In one line: **§3.6 is the physics; §3.6-BLIS is what the default (trained-physics) simulator bills, and
+the two coincide only in the roofline/no-cache limit.** The `≈3×` attention gap is a documented
+latency-model fidelity limitation, not a routing defect — it is self-consistent within the simulator.
+
 ### 3.7 From work to time: the per-iteration identity
 
 We connect work to time through the mechanics of continuous batching, in a form we can evaluate
@@ -298,6 +353,51 @@ by the aggregated (`local`) path; we use it only in the analytical layer where i
 (steady state, and the offline yardstick of §6), and we validate that layer against the observed
 $T^{\text{adm}}$ above. This is the observable layer promised in the opening: the deployed policy's
 forward estimates rest on it, and the analytical layer must reproduce it.
+
+### 3.8-BLIS Admission-delay estimator **as implemented** + empirical findings
+
+*Additive companion to §3.8 — the §9-deferred estimator choice has since been made, implemented, and
+studied. Provenance: `docs/superpowers/specs/2026-07-02-edpp-admission-estimator-design.md`,
+`…/2026-07-05-edpp-estimator-fixcluster-design.md`, FINDINGS "Stage C — DE-CONFOUNDED" / "Utilization
+sweep", README §7.*
+
+**Pluggable estimator (`sim/admission_estimator.go`).** The forward `T̂` is a swappable interface with
+four **deployable** levels, selected by `--edpp-tadm-estimator` (default `waiting`):
+- **`waiting`** — the shipped strawman `qWork/μ` (waiting-backlog work ÷ drain), occupancy-*blind*.
+- **`little`** — Little's law `L̄^q/λ^{adm}` (§3.8), aggregate, arrival-free.
+- **`fluid`** — occupancy-conditioned mean-field. Refinement over §3.8: the running batch is
+  *synchronized* (occupants finish ~`R̄` steps together, not one every `R̄/B` iterations), so slots free
+  in **waves of `B` every ~`R̄` iterations**, giving
+  $$T^{\text{adm}}\approx \Bigl\lceil\tfrac{\text{QueueDepth}+1}{B}\Bigr\rceil\cdot \bar R\cdot T^{\text{iter}}.$$
+- **`rollforward`** — the deterministic §3.8 look-ahead, admitting when `freeSlots ≥ QueueDepth+1` (it
+  must clear the queue ahead, not just one slot); its deep-queue fallback **converges to the `fluid`
+  wave form**.
+
+Two **measurement-only** oracle variants (`fluid_oracle`, `rollforward_oracle`) read true `o_r`; an
+`IsDeployableEstimator` guard in `NewEDPPDecider` forbids them as the routing driver (INV-9). "Pool" in
+the instrumentation is an **admission event** (`prefill`/`decode`/`local`), not an instance role — a
+disaggregated request incurs both a prefill and a decode admission (the decode sub-request must still
+win a batch slot after transfer to emit the first token).
+
+**Empirical findings (isolation microbenchmark).**
+- **Occupancy-blindness is the dominant error.** `waiting` under-predicts admission delay **57×–1430×**
+  under overload; the occupancy-aware estimators (`fluid`/`rollforward`, and `little`) reach **~1.16×**
+  on the saturated pool. Oracle ≈ deployable once remaining-steps use a censored `N̂_out` floor (a
+  request that produced `k` tokens has `o_r ≥ k`).
+- **Admission delay is a STEP FUNCTION of load, not a smooth curve** (the design implicitly expected a
+  gradual curve). Below a sharp saturation cliff (`λ*≈0.75` on decode-bound synth) the delay is bounded
+  and *small* — a `~one-decode-step` floor (tens of ms) — then it **explodes** above the cliff (the
+  ~560 s regime). So the occupancy-aware win is **overload-regime-specific**; the sub-cliff floor is
+  **routing-irrelevant** (`≪ τ_ttft`, so `z_ttft` never engages). An **admission floor**
+  `max(T̂, T^{iter})` was added so estimators don't report 0 for the sub-cliff residual-step wait.
+- **Prefill/decode asymmetry.** Prefill "remaining" `= a_r − ProgressIndex` is **known** at routing
+  (not a hidden variable), so it is deployable and uncensored; decode remaining depends on `o_r` and
+  stays oracle-gated + censored on the deployable path. The oracle/deployable distinction is
+  decode-specific.
+
+The §3.8 two-fidelity stance is unchanged: these are all **Layer-1 (observable, arrival-free)**
+estimators; **Layer 2** (the closed-form birth–death `T̂` and an estimator-bias → optimality-gap bound,
+validated against these curves) remains unwritten (§9).
 
 ---
 
@@ -559,6 +659,15 @@ guarantees — but only to the extent its inputs are exact. We separate the two.
 - Crucially, none of this assumes memoryless arrivals. The drift argument holds for general (bursty,
   correlated) arrivals with bounded moments, so the guarantee **survives the non-Poisson decode
   stream** of §3.8.
+
+> **Implementation reconciliation (2026-07-07).** The guarantee's one soft dependency — the forward
+> estimator bias (`T̂`, `m`) called out below as "approximate" — has since been **empirically measured**
+> (Stages A/C; see §3.8-BLIS). The shipped occupancy-blind estimator's bias is large under overload
+> (admission delay under-predicted `57×–1430×`), and the occupancy-aware estimators cut it to `~1.16×`;
+> below the saturation cliff the bias is bounded and routing-irrelevant. So the "degrades gracefully
+> with estimator bias" clause is now backed by measurement, not just asserted — and the size of that
+> bias, and hence the realized optimality gap, is regime-dependent (small when it matters least,
+> largest at heavy overload).
 
 Stated precisely:
 
