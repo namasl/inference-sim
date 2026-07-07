@@ -410,3 +410,70 @@ local pool, converging), with `little` a decent aggregate (1.3×) and the censor
 estimate ≈ the oracle.** Remaining follow-ups: the utilization sweep (bounded/stationary operating
 points), prefill-saturating validation, and the prefill oracle-semantics nuance (prefill "remaining" is
 known input length, not a hidden variable — the oracle/deployable split is decode-specific).
+
+---
+
+## Utilization sweep — decode-pool admission fidelity vs load (2026-07-06)
+
+**Purpose.** Harden the single-point Stage C result (measured at forced heavy overload — a
+*non-stationary* stress test) by measuring decode-pool admission-estimator fidelity across a range of
+**bounded, stationary** operating points below capacity. Topology = Stage C T1 (1P1D, EDPP,
+`--edpp-c-xfer 100s` ⇒ all-local on a single decode engine), synth, measurement-only. Reproduce:
+`bash campaigns/edpp-study/repro_utilization_sweep.sh` → `out/utilization_sweep/sweep.json` (+`sweep.png`).
+
+**Capacity.** λ* = **0.75 req/s** (composite saturation detector; lowest coarse-scan rate not STABLE —
+0.1/0.25/0.5 STABLE, 0.75 first non-STABLE). The ρ grid `{0.5,0.7,0.85,0.9,0.95,0.98}·λ*` yields the
+points below; the achieved ρ̂ is measured per point (`responses_per_sec/λ*`).
+
+**Result — the sweep worked, and it reveals a STEP FUNCTION, not a smooth fidelity curve.**
+Admission delay is bounded and **stationary** at every point (admission-delay drift = median(2nd
+half)/median(1st half) ≈ 1.0 throughout), and grows only gently with load:
+
+| ρ̂ | verdict | realized adm p50 | ITL mean | `waiting` | `fluid`/`rollforward` | `little` |
+|------|-----------|-----------------|----------|-----------|-----------------------|----------|
+| 0.50 | STABLE    | 29.0 ms | 27.2 ms | ≈0 (1e14× off) | **predict 0** (nan) | over-pred ~17× |
+| 0.69 | STABLE    | 33.1 ms | 36.1 ms | ≈0            | **predict 0** (nan) | over-pred ~17× |
+| 0.84 | STABLE    | 38.8 ms | 47.4 ms | ≈0            | **predict 0** (nan) | over-pred ~25× |
+| 0.88 | STABLE    | 40.8 ms | 52.8 ms | ≈0            | **predict 0** (nan) | over-pred ~16× |
+| 0.93 | STABLE    | 44.2 ms | 59.5 ms | ≈0            | **predict 0** (nan) | over-pred ~18× |
+| 0.95 | OVERLOADED| 46.9 ms | 64.4 ms | ≈0            | over-pred ~90×      | over-pred ~2× |
+
+(Ratios are `realized/predicted`; a `predict 0` yields nan/astronomical ratios, so read the **signed
+error** at these points — it ≈ the full realized floor, i.e. the estimators contribute ~0.)
+
+**Mechanism (why the occupancy estimators predict 0 below the cliff).** Every occupancy-aware estimator
+opens with a free-slot early-return (`sim/admission_estimator.go:66`): `if BatchSize < MaxBatchSize &&
+FreeKVBlocks >= ReqKVNeed { return 0 }`. Below saturation a slot and KV are free, so it fires and
+returns **exactly 0** — modelling "a slot is free ⇒ admitted instantly." But the next `FormBatch` only
+runs after the **current in-progress decode step finishes**, so a request enqueued mid-step still waits
+the residual of that step (≈ one `T_iter`) plus dispatch-tick cadence before admission. The estimators
+model **slot/KV availability**, not the **time to the next admission opportunity**. `waiting` (QWork/Mu)
+also predicts ≈0 because the waiting queue is near-empty below capacity.
+
+**This dropped term is confirmed to be ≈ one decode iteration.** The realized sub-saturation admission
+floor tracks ITL (inter-token latency ≈ decode step time `T_iter`) closely and climbs with it as the
+batch fills: 29↔27 ms at ρ̂=0.5, 44↔60 ms at ρ̂=0.93. So the floor the estimators omit **is** the
+residual-step / `FormBatch`-cadence latency, ≈ `T_iter`.
+
+**Interpretation (the honest headline).** For this decode-bound long-job workload the admission-delay
+curve is a **step function**: a small (~30–47 ms), routing-irrelevant floor ≈ one decode step for all
+ρ̂ below the saturation cliff, then an explosion above it (Stage C's 560s regime). There is **no wide
+"large-but-bounded" band** to draw a smooth fidelity curve through — the transition is sharp, and
+refining λ*/the grid cannot manufacture a band the physics does not produce. Consequences:
+- **Stage C's 57×→1.16× win is real but regime-specific** — it validates the estimators where slot-wait
+  dominates (heavy overload). Below the cliff the estimators correctly report ~0 *slot-wait*, but omit
+  the O(`T_iter`) admission-opportunity latency that is the entire admission delay there.
+- **This gap is routing-irrelevant at these SLOs:** the floor (~30–47 ms) is ≪ τ_ttft = 2 s, so z_ttft
+  does not engage on it and it cannot change an EDPP routing decision. It is a documented modelling gap,
+  not a routing defect.
+- The occupancy-aware estimators are therefore *sufficient for routing* (accurate exactly in the regime
+  that crosses the SLO and drives decisions) while structurally incomplete as a general
+  admission-latency model (they miss the sub-saturation step-cadence floor).
+
+**Reproduction checkpoint** (a correct re-run must reproduce): λ* = 0.75; admission-delay drift ≈ 1.0 at
+every retained point (stationary); realized adm p50 rising ~29→47 ms across ρ̂ 0.5→0.95 and tracking ITL
+mean; occupancy-aware estimators predict 0 (nan ratio, signed error ≈ realized) at all STABLE points;
+the sole OVERLOADED point at ρ̂≈0.95. If instead a smooth monotonic bias curve appears, the harness or
+the topology changed. **Numerical caveat:** below the cliff the realized delay is a small floor and the
+estimators predict 0, so the *ratio* is meaningless — read the **signed error** (ms), not the ratio, in
+this regime (the analyzer flags `ratio_meaningful` against a `ratio_floor_us` for exactly this reason).

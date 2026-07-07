@@ -252,9 +252,22 @@ free slot), not empty occupancy.
 > off), activated `little` (`buildPoolFilteredSnapshots` never populated `AdmissionRate`), and added
 > the `--edpp-tadm-estimator` CLI flag. The numbers above are the de-confounded result.
 
-Open follow-ups before the paper's fidelity figure (in FINDINGS): the **utilization sweep** (the
-saturating point above is a non-stationary stress test — see FAQ Q3), **prefill-saturating validation**
+Open follow-ups before the paper's fidelity figure (in FINDINGS): **prefill-saturating validation**
 (prefill estimators unproven under a prefill queue), and the parallel **Layer-2** analytical track.
+
+### 7.7 Utilization sweep — fidelity vs load (done; see FINDINGS "Utilization sweep")
+`bash campaigns/edpp-study/repro_utilization_sweep.sh` extends the single-point ablation across bounded,
+stationary operating points below capacity: it locates λ* (composite saturation detector, coarse scan),
+sweeps ρ = {0.5…0.98}·λ* on the T1 topology, and aggregates via `analyze/utilization_sweep.py` (measured
+ρ̂ = `responses_per_sec/λ*`; two-layer stationarity = detector verdict + admission-delay drift).
+**Result:** the admission-delay curve is a **step function**, not a smooth fidelity curve — a small
+(~30–47 ms ≈ one decode step / `T_iter`, tracks ITL), routing-irrelevant floor for all ρ̂ below the
+saturation cliff, then the Stage C explosion above it. Below the cliff the occupancy-aware estimators
+predict 0 (their free-slot early-return at `admission_estimator.go:66` fires — a slot is free — so they
+model slot/KV wait but not the residual-step wait for the next `FormBatch`). This is why Stage C's
+57×→1.16× win is **regime-specific** (heavy overload, where slot-wait dominates) and why the gap is
+routing-irrelevant here (floor ≪ τ_ttft = 2 s ⇒ z_ttft never engages on it). Read the **signed error**,
+not the ratio, below the cliff (the analyzer's `ratio_meaningful`/`ratio_floor_us` flags this).
 
 ## 8. FAQ (why things are the way they are)
 
