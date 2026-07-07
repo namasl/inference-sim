@@ -545,8 +545,10 @@ frac_positive **0.70**. Where it concentrates:
 | kept **local** (decode unassigned, left to default routing) | 6 | **0.0225 each** (→ goodput 1.0) | pin decode to `instance_1` (local or disagg) |
 | **disaggregated** (explicit decode + prefill=instance_0) | 4 | 3×`0.000`, 1×`0.0037` | mostly `baseline` |
 
-**Interpretation.** *All* of reduced-EDPP's positive one-step regret sits on its **kept-local**
-decisions — the requests it declined to disaggregate. On those, EDPP records no decode instance and
+**Interpretation.** *Nearly all* of reduced-EDPP's positive one-step regret sits on its **kept-local**
+decisions — the requests it declined to disaggregate (6 of the 7 positive-regret decisions, 0.135 of the
+0.1387 total; the one disaggregation decision with positive regret contributes just 0.0037). On those,
+EDPP records no decode instance and
 leaves decode placement to the default weighted router; pinning the decode instead (to `instance_1`)
 recovers the last ~0.0225 of goodput and reaches 1.0. Its **explicit disaggregation** decisions are
 locally near-optimal (regret ≈0; the largest is 0.0037). So the goodput reduced-EDPP leaves on the
