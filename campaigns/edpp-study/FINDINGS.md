@@ -526,38 +526,49 @@ global P/D optimum — that is the later MILP yardstick's job.
 
 **Setup.** Topology **1P2D** (`--num-instances 3 --prefill-instances 1 --decode-instances 2`),
 decider `edpp` with the frozen Llama-70B/H100-TP4 coeffs, `τ_ttft=2s`, `τ_itl=150ms`,
-SLO `ttft batch=2s, itl batch=150ms`. Trace: `specs/synth_cf.yaml` — the decode-bound synthetic-data
-workload, shrunk to **800 requests at aggregate_rate 2.0** so the cluster saturates
-(baseline goodput 0.9775, not 1.0) while each single-request deviation still has measurable leverage
-on the aggregate (with the full 5000-req trace one row is diluted to ≈0). `|𝒜| = 2 decode × (1 prefill
-+ local) = 4`, so 3 deviations per sampled request. First end-to-end run used **K=10** (30–36 sim
-runs); scale K up for tighter statistics.
+SLO `ttft batch=2s, itl batch=150ms`. **Admission-delay driver = `rollforward` (occupancy-aware).**
+`repro_counterfactual.sh` defaults to `--edpp-tadm-estimator rollforward` — we are evaluating EDPP's
+routing QUALITY, so it must route with the occupancy-aware estimator, not blis's default occupancy-blind
+`waiting` strawman (`ESTIMATOR=waiting` reproduces the older blind-driver run cited in the comparison
+below; the estimator-BIAS scripts `repro_stage_a`/`_b` intentionally keep `waiting`). Trace:
+`specs/synth_cf.yaml` — the decode-bound synthetic-data workload, shrunk to **800 requests at
+aggregate_rate 2.0** so the cluster saturates (baseline goodput <1.0) while each single-request
+deviation still has measurable leverage on the aggregate (the full 5000-req trace dilutes one row to
+≈0). `|𝒜| = 2 decode × (1 prefill + local) = 4`, so 3 deviations per sampled request. Runs use **K=10**
+(30–36 sim runs); scale K up for tighter statistics.
 
 **Self-consistency gate (REQUIRED, passed).** Replaying the captured plan via `--pd-plan` reproduced
-the baseline exactly: replay `slo_attainment = 0.9775` == baseline `0.9775` (INV-6/INV-13). The
-fixed-plan decider is a faithful record/replay of EDPP's decisions, so the regret below is meaningful.
+the baseline exactly (replay `slo_attainment` == baseline, INV-6/INV-13). The fixed-plan decider is a
+faithful record/replay of EDPP's decisions, so the regret below is meaningful.
 
-**Result (K=10).** baseline_goodput **0.9775**, mean_regret **0.0139**, total_regret **0.1387**,
-frac_positive **0.70**. Where it concentrates:
+**Result (K=10, `rollforward` driver).** baseline_goodput **0.99**, mean_regret **0.006**, total_regret
+**0.06**, frac_positive **0.60** (6 of 10 sampled). **All 6 positive-regret decisions have the same
+hindsight-best: pin the decode node to `instance_1`** (3 as `instance1-local`, 3 as `instance1-instance0`
+— i.e. get decode onto `instance_1`, whether kept local or disaggregated); each recovers ~0.01 goodput.
+The other 4 sampled decisions have zero regret (baseline is locally best).
 
-| baseline decision | # sampled | regret | hindsight-best |
-|---|---|---|---|
-| kept **local** (decode unassigned, left to default routing) | 6 | **0.0225 each** (→ goodput 1.0) | pin decode to `instance_1` (local or disagg) |
-| **disaggregated** (explicit decode + prefill=instance_0) | 4 | 3×`0.000`, 1×`0.0037` | mostly `baseline` |
+**Occupancy-aware vs occupancy-blind driver (the check that prompted this):**
 
-**Interpretation.** *Nearly all* of reduced-EDPP's positive one-step regret sits on its **kept-local**
-decisions — the requests it declined to disaggregate (6 of the 7 positive-regret decisions, 0.135 of the
-0.1387 total; the one disaggregation decision with positive regret contributes just 0.0037). On those,
-EDPP records no decode instance and
-leaves decode placement to the default weighted router; pinning the decode instead (to `instance_1`)
-recovers the last ~0.0225 of goodput and reaches 1.0. Its **explicit disaggregation** decisions are
-locally near-optimal (regret ≈0; the largest is 0.0037). So the goodput reduced-EDPP leaves on the
-table here is **not** a wrong disaggregate-or-not call — it is *unresolved decode-instance placement on
-the local path*. This is consistent with the pool-average structure critique: EDPP scores against
-pool aggregates and does not commit a per-instance decode target when it keeps a request local, and
-that placement is exactly where a hindsight-better single decision exists. The effect is small in
-absolute goodput (mean 0.0139) but systematic (0.70 of sampled decisions), and it is a decode-placement
-gap rather than a P/D-split gap.
+| driver | baseline goodput | total regret | frac positive | where regret concentrates |
+|---|---|---|---|---|
+| `waiting` (occupancy-blind, blis default) | 0.9775 | 0.1387 | 0.70 | decode-node placement (kept-local) |
+| **`rollforward` (occupancy-aware, now default)** | **0.99** | **0.06** | **0.60** | decode-node placement (`instance_1`) |
+
+Routing with the occupancy-aware estimator both **raises baseline goodput (0.9775→0.99)** and **roughly
+halves the leftover regret (0.1387→0.06)** — a concrete reason to drive routing with `rollforward`, not
+`waiting`.
+
+**Interpretation (the finding survives the occupancy-aware driver).** Even with `rollforward` driving,
+reduced-EDPP leaves ~0.06 goodput on the table, and the residual is **still decode-node placement, not a
+P/D-split error**: every positive-regret decision is improved by putting decode on `instance_1`
+(regardless of local-vs-disagg). This is exactly the pool-average-structure critique — EDPP commits no
+per-instance decode target and delegates `d` to the default scorer, and that delegated placement is
+where the hindsight-better single decision lives. The occupancy-aware estimator sharpens the P/D
+*decision* (fewer, cleaner disagg calls, higher baseline) but cannot fix decode-node *selection*, which
+it does not control. **This is the direct empirical motivation for the full-joint rule [C]** (choose `d`
+by the drift objective over all of ℳ, not a scorer): the open hypothesis it must confirm is that the
+joint argmin recovers this residual `instance_1` regret. Caveat unchanged: this is a LOCAL one-step
+deviation, not the global optimum (the MILP yardstick's job).
 
 *Caveat:* because EDPP's local decisions carry an empty decode instance in the outcome trace, a
 "deviation" on a local request also *pins* a decode target the baseline had left free — so this

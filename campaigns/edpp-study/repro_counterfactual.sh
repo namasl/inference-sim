@@ -47,9 +47,15 @@ if [[ ! -x ./blis ]]; then echo "building blis..." >&2; go build -o blis main.go
 SLO=(--slo-ttft "batch=2s" --slo-itl "batch=150ms")
 # EDPP coeffs/tau flags only apply to the edpp decider; never/always (used by the
 # hand-case sanity checks) reject them.
+# Admission-delay estimator that DRIVES routing. Default = rollforward (occupancy-aware):
+# we evaluate EDPP's routing QUALITY here, so it must route with the occupancy-aware
+# estimator, NOT the occupancy-blind `waiting` strawman (blis's own default). Override with
+# ESTIMATOR=waiting|little|fluid|rollforward. (The estimator-BIAS validation scripts
+# repro_stage_a/b intentionally keep `waiting` — their job is to characterize that baseline.)
+ESTIMATOR="${ESTIMATOR:-rollforward}"
 EDPP=(--pd-decider "$TARGET_POLICY")
 if [[ "$TARGET_POLICY" == "edpp" ]]; then
-  EDPP+=(--edpp-coeffs "$COEFFS" --edpp-tau-ttft 2s --edpp-tau-itl 150ms)
+  EDPP+=(--edpp-coeffs "$COEFFS" --edpp-tau-ttft 2s --edpp-tau-itl 150ms --edpp-tadm-estimator "$ESTIMATOR")
 fi
 TOPO=(--num-instances 3 --prefill-instances 1 --decode-instances 2)
 COMMON=(--model "$MODEL" --workload-spec "$SPEC" "${TOPO[@]}" "${SLO[@]}")

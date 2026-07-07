@@ -301,10 +301,16 @@ goodput in hindsight.
   emitting dev-files must observe this same underscore-free-action-token convention.
 - **Config knobs (env):** `K`, `TARGET_POLICY` (default `edpp`), `SPEC` (default the small saturating
   `specs/synth_cf.yaml`), `OUT`, `MODEL`, `COEFFS`.
-- **Result & interpretation:** see FINDINGS "Counterfactual regret". Headline: the self-consistency
-  gate passes; reduced-EDPP's positive regret concentrates entirely on its **kept-local** decisions
-  (decode placement left to default routing), while its explicit disaggregation calls are locally
-  near-optimal. Diagnostic only (local deviation), **not** the global optimum.
+- **Driver = occupancy-aware.** The script defaults to `--edpp-tadm-estimator rollforward` — we measure
+  EDPP's routing *quality*, so it must route with the occupancy-aware estimator, not blis's default
+  occupancy-blind `waiting` (`ESTIMATOR=waiting` reproduces the blind-driver comparison). The
+  estimator-BIAS scripts (`repro_stage_a`/`_b`) keep `waiting` on purpose.
+- **Result & interpretation:** see FINDINGS "Counterfactual regret". Headline: gate passes; with the
+  occupancy-aware driver, baseline goodput rises (0.9775→0.99) and leftover regret roughly halves
+  (0.1387→0.06) vs the blind driver, but the residual regret **survives and is still decode-node
+  placement** — every positive-regret decision is improved by pinning decode to `instance_1` (local or
+  disagg), the choice EDPP delegates to the scorer. Direct motivation for the full-joint rule [C]
+  (choose `d` by the drift objective). Diagnostic only (local deviation), **not** the global optimum.
 
 ## 8. FAQ (why things are the way they are)
 
