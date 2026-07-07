@@ -8,6 +8,12 @@ Subcommands:
   regret --sweep-dir <dir> [--out <json>]
       Read baseline.json + dev_<reqid>_<action>.json run-metrics in <dir>, compute
       per-request regret = max_action goodput(dev) - goodput(baseline) on TOTAL goodput.
+
+Filename contract: dev-file names are parsed by `dev_(.+)_([^_]+)\\.json`, which splits on the
+LAST underscore (request_ids contain underscores). The <action> token must therefore be
+underscore-free — instance names like `instance_1` are NOT, so callers must strip the underscore
+(e.g. `instance1`) when composing dev-file names. Any future decider reusing this driver (full-joint,
+MILP yardstick) must observe the same underscore-free-action-token convention.
 """
 import argparse, csv, glob, json, os, re, sys
 

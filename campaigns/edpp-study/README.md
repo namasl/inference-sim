@@ -293,6 +293,12 @@ goodput in hindsight.
 - **Pipeline.** capture-plan (`analyze/counterfactual_regret.py capture-plan`) → **self-consistency
   gate** (replay the captured plan; `slo_attainment` must equal the baseline, else STOP) → K-sampled
   deviation sweep → `regret` aggregation. Cost `K·(|𝒜|−1)` sims; `|𝒜|=4` at 1P2D.
+- **Filename contract (for future deciders reusing this infra).** The `regret` subcommand parses
+  deviation files named `dev_<reqid>_<action>.json` with the regex `dev_(.+)_([^_]+)\.json` — it splits
+  on the *last* underscore because `request_id`s themselves contain underscores. The **action token must
+  therefore be underscore-free**; instance names like `instance_1` are not, so the repro script strips
+  the underscore (e.g. `instance1`) when composing dev-file names. Any future full-joint/MILP driver
+  emitting dev-files must observe this same underscore-free-action-token convention.
 - **Config knobs (env):** `K`, `TARGET_POLICY` (default `edpp`), `SPEC` (default the small saturating
   `specs/synth_cf.yaml`), `OUT`, `MODEL`, `COEFFS`.
 - **Result & interpretation:** see FINDINGS "Counterfactual regret". Headline: the self-consistency

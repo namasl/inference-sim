@@ -542,8 +542,8 @@ frac_positive **0.70**. Where it concentrates:
 
 | baseline decision | # sampled | regret | hindsight-best |
 |---|---|---|---|
-| kept **local** (decode unassigned, left to default routing) | 5 | **0.0225 each** (→ goodput 1.0) | pin decode to `instance_1` (local or disagg) |
-| **disaggregated** (explicit decode + prefill=instance_0) | 5 | 4×`0.000`, 1×`0.0037` | mostly `baseline` |
+| kept **local** (decode unassigned, left to default routing) | 6 | **0.0225 each** (→ goodput 1.0) | pin decode to `instance_1` (local or disagg) |
+| **disaggregated** (explicit decode + prefill=instance_0) | 4 | 3×`0.000`, 1×`0.0037` | mostly `baseline` |
 
 **Interpretation.** *All* of reduced-EDPP's positive one-step regret sits on its **kept-local**
 decisions — the requests it declined to disaggregate. On those, EDPP records no decode instance and
