@@ -72,6 +72,7 @@ type DeploymentConfig struct {
 	SharedInstances   int
 	PDDecider         string // Disaggregation decider: "" or "never" (default), "always", "prefix-threshold", "edpp"
 	PDPrefixThreshold int    // Non-cached token threshold for prefix-threshold decider (PR6)
+	PDPlanPath        string // Path to a fixed-plan CSV; when set, forces a FixedPlanDecider (overrides PDDecider). Counterfactual-regret harness / offline yardstick.
 
 	// EDPP (Lyapunov drift-plus-penalty) decider knobs — used only when PDDecider == "edpp".
 	// All durations are microseconds. See sim/edpp.go and the design doc for semantics.

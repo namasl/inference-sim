@@ -33,17 +33,24 @@ func (e *PrefillRoutingEvent) Execute(cs *ClusterSimulator) {
 	}
 	state := &sim.RouterState{Snapshots: filteredSnapshots, Clock: cs.clock, CaptureScorerBreakdown: cs.routingTraceOn()}
 
-	policy := cs.prefillRoutingPolicy
-	if policy == nil {
-		policy = cs.routingPolicy
+	// A fixed-plan / joint D+P decider may force the prefill instance via
+	// ParentRequest.PrefillPodHint. When set, skip the scorer entirely and route
+	// the prefill sub-request to the hinted instance.
+	var decision sim.RoutingDecision
+	if e.parentReq.PrefillPodHint != "" {
+		decision = sim.RoutingDecision{TargetInstance: e.parentReq.PrefillPodHint}
+	} else {
+		policy := cs.prefillRoutingPolicy
+		if policy == nil {
+			policy = cs.routingPolicy
+		}
+		decision = policy.Route(e.request, state)
+		if cs.routingTraceOn() {
+			cs.recordRoutingDecisionTrace("prefill", e.parentReq.ID, decision, state.Snapshots)
+		}
 	}
-	decision := policy.Route(e.request, state)
 
 	logrus.Debugf("[cluster] prefill req %s → instance %s", e.request.ID, decision.TargetInstance)
-
-	if cs.routingTraceOn() {
-		cs.recordRoutingDecisionTrace("prefill", e.parentReq.ID, decision, state.Snapshots)
-	}
 
 	e.request.AssignedInstance = decision.TargetInstance
 	e.parentReq.PrefillInstanceID = InstanceID(decision.TargetInstance)

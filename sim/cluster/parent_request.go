@@ -55,6 +55,12 @@ type ParentRequest struct {
 	// when an encode decider approves. Zero value (empty) = encode did not fire for this
 	// request. GAP-4, issue #1264.
 	EncodeInstanceID InstanceID
+
+	// PrefillPodHint is a forced prefill instance supplied by a joint/fixed-plan
+	// decider (DisaggregationDecision.PrefillPodHint). When non-empty,
+	// PrefillRoutingEvent routes the prefill sub-request to this instance instead
+	// of invoking the scorer. Empty ⇒ normal scorer routing.
+	PrefillPodHint string
 }
 
 // NewParentRequest creates a ParentRequest from the original request.

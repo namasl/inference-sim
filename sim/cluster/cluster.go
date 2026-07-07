@@ -417,10 +417,19 @@ func NewClusterSimulator(config DeploymentConfig, requests []*sim.Request, onReq
 	// PrefixThresholdDecider consumes the per-pod cache-query map; other deciders
 	// ignore state but share the same construction point.
 	if config.PrefillInstances > 0 || config.DecodeInstances > 0 || config.SharedInstances > 0 {
-		switch config.PDDecider {
-		case "prefix-threshold":
+		switch {
+		case config.PDPlanPath != "":
+			// Fixed-plan decider (counterfactual-regret harness / offline yardstick):
+			// forces a supplied per-request (decode, prefill) plan. Takes precedence
+			// over --pd-decider. Total plan (missing request is fatal, R1); INV-9.
+			plan, err := sim.LoadFixedPlanCSV(config.PDPlanPath)
+			if err != nil {
+				logrus.Fatalf("[cluster] --pd-plan: %v", err)
+			}
+			cs.disaggregationDecider = sim.NewFixedPlanDecider(plan)
+		case config.PDDecider == "prefix-threshold":
 			cs.disaggregationDecider = sim.NewPrefixThresholdDecider(config.PDPrefixThreshold, int(config.BlockSizeTokens), cs.cacheQueryFn)
-		case "edpp":
+		case config.PDDecider == "edpp":
 			// EDPP recovers α/δ by finite-difference on a latency model (no live scrape in
 			// BLIS), so build the model here and inject it. Prefill-pool backlogs come from a
 			// closure over the snapshot provider; the decode pool arrives via RouterState.
@@ -2435,6 +2444,7 @@ func (cs *ClusterSimulator) executeDisaggregatedRouting(req *sim.Request, time i
 	// Step 3b: disaggregated path — decode pod pre-selected, route prefill next.
 	parent := NewParentRequest(req, cs.config.BlockSizeTokens)
 	parent.DecodeInstanceID = InstanceID(decodeDecision.TargetInstance)
+	parent.PrefillPodHint = disaggDecision.PrefillPodHint
 	if encodeInstanceID != "" {
 		parent.EncodeInstanceID = InstanceID(encodeInstanceID)
 	}

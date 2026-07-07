@@ -476,6 +476,7 @@ Example:
 			EncodeDecider:                   encodeDecider,
 			PDDecider:                       pdDecider,
 			PDPrefixThreshold:               pdPrefixThreshold,
+			PDPlanPath:                      pdPlanPath,
 			EDPPTauTTFTUs:                   edppTauTTFT.Microseconds(),
 			EDPPTauRefUs:                    edppTauRef.Microseconds(),
 			EDPPTauITLUs:                    edppTauITL.Microseconds(),

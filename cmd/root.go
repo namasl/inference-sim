@@ -150,6 +150,7 @@ var (
 	pdTransferBaseLatency  float64       // Inter-instance KV transfer base latency in ms
 	pdTransferContention   bool          // Enable fair-share bandwidth contention model
 	pdPrefixThreshold      int           // Non-cached token threshold for prefix-threshold decider
+	pdPlanPath             string        // Path to fixed-plan CSV (counterfactual-regret harness); overrides --pd-decider
 	edppTauTTFT            time.Duration // EDPP τ_ttft: time-average TTFT SLO target
 	edppTauRef             time.Duration // EDPP τ_ref: fixed reference for the transfer-penalty normalization
 	edppTauITL             time.Duration // EDPP τ_itl: time-average ITL SLO target
@@ -1253,6 +1254,7 @@ func registerSimConfigFlags(cmd *cobra.Command) {
 	cmd.Flags().IntVar(&decodeInstances, "decode-instances", 0, "Number of instances dedicated to decode (0 = disabled)")
 	cmd.Flags().IntVar(&prefillDecodeInstances, "prefill-decode-instances", 0, "Number of shared-role instances serving both prefill and decode (llm-d 'prefill-decode'/'both' parity; 0 = disabled). Must satisfy --prefill-instances + --decode-instances + --prefill-decode-instances <= --num-instances.")
 	cmd.Flags().StringVar(&pdDecider, "pd-decider", "never", "PD disaggregation decider: never (default), always, prefix-threshold, edpp")
+	cmd.Flags().StringVar(&pdPlanPath, "pd-plan", "", "Path to a fixed-plan CSV (columns request_id,decode_instance,prefill_instance) forcing a per-request (decode,prefill) routing plan. Overrides --pd-decider. Counterfactual-regret harness / offline yardstick.")
 	cmd.Flags().Float64Var(&pdTransferBandwidth, "pd-transfer-bandwidth", 25.0, "PD KV transfer bandwidth in GB/s (NIXL RDMA default)")
 	cmd.Flags().Float64Var(&pdTransferBaseLatency, "pd-transfer-base-latency", 0.05, "PD KV transfer base latency in ms")
 	cmd.Flags().BoolVar(&pdTransferContention, "pd-transfer-contention", false, "Enable fair-share bandwidth contention model for concurrent KV transfers (INV-P2-2)")
@@ -1872,6 +1874,7 @@ var runCmd = &cobra.Command{
 			EncodeDecider:                   encodeDecider,
 			PDDecider:                       pdDecider,
 			PDPrefixThreshold:               pdPrefixThreshold,
+			PDPlanPath:                      pdPlanPath,
 			EDPPTauTTFTUs:                   edppTauTTFT.Microseconds(),
 			EDPPTauRefUs:                    edppTauRef.Microseconds(),
 			EDPPTauITLUs:                    edppTauITL.Microseconds(),
