@@ -489,6 +489,7 @@ Example:
 			EDPPCoeffs:                      resolveEDPPCoeffs(pdDecider, edppCoeffsPath),
 			EDPPTAdmEstimator:               edppTAdmEstimator,
 			EDPPJoint:                       edppJoint,
+			EDPPJointTrace:                  edppJointTracePath != "",
 			PDTransferBandwidthGBps:         pdTransferBandwidth,
 			PDTransferBaseLatencyMs:         pdTransferBaseLatency,
 			PDTransferContention:            pdTransferContention,
@@ -744,6 +745,9 @@ Example:
 
 		// Write per-candidate routing-decision CSV if requested (shared with run; INV-13 parity).
 		writeRoutingDecisionTrace(cs.Trace(), routingDecisionTracePath)
+
+		// Write scorer-vs-joint divergence CSV if requested (shared with run; INV-13 parity).
+		writeEDPPJointTrace(cs.Trace(), edppJointTracePath)
 
 		// Warn if --fitness-weights is set (not supported in replay mode per R1)
 		if fitnessWeights != "" {

@@ -88,6 +88,7 @@ type DeploymentConfig struct {
 	EDPPCoeffs           sim.EDPPCoeffs   // frozen E3 latency-law coefficients; required when PDDecider == "edpp"
 	EDPPTAdmEstimator    string           // admission-delay estimator that DRIVES routing ("" ⇒ waiting); deployable-only, oracle names rejected by NewEDPPDecider
 	EDPPJoint            bool             // when true, EDPP enumerates all (decode, prefill) candidates and picks the drift-plus-penalty argmin (--edpp-joint); false ⇒ reduced fixed-d rule
+	EDPPJointTrace       bool             // when true (joint mode only), record the per-decision scorer-vs-joint divergence trace (--edpp-joint-trace); pure instrumentation, no routing effect
 
 	// E/P/D disaggregation configuration (GAP-4, issue #1264).
 	// When EncodeInstances == 0 (default), the encode stage is disabled and the

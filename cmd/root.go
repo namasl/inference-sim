@@ -124,6 +124,7 @@ var (
 	counterfactualK          int    // Number of counterfactual candidates
 	summarizeTrace           bool   // Print trace summary after simulation
 	edppDecisionTracePath    string // Path to write EDPP per-decision rule-term CSV (requires --trace-level decisions + --pd-decider edpp)
+	edppJointTracePath       string // Path to write EDPP scorer-vs-joint divergence CSV (requires --edpp-joint)
 	pdOutcomeTracePath       string // Path to write per-request realized-outcome CSV (Stage A estimator validation)
 	edppWorkTracePath        string // Stage B: per-request realized-vs-closed work CSV
 	edppAdmissionTracePath   string // Stage C: per-request realized-vs-predicted admission-delay CSV
@@ -1080,6 +1081,34 @@ func writeRoutingDecisionTrace(tr *trace.SimulationTrace, path string) {
 	}
 }
 
+// writeEDPPJointTrace writes the scorer-vs-joint divergence CSV to path (no-op when path
+// is empty). Shared by run and replay for INV-13 parity. Diagnostic file output; does not
+// affect stdout determinism (INV-6). Warns (does not fail) when no records are present
+// (wrong mode: needs --edpp-joint with --pd-decider edpp).
+func writeEDPPJointTrace(tr *trace.SimulationTrace, path string) {
+	if path == "" {
+		return
+	}
+	if tr == nil || len(tr.EDPPJointDecisions) == 0 {
+		logrus.Warnf("--edpp-joint-trace: no scorer-vs-joint records to write (need --edpp-joint with --pd-decider edpp)")
+		return
+	}
+	f, err := os.Create(path)
+	if err != nil {
+		logrus.Errorf("--edpp-joint-trace: could not create %q: %v", path, err)
+		return
+	}
+	werr := trace.WriteEDPPJointDecisionCSV(f, tr.EDPPJointDecisions)
+	cerr := f.Close()
+	if werr != nil {
+		logrus.Errorf("--edpp-joint-trace: write failed: %v", werr)
+	} else if cerr != nil {
+		logrus.Errorf("--edpp-joint-trace: close failed: %v", cerr)
+	} else {
+		logrus.Infof("Wrote %d scorer-vs-joint records to %s", len(tr.EDPPJointDecisions), path)
+	}
+}
+
 // writePDOutcomeTrace writes the per-request realized-outcome CSV to path
 // (no-op when path is empty). Shared by run and replay for INV-13 parity.
 // The metrics arg must be the finalized, PD-projected aggregated metrics
@@ -1235,6 +1264,7 @@ func registerSimConfigFlags(cmd *cobra.Command) {
 	cmd.Flags().IntVar(&counterfactualK, "counterfactual-k", 0, "Number of counterfactual candidates per routing decision")
 	cmd.Flags().BoolVar(&summarizeTrace, "summarize-trace", false, "Print trace summary after simulation")
 	cmd.Flags().StringVar(&edppDecisionTracePath, "edpp-decision-trace", "", "Write per-decision EDPP rule-term breakdown to this CSV path (requires --trace-level decisions and --pd-decider edpp)")
+	cmd.Flags().StringVar(&edppJointTracePath, "edpp-joint-trace", "", "Write per-decision scorer-vs-joint divergence breakdown (scorer_d/p vs joint_d/p, J_scorer vs J_joint, agreement flags) to this CSV path (requires --edpp-joint). Pure instrumentation; does not change routing.")
 	cmd.Flags().StringVar(&routingDecisionTracePath, "routing-decision-trace", "", "Write per-candidate routing-decision breakdown (every prefill/decode/standard target selection: per-candidate queue/KV/inflight/prefix score) to this CSV path. All deciders.")
 	cmd.Flags().StringVar(&pdOutcomeTracePath, "pd-outcome-trace", "", "Write per-request realized outcomes (T_adm/TTFT/ITL/E2E) to this CSV path for EDPP estimator validation. Requires PD/disaggregation.")
 	cmd.Flags().StringVar(&edppWorkTracePath, "edpp-work-trace", "", "Write per-request realized-vs-closed work model CSV (Stage B validation). Requires --pd-decider edpp (uses its coeffs).")
@@ -1889,6 +1919,7 @@ var runCmd = &cobra.Command{
 			EDPPCoeffs:                      resolveEDPPCoeffs(pdDecider, edppCoeffsPath),
 			EDPPTAdmEstimator:               edppTAdmEstimator,
 			EDPPJoint:                       edppJoint,
+			EDPPJointTrace:                  edppJointTracePath != "",
 			PDTransferBandwidthGBps:         pdTransferBandwidth,
 			PDTransferBaseLatencyMs:         pdTransferBaseLatency,
 			PDTransferContention:            pdTransferContention,
@@ -2248,6 +2279,9 @@ var runCmd = &cobra.Command{
 
 		// Write per-candidate routing-decision CSV if requested (shared with replay; INV-13 parity).
 		writeRoutingDecisionTrace(cs.Trace(), routingDecisionTracePath)
+
+		// Write scorer-vs-joint divergence CSV if requested (shared with replay; INV-13 parity).
+		writeEDPPJointTrace(cs.Trace(), edppJointTracePath)
 
 		logrus.Info("Simulation complete.")
 	},

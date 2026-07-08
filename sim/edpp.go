@@ -64,21 +64,48 @@ import (
 // the request's own class: a stricter class reads the same server backlog as more
 // threatening, and its realized-SLO feedback accumulates in its own virtual queue.
 type EDPPConfig struct {
-	TauTTFTUs        int64            // default τ_ttft: time-average TTFT SLO target (µs)
-	TauITLUs         int64            // default τ_itl: time-average ITL SLO target (µs)
-	TauRefUs         int64            // fixed reference τ for the transfer-penalty normalization (µs); makes the penalty scale 1/τ_ttft² like the other terms. Independent of the operating τ_ttft.
-	TauTTFTByClassUs map[string]int64 // per-class τ_ttft overrides (µs); nil = use default for all
-	TauITLByClassUs  map[string]int64 // per-class τ_itl overrides (µs); nil = use default for all
-	V                float64          // penalty/stability tradeoff knob (Neely's V); larger ⇒ fewer offloads
-	CXferUs          int64            // c_xfer: KV-transfer cost paid when routing P (µs)
-	NomPrefillTokens int              // S_nom: nominal prefill chunk for the fixed prefill normalizer
-	NomDecodeCtx     int              // L_nom: nominal decode context for the fixed decode normalizer
-	BlockSize        int              // token block size for the prefix-cache a_p computation
-	ChunkTokens      int              // per-step prefill token budget (max_num_batched_tokens); caps δ_pf-chunk. 0 = no cap (whole prefill counts as one chunk)
-	Coeffs           EDPPCoeffs       // frozen E3 latency-law coefficients (design §1.1); required
-	TraceEnabled     bool             // when true, Decide attaches an EDPPDecisionTrace (intermediate rule terms) to each decision. Off ⇒ zero allocation.
-	TAdmEstimator    string           // admission-delay estimator name ("" ⇒ waiting, the current formula)
-	Joint            bool             // when true, Decide enumerates all (decode, prefill) candidates and picks the drift-plus-penalty argmin (joint P/D routing, --edpp-joint); false ⇒ the reduced fixed-d local-vs-disagg rule.
+	TauTTFTUs         int64            // default τ_ttft: time-average TTFT SLO target (µs)
+	TauITLUs          int64            // default τ_itl: time-average ITL SLO target (µs)
+	TauRefUs          int64            // fixed reference τ for the transfer-penalty normalization (µs); makes the penalty scale 1/τ_ttft² like the other terms. Independent of the operating τ_ttft.
+	TauTTFTByClassUs  map[string]int64 // per-class τ_ttft overrides (µs); nil = use default for all
+	TauITLByClassUs   map[string]int64 // per-class τ_itl overrides (µs); nil = use default for all
+	V                 float64          // penalty/stability tradeoff knob (Neely's V); larger ⇒ fewer offloads
+	CXferUs           int64            // c_xfer: KV-transfer cost paid when routing P (µs)
+	NomPrefillTokens  int              // S_nom: nominal prefill chunk for the fixed prefill normalizer
+	NomDecodeCtx      int              // L_nom: nominal decode context for the fixed decode normalizer
+	BlockSize         int              // token block size for the prefix-cache a_p computation
+	ChunkTokens       int              // per-step prefill token budget (max_num_batched_tokens); caps δ_pf-chunk. 0 = no cap (whole prefill counts as one chunk)
+	Coeffs            EDPPCoeffs       // frozen E3 latency-law coefficients (design §1.1); required
+	TraceEnabled      bool             // when true, Decide attaches an EDPPDecisionTrace (intermediate rule terms) to each decision. Off ⇒ zero allocation.
+	TAdmEstimator     string           // admission-delay estimator name ("" ⇒ waiting, the current formula)
+	Joint             bool             // when true, Decide enumerates all (decode, prefill) candidates and picks the drift-plus-penalty argmin (joint P/D routing, --edpp-joint); false ⇒ the reduced fixed-d local-vs-disagg rule.
+	JointTraceEnabled bool             // when true (joint mode only), decideJoint attaches an EDPPJointDecisionTrace comparing the scorer's (d,p) pick to the joint argmin. Off ⇒ zero allocation, no shadow prefill scorer run.
+}
+
+// EDPPJointDecisionTrace records, for one joint (--edpp-joint) decision, the scorer's
+// pick vs the joint argmin, so an analysis pass can quantify how often (and by how much)
+// the joint objective overrides the composable scorer. It is attached to
+// DisaggregationDecision.EDPPJointTrace only when the decider has JointTraceEnabled set,
+// and is pure instrumentation — computing it does not change the routing decision (INV-6).
+//
+// ScorerD is the decode-routing policy's pick (state.SelectedInstance). ScorerP is the
+// prefill-routing policy's pick, obtained by SHADOW-running the injected prefill scorer
+// over the prefill snapshots (compute-only, not acted on); it is populated only on
+// disaggregate decisions (JointP != ""). JScorer is J evaluated at the scorer's slice —
+// disagg (ScorerD, ScorerP) on a disagg decision, else local on ScorerD — and JJoint is
+// the argmin's J. Because the argmin ranges over a superset that always includes the
+// scorer's slice, JJoint <= JScorer by construction (asserted as an internal invariant).
+type EDPPJointDecisionTrace struct {
+	Class        string  // request SLO class
+	ScorerD      string  // decode-routing policy pick (state.SelectedInstance)
+	JointD       string  // joint argmin decode node
+	ScorerP      string  // shadow prefill-scorer pick (disagg only; else "")
+	JointP       string  // joint argmin prefill node (disagg only; else "")
+	AgreeD       bool    // ScorerD == JointD
+	AgreeP       bool    // ScorerP == JointP (trivially true when both empty, i.e. local)
+	JScorer      float64 // J at the scorer's slice
+	JJoint       float64 // J at the joint argmin (== the committed decision's cost)
+	Disaggregate bool    // the joint decision (disagg vs local)
 }
 
 // EDPPDecisionTrace records the intermediate terms of one E14 rule evaluation, for
@@ -296,6 +323,21 @@ type EDPPDecider struct {
 	// --edpp-admission-trace companion trace can recompute all six estimator predictions
 	// at end of run. Off by default (zero-cost). Logging-only path (INV-9).
 	captureAdmissionCtx bool
+
+	// prefillScorer, when set, is the injected prefill-routing scorer used ONLY to
+	// shadow-compute EDPPJointDecisionTrace.ScorerP on disaggregate joint decisions.
+	// It returns the instance ID the prefill routing policy would pick over the given
+	// prefill snapshots. It MUST NOT perturb production routing state (the cluster wires
+	// a dedicated-RNG policy instance) — the shadow pick is logged, never acted on
+	// (INV-6). nil ⇒ ScorerP is left empty and J_scorer falls back to the local slice.
+	prefillScorer func(*Request, []RoutingSnapshot) string
+}
+
+// SetPrefillScorer injects the shadow prefill-routing scorer used to populate
+// EDPPJointDecisionTrace.ScorerP (joint divergence trace). Logging-only; the returned
+// pick is never acted on and must not mutate production routing RNG (INV-6).
+func (d *EDPPDecider) SetPrefillScorer(fn func(*Request, []RoutingSnapshot) string) {
+	d.prefillScorer = fn
 }
 
 // SetCaptureAdmissionContext toggles attaching the assembled per-pool AdmissionContext
@@ -710,11 +752,12 @@ func (d *EDPPDecider) decideJoint(req *Request, state *RouterState) Disaggregati
 	mDec := d.coeffs.deltaBarDecode(float64(len(req.InputTokens)) + nHatOut/2)
 	jDecodeITL := zITL * (mDec / n.tauITL)
 
-	type cand struct {
-		dID, pID string
-		local    bool
-		J        float64
+	// Candidate-invariant terms shared by every (d,·) cost evaluation this decision.
+	ec := &jointEvalCtx{
+		req: req, n: n, zTTFT: zTTFT, zITL: zITL,
+		reqKVNeed: reqKVNeed, wd: wd, jDecodeITL: jDecodeITL,
 	}
+
 	var best *cand
 	consider := func(c cand) {
 		if best == nil || c.J < best.J-1e-12 {
@@ -724,74 +767,178 @@ func (d *EDPPDecider) decideJoint(req *Request, state *RouterState) Disaggregati
 	}
 
 	for _, ds := range decodeSnaps {
-		dID := ds.ID
-		// Decode-side occupancy predictor inputs for candidate d.
-		bDec, kv, sPfD := ds.BatchSize, ds.KvTokensInUse, ds.ResidentPrefillTokens
-		tIterD := d.coeffs.tIterDecode(bDec, kv, sPfD)
-		_, qdRaw := d.instWorkRaw(dID)
-		qd := qdRaw / n.wStarD
-		decodeCtx := AdmissionContext{
-			QWork: qdRaw, Mu: d.coeffs.muDecode(bDec, kv, sPfD),
-			BatchSize: ds.BatchSize, MaxBatchSize: int(ds.MaxBatchSize),
-			FreeKVBlocks: ds.FreeKVBlocks, ReqKVNeed: reqKVNeed,
-			TIter: tIterD, QueueDepth: ds.QueueDepth,
-			AdmissionRate: admissionRateFromSnapshot(ds), RemainingStepsEst: d.decodeRemStepsEst(ds, class),
-			Running: censorOracleRemaining(ds.RunningDecode),
-		}
-		tAdmD := d.tadmEstimator.EstimateTAdm(decodeCtx)
-
-		// Decode backlog term (same for local and disagg on this d — cancels within a d,
-		// distinguishes across d): q_d·(W_d/W*_d).
-		jDecodeBacklog := qd * (wd / n.wStarD)
-
 		// --- local: prefill+decode co-resident on d ---
-		apLoc := d.apForInstance(req, dID)
-		nChunksLoc, deltaPfLoc := d.chunkTerms(apLoc)
-		wpLoc := d.coeffs.Wp(maxInt(apLoc, 0), len(req.InputTokens))
-		tHatLocal := tAdmD + nChunksLoc*(tIterD+deltaPfLoc) // ABSOLUTE T̂_local(d)
-		jLocal := jDecodeBacklog +
-			qd*(wpLoc/n.wStarD) +
-			zTTFT*(tHatLocal/n.tauTTFT) +
-			jDecodeITL + // base decode-step ITL marginal m_dec (candidate-invariant under homogeneous θ)
-			zITL*(deltaPfLoc/n.tauITL) // prefill-on-decode ITL inflation lands on local only
-		consider(cand{dID: dID, local: true, J: jLocal})
-
+		consider(cand{dID: ds.ID, local: true, J: d.jointCandidateCost(ec, ds, nil)})
 		// --- disagg: decode on d, prefill on each prefill node p ---
 		for _, ps := range prefillSnaps {
-			pID := ps.ID
-			apP := d.apForInstance(req, pID)
-			nChunksP, deltaPfP := d.chunkTerms(apP)
-			wpP := d.coeffs.Wp(maxInt(apP, 0), len(req.InputTokens))
-			qpRaw, _ := d.instWorkRaw(pID)
-			qp := qpRaw / n.wStarP
-			sPfP := ps.ResidentPrefillTokens
-			tIterP := d.coeffs.tIterPrefill(sPfP)
-			prefillCtx := AdmissionContext{
-				QWork: qpRaw, Mu: d.coeffs.muPrefill(sPfP),
-				BatchSize: ps.BatchSize, MaxBatchSize: int(ps.MaxBatchSize),
-				FreeKVBlocks: ps.FreeKVBlocks, ReqKVNeed: reqKVNeed,
-				TIter: tIterP, QueueDepth: ps.QueueDepth,
-				AdmissionRate: admissionRateFromSnapshot(ps), RemainingStepsEst: d.prefillRemStepsEst(ps),
-				Running: ps.RunningPrefill,
-			}
-			tAdmP := d.tadmEstimator.EstimateTAdm(prefillCtx)
-			tHatDisagg := tAdmP + nChunksP*(tIterP+deltaPfP) + float64(d.cfg.CXferUs) // ABSOLUTE T̂_disagg(d,p)
-			jDisagg := jDecodeBacklog +
-				qp*(wpP/n.wStarP) +
-				zTTFT*(tHatDisagg/n.tauTTFT) +
-				jDecodeITL + // base decode-step ITL marginal m_dec (same as local: decode is on d)
-				d.transferPenalty(n) // disagg pays the KV-transfer penalty; no local ITL inflation
-			consider(cand{dID: dID, pID: pID, local: false, J: jDisagg})
+			psCopy := ps
+			consider(cand{dID: ds.ID, pID: ps.ID, local: false, J: d.jointCandidateCost(ec, ds, &psCopy)})
 		}
 	}
 
 	if best == nil {
 		return DisaggregationDecision{Disaggregate: false} // no candidates (empty snapshots)
 	}
+	var dec DisaggregationDecision
 	if best.local {
-		return DisaggregationDecision{Disaggregate: false, DecodePodOverride: best.dID}
+		dec = DisaggregationDecision{Disaggregate: false, DecodePodOverride: best.dID}
+	} else {
+		dec = DisaggregationDecision{Disaggregate: true, DecodePodOverride: best.dID, PrefillPodHint: best.pID}
 	}
-	return DisaggregationDecision{Disaggregate: true, DecodePodOverride: best.dID, PrefillPodHint: best.pID}
+	// Scorer-vs-joint divergence trace (pure instrumentation, gated; INV-6): compute only
+	// when enabled, after the decision is committed, so it can never influence the argmin.
+	if d.cfg.JointTraceEnabled {
+		dec.EDPPJointTrace = d.buildJointTrace(ec, state, decodeSnaps, prefillSnaps, best)
+	}
+	return dec
+}
+
+// cand is one enumerated joint (decode, placement) candidate: local (prefill co-resident
+// on the decode node) or disagg (decode on dID, prefill on pID), with its objective J.
+type cand struct {
+	dID, pID string
+	local    bool
+	J        float64
+}
+
+// jointEvalCtx holds the per-decision, candidate-invariant terms shared by every (d,·)
+// cost evaluation in one joint decision, so jointCandidateCost can be called both from the
+// argmin enumeration and from the scorer-slice shadow evaluation (divergence trace) without
+// recomputing them — and so both paths produce byte-identical arithmetic (INV-6).
+type jointEvalCtx struct {
+	req        *Request
+	n          edppNorm
+	zTTFT      float64
+	zITL       float64
+	reqKVNeed  int64
+	wd         float64
+	jDecodeITL float64
+}
+
+// jointCandidateCost evaluates the normalized joint objective J(d, ·) for one candidate:
+// local (ps == nil, prefill co-resident on the decode node ds) or disagg (decode on ds,
+// prefill on *ps). It reproduces exactly the arithmetic the argmin enumeration uses, so the
+// enumeration and the scorer-slice shadow evaluation share one code path. The decode-side
+// terms depend only on ds and are recomputed per call with identical operands (byte-identical
+// float result, INV-6).
+func (d *EDPPDecider) jointCandidateCost(ec *jointEvalCtx, ds RoutingSnapshot, ps *RoutingSnapshot) float64 {
+	n := ec.n
+	bDec, kv, sPfD := ds.BatchSize, ds.KvTokensInUse, ds.ResidentPrefillTokens
+	tIterD := d.coeffs.tIterDecode(bDec, kv, sPfD)
+	_, qdRaw := d.instWorkRaw(ds.ID)
+	qd := qdRaw / n.wStarD
+	decodeCtx := AdmissionContext{
+		QWork: qdRaw, Mu: d.coeffs.muDecode(bDec, kv, sPfD),
+		BatchSize: ds.BatchSize, MaxBatchSize: int(ds.MaxBatchSize),
+		FreeKVBlocks: ds.FreeKVBlocks, ReqKVNeed: ec.reqKVNeed,
+		TIter: tIterD, QueueDepth: ds.QueueDepth,
+		AdmissionRate: admissionRateFromSnapshot(ds), RemainingStepsEst: d.decodeRemStepsEst(ds, ec.req.SLOClass),
+		Running: censorOracleRemaining(ds.RunningDecode),
+	}
+	tAdmD := d.tadmEstimator.EstimateTAdm(decodeCtx)
+
+	// Decode backlog term (same for local and disagg on this d — cancels within a d,
+	// distinguishes across d): q_d·(W_d/W*_d).
+	jDecodeBacklog := qd * (ec.wd / n.wStarD)
+
+	if ps == nil {
+		// --- local: prefill+decode co-resident on d ---
+		apLoc := d.apForInstance(ec.req, ds.ID)
+		nChunksLoc, deltaPfLoc := d.chunkTerms(apLoc)
+		wpLoc := d.coeffs.Wp(maxInt(apLoc, 0), len(ec.req.InputTokens))
+		tHatLocal := tAdmD + nChunksLoc*(tIterD+deltaPfLoc) // ABSOLUTE T̂_local(d)
+		return jDecodeBacklog +
+			qd*(wpLoc/n.wStarD) +
+			ec.zTTFT*(tHatLocal/n.tauTTFT) +
+			ec.jDecodeITL + // base decode-step ITL marginal m_dec (candidate-invariant under homogeneous θ)
+			ec.zITL*(deltaPfLoc/n.tauITL) // prefill-on-decode ITL inflation lands on local only
+	}
+
+	// --- disagg: decode on d, prefill on node *ps ---
+	apP := d.apForInstance(ec.req, ps.ID)
+	nChunksP, deltaPfP := d.chunkTerms(apP)
+	wpP := d.coeffs.Wp(maxInt(apP, 0), len(ec.req.InputTokens))
+	qpRaw, _ := d.instWorkRaw(ps.ID)
+	qp := qpRaw / n.wStarP
+	sPfP := ps.ResidentPrefillTokens
+	tIterP := d.coeffs.tIterPrefill(sPfP)
+	prefillCtx := AdmissionContext{
+		QWork: qpRaw, Mu: d.coeffs.muPrefill(sPfP),
+		BatchSize: ps.BatchSize, MaxBatchSize: int(ps.MaxBatchSize),
+		FreeKVBlocks: ps.FreeKVBlocks, ReqKVNeed: ec.reqKVNeed,
+		TIter: tIterP, QueueDepth: ps.QueueDepth,
+		AdmissionRate: admissionRateFromSnapshot(*ps), RemainingStepsEst: d.prefillRemStepsEst(*ps),
+		Running: ps.RunningPrefill,
+	}
+	tAdmP := d.tadmEstimator.EstimateTAdm(prefillCtx)
+	tHatDisagg := tAdmP + nChunksP*(tIterP+deltaPfP) + float64(d.cfg.CXferUs) // ABSOLUTE T̂_disagg(d,p)
+	return jDecodeBacklog +
+		qp*(wpP/n.wStarP) +
+		ec.zTTFT*(tHatDisagg/n.tauTTFT) +
+		ec.jDecodeITL + // base decode-step ITL marginal m_dec (same as local: decode is on d)
+		d.transferPenalty(n) // disagg pays the KV-transfer penalty; no local ITL inflation
+}
+
+// buildJointTrace assembles the scorer-vs-joint divergence record for a committed joint
+// decision (best). It reads the decode scorer's pick from state.SelectedInstance and, on a
+// disaggregate decision, SHADOW-runs the injected prefill scorer for scorer_p — compute-only,
+// never acted on. J_scorer is J at the scorer's slice (disagg (scorer_d, scorer_p) on a
+// disagg decision, else local on scorer_d); since the argmin ranges over a superset that
+// includes that slice, J_joint <= J_scorer always (asserted in tests as an internal invariant).
+func (d *EDPPDecider) buildJointTrace(ec *jointEvalCtx, state *RouterState, decodeSnaps, prefillSnaps []RoutingSnapshot, best *cand) *EDPPJointDecisionTrace {
+	tr := &EDPPJointDecisionTrace{
+		Class:        ec.req.SLOClass,
+		JointD:       best.dID,
+		JJoint:       best.J,
+		Disaggregate: !best.local,
+	}
+	if !best.local {
+		tr.JointP = best.pID
+	}
+
+	// Scorer's decode pick (state.SelectedInstance); resolve its snapshot for the J eval,
+	// falling back to the first candidate when the pre-selection is absent/unknown.
+	if state != nil {
+		tr.ScorerD = state.SelectedInstance
+	}
+	tr.AgreeD = tr.ScorerD == tr.JointD
+	scorerDSnap, ok := findSnapshotByID(decodeSnaps, tr.ScorerD)
+	if !ok {
+		scorerDSnap = decodeSnaps[0] // decodeSnaps is non-empty here (best != nil)
+	}
+
+	if best.local {
+		tr.AgreeP = true // both prefill nodes empty ⇒ trivially agree
+		tr.JScorer = d.jointCandidateCost(ec, scorerDSnap, nil)
+		return tr
+	}
+
+	// Disagg decision: shadow-run the prefill scorer for scorer_p (logging-only, INV-6).
+	if d.prefillScorer != nil {
+		tr.ScorerP = d.prefillScorer(ec.req, prefillSnaps)
+	}
+	tr.AgreeP = tr.ScorerP == tr.JointP
+	if sp, ok := findSnapshotByID(prefillSnaps, tr.ScorerP); ok {
+		tr.JScorer = d.jointCandidateCost(ec, scorerDSnap, &sp)
+	} else {
+		// No usable shadow prefill pick ⇒ score the scorer's local slice (still an
+		// enumerated candidate, so the J_joint <= J_scorer invariant is preserved).
+		tr.JScorer = d.jointCandidateCost(ec, scorerDSnap, nil)
+	}
+	return tr
+}
+
+// findSnapshotByID returns the snapshot with the given ID (ok=false when id is empty or absent).
+func findSnapshotByID(snaps []RoutingSnapshot, id string) (RoutingSnapshot, bool) {
+	if id == "" {
+		return RoutingSnapshot{}, false
+	}
+	for _, s := range snaps {
+		if s.ID == id {
+			return s, true
+		}
+	}
+	return RoutingSnapshot{}, false
 }
 
 // stateSnapshots returns state.Snapshots (nil-safe).

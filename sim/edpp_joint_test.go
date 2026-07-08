@@ -109,6 +109,101 @@ func TestJoint_DeterministicTieBreak(t *testing.T) {
 	}
 }
 
+// lowestIDPrefillScorer mimics a prefill routing policy that always picks the
+// lowest-ID prefill snapshot. Used as an injected shadow scorer in divergence-trace tests.
+func lowestIDPrefillScorer(_ *Request, snaps []RoutingSnapshot) string {
+	best := ""
+	for _, s := range snaps {
+		if best == "" || s.ID < best {
+			best = s.ID
+		}
+	}
+	return best
+}
+
+func TestJoint_DivergenceTrace_DecodeOverride(t *testing.T) {
+	// The decode scorer pre-selects M0, but M0 carries heavy queued decode work, so the
+	// joint argmin overrides to M1. The divergence trace must record scorer_d == M0,
+	// joint_d == M1 (the override), agree_d == false, and J_joint <= J_scorer.
+	d := newJointTestDecider(t)
+	d.cfg.JointTraceEnabled = true
+	d.SetPrefillScorer(lowestIDPrefillScorer)
+	state := twoDecodeState(t, 500.0, 0.0) // SelectedInstance = M0
+	d.OnRoute(reqBatch("bg", 20000), "bg", false, 20000, "M0", "")
+
+	dec := d.Decide(reqBatch("r1", 200), state)
+	tr := dec.EDPPJointTrace
+	if tr == nil {
+		t.Fatal("expected non-nil EDPPJointTrace when JointTraceEnabled")
+	}
+	if tr.ScorerD != "M0" {
+		t.Errorf("ScorerD = %q, want M0 (state.SelectedInstance)", tr.ScorerD)
+	}
+	if tr.JointD != dec.DecodePodOverride || tr.JointD != "M1" {
+		t.Errorf("JointD = %q, want M1 (== DecodePodOverride %q)", tr.JointD, dec.DecodePodOverride)
+	}
+	if tr.AgreeD {
+		t.Errorf("AgreeD = true, want false (scorer M0 != joint M1)")
+	}
+	if tr.AgreeD != (tr.ScorerD == tr.JointD) {
+		t.Errorf("AgreeD (%v) inconsistent with ScorerD==JointD (%v==%v)", tr.AgreeD, tr.ScorerD, tr.JointD)
+	}
+	if tr.JJoint > tr.JScorer+1e-9 {
+		t.Errorf("internal invariant violated: JJoint (%g) must be <= JScorer (%g)", tr.JJoint, tr.JScorer)
+	}
+	// This is a kept-local decision, so no prefill node is involved.
+	if dec.Disaggregate {
+		t.Fatalf("expected local decision for this state")
+	}
+	if tr.ScorerP != "" || tr.JointP != "" {
+		t.Errorf("local decision must leave ScorerP/JointP empty, got %q/%q", tr.ScorerP, tr.JointP)
+	}
+}
+
+func TestJoint_DivergenceTrace_ScorerPOnDisagg(t *testing.T) {
+	// A disaggregating decision (large cold-local prompt, warm prefill node) must populate
+	// scorer_p via the shadow prefill scorer, and the J_joint <= J_scorer invariant holds.
+	d := newJointTestDecider(t)
+	d.cfg.JointTraceEnabled = true
+	d.SetPrefillScorer(lowestIDPrefillScorer)
+	state := twoDecodeState(t, 0.0, 0.0)
+	d.cacheQuery = map[string]func([]int) int{
+		"M0": func(toks []int) int { return 0 },
+		"M1": func(toks []int) int { return 0 },
+		"P0": func(toks []int) int { return len(toks) / d.cfg.BlockSize }, // warm prefill
+	}
+	d.ensureZ("batch").zTTFT = 1e7
+
+	dec := d.Decide(reqBatch("r4", 8000), state)
+	if !dec.Disaggregate {
+		t.Fatalf("expected disagg decision")
+	}
+	tr := dec.EDPPJointTrace
+	if tr == nil {
+		t.Fatal("expected non-nil EDPPJointTrace")
+	}
+	if tr.ScorerP != "P0" {
+		t.Errorf("ScorerP = %q, want P0 (shadow prefill scorer pick on disagg)", tr.ScorerP)
+	}
+	if tr.JointP != dec.PrefillPodHint {
+		t.Errorf("JointP = %q, want %q (== PrefillPodHint)", tr.JointP, dec.PrefillPodHint)
+	}
+	if tr.AgreeP != (tr.ScorerP == tr.JointP) {
+		t.Errorf("AgreeP (%v) inconsistent with ScorerP==JointP", tr.AgreeP)
+	}
+	if tr.JJoint > tr.JScorer+1e-9 {
+		t.Errorf("internal invariant violated: JJoint (%g) must be <= JScorer (%g)", tr.JJoint, tr.JScorer)
+	}
+}
+
+func TestJoint_DivergenceTrace_NilWhenDisabled(t *testing.T) {
+	d := newJointTestDecider(t) // JointTraceEnabled defaults false
+	dec := d.Decide(reqBatch("r1", 200), twoDecodeState(t, 0.0, 0.0))
+	if dec.EDPPJointTrace != nil {
+		t.Errorf("EDPPJointTrace must be nil when JointTraceEnabled is off, got %+v", dec.EDPPJointTrace)
+	}
+}
+
 func TestJoint_ReducesToScorerSliceMatchesReduced(t *testing.T) {
 	// §5.5 reduction: joint J restricted to the scorer's single d reproduces the reduced
 	// local-vs-disagg decision. Build one reduced decider and one joint decider sharing an

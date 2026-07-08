@@ -168,6 +168,27 @@ type EDPPDecisionRecord struct {
 	Disaggregate bool
 }
 
+// EDPPJointDecisionRecord captures the scorer-vs-joint divergence for one joint
+// (--edpp-joint) routing decision: the decode-routing scorer's pick and the shadow
+// prefill-scorer pick vs the joint argmin's (decode, prefill) nodes, plus the objective J
+// at each. Flat mirror of sim.EDPPJointDecisionTrace (this package has no dependency on
+// sim/), plus request ID and decision clock. Recorded only under --edpp-joint-trace.
+// JJoint <= JScorer by construction (the argmin ranges over a superset of the scorer slice).
+type EDPPJointDecisionRecord struct {
+	RequestID    string
+	Clock        int64
+	Class        string
+	ScorerD      string
+	JointD       string
+	ScorerP      string
+	JointP       string
+	AgreeD       bool
+	AgreeP       bool
+	JScorer      float64
+	JJoint       float64
+	Disaggregate bool
+}
+
 // PDOutcomeRecord is one request's realized outcome for EDPP estimator validation
 // (Stage A). Joined against EDPPDecisionRecord on RequestID. Times are microseconds,
 // absolute; zero means the phase was not reached. Emitted only under --pd-outcome-trace.

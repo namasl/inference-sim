@@ -286,6 +286,7 @@ func NewClusterSimulator(config DeploymentConfig, requests []*sim.Request, onReq
 		cs.pendingPrefillCompletions = make(map[string]string)
 		cs.pendingDecodeCompletions = make(map[string]string)
 		cs.localAdmitTimes = make(map[string]int64)
+		cs.localEnqueueTimes = make(map[string]int64)
 
 		// Per-pool routing policies and the disaggregation decider are created after
 		// the construction loop (both need cacheQueryFn from instances).
@@ -441,22 +442,42 @@ func NewClusterSimulator(config DeploymentConfig, requests []*sim.Request, onReq
 				return cs.buildPoolFilteredSnapshots(PoolRolePrefill)
 			}
 			cs.disaggregationDecider = sim.NewEDPPDecider(sim.EDPPConfig{
-				TauTTFTUs:        config.EDPPTauTTFTUs,
-				TauITLUs:         config.EDPPTauITLUs,
-				TauRefUs:         config.EDPPTauRefUs,
-				TauTTFTByClassUs: config.EDPPTauTTFTByClassUs,
-				TauITLByClassUs:  config.EDPPTauITLByClassUs,
-				V:                config.EDPPV,
-				CXferUs:          config.EDPPCXferUs,
-				NomPrefillTokens: config.EDPPNomPrefillTokens,
-				NomDecodeCtx:     config.EDPPNomDecodeCtx,
-				BlockSize:        int(config.BlockSizeTokens),
-				ChunkTokens:      int(config.BatchConfig.MaxScheduledTokens),
-				TraceEnabled:     trace.TraceLevel(config.TraceLevel) == trace.TraceLevelDecisions,
-				Coeffs:           config.EDPPCoeffs,
-				TAdmEstimator:    config.EDPPTAdmEstimator,
-				Joint:            config.EDPPJoint,
+				TauTTFTUs:         config.EDPPTauTTFTUs,
+				TauITLUs:          config.EDPPTauITLUs,
+				TauRefUs:          config.EDPPTauRefUs,
+				TauTTFTByClassUs:  config.EDPPTauTTFTByClassUs,
+				TauITLByClassUs:   config.EDPPTauITLByClassUs,
+				V:                 config.EDPPV,
+				CXferUs:           config.EDPPCXferUs,
+				NomPrefillTokens:  config.EDPPNomPrefillTokens,
+				NomDecodeCtx:      config.EDPPNomDecodeCtx,
+				BlockSize:         int(config.BlockSizeTokens),
+				ChunkTokens:       int(config.BatchConfig.MaxScheduledTokens),
+				TraceEnabled:      trace.TraceLevel(config.TraceLevel) == trace.TraceLevelDecisions,
+				Coeffs:            config.EDPPCoeffs,
+				TAdmEstimator:     config.EDPPTAdmEstimator,
+				Joint:             config.EDPPJoint,
+				JointTraceEnabled: config.EDPPJoint && config.EDPPJointTrace,
 			}, lm, cs.cacheQueryFn, prefillSnapshots)
+			// Inject the shadow prefill scorer used ONLY to populate the joint divergence
+			// trace's scorer_p (logging-only). It runs a DEDICATED-RNG copy of the prefill
+			// routing policy so shadow evaluation never perturbs production routing decisions
+			// (INV-6). Wired only when the joint divergence trace is active.
+			if config.EDPPJoint && config.EDPPJointTrace {
+				if ed, ok := cs.disaggregationDecider.(*sim.EDPPDecider); ok {
+					shadowScorers := config.PrefillScorerConfigs
+					if len(shadowScorers) == 0 {
+						shadowScorers = config.RoutingScorerConfigs
+					}
+					shadowPolicy := sim.NewRoutingPolicyWithCache("weighted", shadowScorers, config.BlockSizeTokens, rng.ForSubsystem("edpp-joint-shadow-prefill"), cs.cacheQueryFn)
+					ed.SetPrefillScorer(func(req *sim.Request, snaps []sim.RoutingSnapshot) string {
+						if len(snaps) == 0 {
+							return ""
+						}
+						return shadowPolicy.Route(req, &sim.RouterState{Snapshots: snaps, Clock: cs.clock}).TargetInstance
+					})
+				}
+			}
 		default:
 			cs.disaggregationDecider = sim.NewDisaggregationDecider(config.PDDecider)
 		}
@@ -1357,10 +1378,10 @@ func (cs *ClusterSimulator) SetRecordPDOutcomes(v bool) { cs.recordPDOutcomes = 
 // set; otherwise it stays zero. "disaggregated" means a distinct decode instance was
 // used. Completion follows the metrics convention: RequestE2Es[id] > 0.
 //
-// Local t_adm limitation: the non-disaggregated enqueue instant is not tracked as an
-// absolute tick (only GatewayEnqueueTime under flow control), so this task captures
-// only the local schedule time and leaves LocalEnqueue/LocalTAdm zero. Threading the
-// gateway enqueue instant for a local t_adm is deferred to a follow-up.
+// Local t_adm: the non-disaggregated enqueue instant is captured in localEnqueueTimes
+// (at routing time, when recordPDOutcomes or recordAdmissionTrace is set), so
+// LocalTAdm = local_schedule − local_enqueue is emitted like the prefill/decode legs.
+// It stays zero only if the enqueue instant was never recorded (e.g. request never routed).
 func (cs *ClusterSimulator) BuildPDOutcomeRecords(m *sim.Metrics) []trace.PDOutcomeRecord {
 	recs := make([]trace.PDOutcomeRecord, 0, len(cs.parentRequests)+len(cs.localAdmitTimes))
 	tadm := func(enq, sched int64) int64 {
@@ -1396,9 +1417,10 @@ func (cs *ClusterSimulator) BuildPDOutcomeRecords(m *sim.Metrics) []trace.PDOutc
 			continue // already emitted as a disagg/local-via-parent record
 		}
 		ttft, itl, e2e, done := realized(id)
+		enq := cs.localEnqueueTimes[id] // routing/enqueue instant (0 if unrecorded)
 		recs = append(recs, trace.PDOutcomeRecord{
 			RequestID: id, Disaggregated: false,
-			LocalEnqueue: 0, LocalSchedule: admit, LocalTAdm: 0, // enqueue instant not separately tracked for local; schedule captured
+			LocalEnqueue: enq, LocalSchedule: admit, LocalTAdm: tadm(enq, admit),
 			RealizedTTFT: ttft, RealizedMeanITL: itl, RealizedE2E: e2e, Completed: done,
 		})
 	}
@@ -2324,6 +2346,18 @@ func (cs *ClusterSimulator) executeDisaggregatedRouting(req *sim.Request, time i
 				LHS: et.LHS, RHS: et.RHS, Disaggregate: et.Disaggregate,
 			})
 		}
+		// Joint scorer-vs-joint divergence trace: present only under --edpp-joint-trace.
+		if jt := disaggDecision.EDPPJointTrace; jt != nil {
+			cs.trace.RecordEDPPJointDecision(trace.EDPPJointDecisionRecord{
+				RequestID: req.ID, Clock: cs.clock,
+				Class:   jt.Class,
+				ScorerD: jt.ScorerD, JointD: jt.JointD,
+				ScorerP: jt.ScorerP, JointP: jt.JointP,
+				AgreeD: jt.AgreeD, AgreeP: jt.AgreeP,
+				JScorer: jt.JScorer, JJoint: jt.JJoint,
+				Disaggregate: jt.Disaggregate,
+			})
+		}
 	}
 
 	// Fire OnRoute exactly once at the routing-commit point. This is the single live
@@ -2432,10 +2466,11 @@ func (cs *ClusterSimulator) executeDisaggregatedRouting(req *sim.Request, time i
 		if warmUpCount > 0 && len(decodeInst.WarmUpRequestIDs()) < warmUpCount {
 			decodeInst.RecordWarmUpRequest(req.ID)
 		}
-		// Stage C: the local (non-disaggregated) enqueue instant, so local_t_adm =
-		// local_schedule − local_enqueue (--edpp-admission-trace). OnAdmit later records
+		// The local (non-disaggregated) enqueue instant, so local_t_adm =
+		// local_schedule − local_enqueue. Needed by BOTH the --edpp-admission-trace
+		// (Stage C) and the --pd-outcome-trace (Stage A) harnesses; OnAdmit later records
 		// the schedule instant into localAdmitTimes.
-		if cs.recordAdmissionTrace {
+		if cs.recordAdmissionTrace || cs.recordPDOutcomes {
 			if _, seen := cs.localEnqueueTimes[req.ID]; !seen {
 				cs.localEnqueueTimes[req.ID] = time
 			}

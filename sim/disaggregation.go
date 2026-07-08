@@ -22,6 +22,11 @@ type DisaggregationDecision struct {
 	// decider has tracing enabled (EDPPConfig.TraceEnabled); nil otherwise and for all
 	// non-EDPP deciders. The cluster records it into the SimulationTrace at the call site.
 	EDPPTrace *EDPPDecisionTrace
+	// EDPPJointTrace carries the scorer-vs-joint divergence record for a joint (--edpp-joint)
+	// decision when the decider has JointTraceEnabled set; nil otherwise (and for the reduced
+	// path and all non-EDPP deciders). Pure instrumentation — populating it does not change
+	// the decision (INV-6). Recorded into the SimulationTrace at the cluster call site.
+	EDPPJointTrace *EDPPJointDecisionTrace
 	// AdmissionCtxDecode / AdmissionCtxPrefill carry the exact per-pool AdmissionContext
 	// the EDPP decider assembled for this request, so the --edpp-admission-trace companion
 	// trace can recompute every estimator's prediction at end of run against the same
