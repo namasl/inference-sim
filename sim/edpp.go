@@ -700,7 +700,15 @@ func (d *EDPPDecider) decideJoint(req *Request, state *RouterState) Disaggregati
 	}
 
 	reqKVNeed := d.reqKVNeed(req)
-	wd := d.coeffs.Wd(len(req.InputTokens), d.nHatFor(class).mean())
+	nHatOut := d.nHatFor(class).mean()
+	wd := d.coeffs.Wd(len(req.InputTokens), nHatOut)
+
+	// Base decode-step ITL marginal m_dec(d) = δ̄_dec at mean context (design §3
+	// z_itl term). m_dec is candidate-invariant under homogeneous θ (so argmin-invariant
+	// now) but is included for §3 fidelity and becomes discriminating under per-instance
+	// θ_i (sub-project 2). Added to BOTH local and disagg J (decode happens on d either way).
+	mDec := d.coeffs.deltaBarDecode(float64(len(req.InputTokens)) + nHatOut/2)
+	jDecodeITL := zITL * (mDec / n.tauITL)
 
 	type cand struct {
 		dID, pID string
@@ -744,6 +752,7 @@ func (d *EDPPDecider) decideJoint(req *Request, state *RouterState) Disaggregati
 		jLocal := jDecodeBacklog +
 			qd*(wpLoc/n.wStarD) +
 			zTTFT*(tHatLocal/n.tauTTFT) +
+			jDecodeITL + // base decode-step ITL marginal m_dec (candidate-invariant under homogeneous θ)
 			zITL*(deltaPfLoc/n.tauITL) // prefill-on-decode ITL inflation lands on local only
 		consider(cand{dID: dID, local: true, J: jLocal})
 
@@ -770,6 +779,7 @@ func (d *EDPPDecider) decideJoint(req *Request, state *RouterState) Disaggregati
 			jDisagg := jDecodeBacklog +
 				qp*(wpP/n.wStarP) +
 				zTTFT*(tHatDisagg/n.tauTTFT) +
+				jDecodeITL + // base decode-step ITL marginal m_dec (same as local: decode is on d)
 				d.transferPenalty(n) // disagg pays the KV-transfer penalty; no local ITL inflation
 			consider(cand{dID: dID, pID: pID, local: false, J: jDisagg})
 		}

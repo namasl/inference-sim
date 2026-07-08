@@ -74,6 +74,30 @@ func TestJoint_PrefersCacheWarmOverIdleCold(t *testing.T) {
 	}
 }
 
+func TestJoint_DisaggToWarmPrefillNode(t *testing.T) {
+	// Locks per-node a_p sourcing for disagg candidates: apForInstance must read the
+	// PREFILL node's cache, not the decode node's. Large prompt; decode nodes M0/M1 are
+	// COLD (local prefill on d = full a_p, expensive) while the disagg PREFILL node P0 is
+	// cache-WARM (a_p≈0 → cheap prefill + tiny transfer). Joint must disaggregate to P0.
+	d := newJointTestDecider(t)
+	state := twoDecodeState(t, 0.0, 0.0)
+	d.cacheQuery = map[string]func([]int) int{
+		"M0": func(toks []int) int { return 0 },                           // cold decode
+		"M1": func(toks []int) int { return 0 },                           // cold decode
+		"P0": func(toks []int) int { return len(toks) / d.cfg.BlockSize }, // warm prefill → a_p≈0
+	}
+	// z_ttft pressure so the (expensive local prefill) TTFT term dominates over the small
+	// transfer penalty, favoring the warm prefill node.
+	d.ensureZ("batch").zTTFT = 1e7
+	dec := d.Decide(reqBatch("r4", 8000), state)
+	if !dec.Disaggregate {
+		t.Fatalf("joint kept local; want disagg to warm prefill node (large cold-local prefill)")
+	}
+	if dec.PrefillPodHint != "P0" {
+		t.Fatalf("joint disagg prefill hint = %q, want P0 (warm prefill node)", dec.PrefillPodHint)
+	}
+}
+
 func TestJoint_DeterministicTieBreak(t *testing.T) {
 	// Fully identical candidates → lowest index, stable across repeated calls.
 	d := newJointTestDecider(t)
