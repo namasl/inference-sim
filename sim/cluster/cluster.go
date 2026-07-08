@@ -455,6 +455,7 @@ func NewClusterSimulator(config DeploymentConfig, requests []*sim.Request, onReq
 				TraceEnabled:     trace.TraceLevel(config.TraceLevel) == trace.TraceLevelDecisions,
 				Coeffs:           config.EDPPCoeffs,
 				TAdmEstimator:    config.EDPPTAdmEstimator,
+				Joint:            config.EDPPJoint,
 			}, lm, cs.cacheQueryFn, prefillSnapshots)
 		default:
 			cs.disaggregationDecider = sim.NewDisaggregationDecider(config.PDDecider)
@@ -2333,11 +2334,12 @@ func (cs *ClusterSimulator) executeDisaggregatedRouting(req *sim.Request, time i
 	// correlate back to req.ID — see feedSLOFeedback / edppConservationKey.
 	if cs.sloFeedback != nil {
 		ap := len(req.InputTokens) // uncached-prompt upper bound; INV-9 safe
-		// The decode instance is pre-selected here (decode-first routing); the prefill
-		// instance is chosen later by PrefillRoutingEvent, so pass "" for it. Per-instance
-		// prefill attribution is therefore deferred (see per-instance Q_i note); the
-		// pool-level scalars are unaffected.
-		cs.sloFeedback.OnRoute(req, req.ID, disaggDecision.Disaggregate, ap, decodeDecision.TargetInstance, "")
+		// The decode instance is pre-selected here (decode-first routing). For the reduced
+		// path the prefill instance is chosen later by PrefillRoutingEvent, so PrefillPodHint
+		// is empty and per-instance prefill attribution is deferred (pool scalars unaffected).
+		// For the joint path (--edpp-joint), the decider has already committed the argmin's
+		// prefill node p* in PrefillPodHint, so pass it here to populate the per-instance q_p.
+		cs.sloFeedback.OnRoute(req, req.ID, disaggDecision.Disaggregate, ap, decodeDecision.TargetInstance, disaggDecision.PrefillPodHint)
 	}
 
 	// Find the target decode instance object (used in both paths below).

@@ -488,6 +488,7 @@ Example:
 			EDPPNomDecodeCtx:                edppNomDecodeCtx,
 			EDPPCoeffs:                      resolveEDPPCoeffs(pdDecider, edppCoeffsPath),
 			EDPPTAdmEstimator:               edppTAdmEstimator,
+			EDPPJoint:                       edppJoint,
 			PDTransferBandwidthGBps:         pdTransferBandwidth,
 			PDTransferBaseLatencyMs:         pdTransferBaseLatency,
 			PDTransferContention:            pdTransferContention,

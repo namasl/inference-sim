@@ -78,6 +78,7 @@ type EDPPConfig struct {
 	Coeffs           EDPPCoeffs       // frozen E3 latency-law coefficients (design §1.1); required
 	TraceEnabled     bool             // when true, Decide attaches an EDPPDecisionTrace (intermediate rule terms) to each decision. Off ⇒ zero allocation.
 	TAdmEstimator    string           // admission-delay estimator name ("" ⇒ waiting, the current formula)
+	Joint            bool             // when true, Decide enumerates all (decode, prefill) candidates and picks the drift-plus-penalty argmin (joint P/D routing, --edpp-joint); false ⇒ the reduced fixed-d local-vs-disagg rule.
 }
 
 // EDPPDecisionTrace records the intermediate terms of one E14 rule evaluation, for
@@ -265,6 +266,10 @@ type EDPPDecider struct {
 	// Frozen calibrated coefficients stored for use by downstream tasks.
 	coeffs EDPPCoeffs
 
+	// joint selects the (decode, prefill) argmin enumeration path (--edpp-joint).
+	// false ⇒ the reduced fixed-d local-vs-disagg rule (byte-identical legacy path).
+	joint bool
+
 	// Pluggable admission-delay estimator (default "waiting" reproduces QWork/Mu).
 	tadmEstimator AdmissionDelayEstimator
 
@@ -316,6 +321,7 @@ func NewEDPPDecider(cfg EDPPConfig, model LatencyModel, cacheQuery map[string]fu
 		model:            model,
 		cacheQuery:       cacheQuery,
 		prefillSnapshots: prefillSnapshots,
+		joint:            cfg.Joint,
 		zByClass:         make(map[string]*edppClassState),
 		coeffs:           cfg.Coeffs,
 		pending:          make(map[string]edppPendingWork),
@@ -405,6 +411,13 @@ func (d *EDPPDecider) Decide(req *Request, state *RouterState) DisaggregationDec
 		d.creditAwaiting(state.Clock)
 	}
 
+	// Joint P/D routing (--edpp-joint): enumerate all (decode, prefill) candidates and
+	// pick the drift-plus-penalty argmin. The reduced fixed-d rule below is left untouched
+	// and stays byte-identical (INV-6) — the guard is the only change to its entry.
+	if d.joint {
+		return d.decideJoint(req, state)
+	}
+
 	keepD := DisaggregationDecision{Disaggregate: false}
 	if len(req.InputTokens) == 0 {
 		if d.cfg.TraceEnabled {
@@ -414,12 +427,11 @@ func (d *EDPPDecider) Decide(req *Request, state *RouterState) DisaggregationDec
 	}
 
 	// a_p = uncached prompt tokens (oracle-safe; same source as PrefixThresholdDecider).
-	ap := len(req.InputTokens)
-	if state != nil && state.SelectedInstance != "" && d.cacheQuery != nil {
-		if fn, ok := d.cacheQuery[state.SelectedInstance]; ok && fn != nil {
-			ap = len(req.InputTokens) - fn(req.InputTokens)*d.cfg.BlockSize
-		}
+	sel := ""
+	if state != nil {
+		sel = state.SelectedInstance
 	}
+	ap := d.apForInstance(req, sel)
 	if ap <= 0 {
 		if d.cfg.TraceEnabled {
 			keepD.EDPPTrace = &EDPPDecisionTrace{Class: req.SLOClass, SkipReason: "fully-cached", Ap: ap}
@@ -474,22 +486,7 @@ func (d *EDPPDecider) Decide(req *Request, state *RouterState) DisaggregationDec
 	// RemainingStepsEst (deployable): per-running-request censored estimate, NOT a mean that
 	// can go negative. A request that has produced StepsDone tokens has o_r ≥ StepsDone
 	// (censored lower bound), so floor the class output estimate by the max in-flight elapsed.
-	remStepsEst := 1.0
-	if n := len(decSnap.RunningDecode); n > 0 {
-		nHatOut := d.nHatFor(req.SLOClass).mean()
-		var maxSteps int64
-		for _, r := range decSnap.RunningDecode {
-			if r.StepsDone > maxSteps {
-				maxSteps = r.StepsDone
-			}
-		}
-		nHatEff := math.Max(nHatOut, float64(maxSteps)) // censored: N̂_out ≥ longest in-flight elapsed
-		var sum float64
-		for _, r := range decSnap.RunningDecode {
-			sum += math.Max(nHatEff-float64(r.StepsDone), 1) // per-request remaining, floored at 1
-		}
-		remStepsEst = sum / float64(n)
-	}
+	remStepsEst := d.decodeRemStepsEst(decSnap, req.SLOClass)
 	var prefillSnap RoutingSnapshot
 	if len(prefillSnaps) > 0 {
 		prefillSnap = prefillSnaps[0]
@@ -499,18 +496,7 @@ func (d *EDPPDecider) Decide(req *Request, state *RouterState) DisaggregationDec
 	// so the ttft_p estimators are live on the prefill pool. StepsDone/TrueRemaining here
 	// are prefill-chunk counts (see Simulator.RunningPrefillState). Floors at 1 so fluid's
 	// wave term is non-zero when the prefill batch is full.
-	prefillRemStepsEst := 1.0
-	if n := len(prefillSnap.RunningPrefill); n > 0 {
-		var sum float64
-		for _, r := range prefillSnap.RunningPrefill {
-			rem := r.TrueRemaining
-			if rem < 1 {
-				rem = 1
-			}
-			sum += float64(rem)
-		}
-		prefillRemStepsEst = sum / float64(n)
-	}
+	prefillRemStepsEst := d.prefillRemStepsEst(prefillSnap)
 	// AdmissionRate (req/µs) for the little estimator: prefer the explicit field if a
 	// source ever populates it, else fall back to the observed completion rate
 	// (DispatchRate, req/s → req/µs). In steady state admission ≈ completion (§3.8),
@@ -554,8 +540,7 @@ func (d *EDPPDecider) Decide(req *Request, state *RouterState) DisaggregationDec
 	balanceTermP := qp * (wp / n.wStarP)
 	lhs := balanceTermD - balanceTermP
 
-	tauRef := float64(d.cfg.TauRefUs)
-	transferTerm := d.cfg.V * (float64(d.cfg.CXferUs) / n.tauTTFT) * (tauRef / n.tauTTFT)
+	transferTerm := d.transferPenalty(n)
 	ttftTerm := zTTFT * (ttftP - ttftD) / n.tauTTFT
 	itlTerm := -zITL * (d.coeffs.CPf * float64(chunk)) / n.tauITL
 	rhs := transferTerm + ttftTerm + itlTerm
@@ -583,6 +568,247 @@ func (d *EDPPDecider) Decide(req *Request, state *RouterState) DisaggregationDec
 		}
 	}
 	return dec
+}
+
+// apForInstance returns a_p, the uncached prompt tokens for req on instance instID
+// (block-aligned prefix-cache query; oracle-safe, input-only per INV-9). instID == ""
+// or an absent/nil cacheQuery entry yields the full prompt length (cold). Shared by the
+// reduced path (with instID = state.SelectedInstance) and the per-candidate joint path.
+func (d *EDPPDecider) apForInstance(req *Request, instID string) int {
+	ap := len(req.InputTokens)
+	if instID != "" && d.cacheQuery != nil {
+		if fn, ok := d.cacheQuery[instID]; ok && fn != nil {
+			ap = len(req.InputTokens) - fn(req.InputTokens)*d.cfg.BlockSize
+		}
+	}
+	return ap
+}
+
+// decodeRemStepsEst is the deployable per-running-request censored remaining-steps
+// estimate for a decode snapshot (design: NOT a mean that can go negative). A request
+// that has produced StepsDone tokens has o_r ≥ StepsDone (censored lower bound), so the
+// class output estimate is floored by the max in-flight elapsed. Returns 1 when the
+// snapshot has no running decode occupants. Shared by the reduced and joint paths.
+func (d *EDPPDecider) decodeRemStepsEst(snap RoutingSnapshot, class string) float64 {
+	n := len(snap.RunningDecode)
+	if n == 0 {
+		return 1.0
+	}
+	nHatOut := d.nHatFor(class).mean()
+	var maxSteps int64
+	for _, r := range snap.RunningDecode {
+		if r.StepsDone > maxSteps {
+			maxSteps = r.StepsDone
+		}
+	}
+	nHatEff := math.Max(nHatOut, float64(maxSteps)) // censored: N̂_out ≥ longest in-flight elapsed
+	var sum float64
+	for _, r := range snap.RunningDecode {
+		sum += math.Max(nHatEff-float64(r.StepsDone), 1) // per-request remaining, floored at 1
+	}
+	return sum / float64(n)
+}
+
+// prefillRemStepsEst is the symmetric censored remaining-steps estimate for a prefill
+// snapshot, derived from its running-prefill occupants' TrueRemaining (prefill-chunk
+// counts, floored at 1). Returns 1 when the snapshot has no running prefill occupants.
+// Shared by the reduced and joint paths.
+func (d *EDPPDecider) prefillRemStepsEst(snap RoutingSnapshot) float64 {
+	n := len(snap.RunningPrefill)
+	if n == 0 {
+		return 1.0
+	}
+	var sum float64
+	for _, r := range snap.RunningPrefill {
+		rem := r.TrueRemaining
+		if rem < 1 {
+			rem = 1
+		}
+		sum += float64(rem)
+	}
+	return sum / float64(n)
+}
+
+// transferPenalty is the normalized KV-transfer cost paid when offloading prefill:
+// V·(c_xfer/τ_ttft)·(τ_ref/τ_ttft) (design §3; scales like 1/τ_ttft² as the other terms).
+// Shared by the reduced path (RHS) and the joint path (added to disagg candidates).
+func (d *EDPPDecider) transferPenalty(n edppNorm) float64 {
+	return d.cfg.V * (float64(d.cfg.CXferUs) / n.tauTTFT) * (float64(d.cfg.TauRefUs) / n.tauTTFT)
+}
+
+// instWorkRaw reads the per-instance waiting-work backlog (µs) for id WITHOUT creating a
+// map entry (unlike instWork). Absent id ⇒ (0, 0). Used by the joint path to read the
+// per-candidate normalized congestion q_i = W_i / W*.
+func (d *EDPPDecider) instWorkRaw(id string) (wp, wd float64) {
+	if w, ok := d.qByInstance[id]; ok {
+		return w.wp, w.wd
+	}
+	return 0, 0
+}
+
+// chunkTerms returns (n_chunks, δ_pf-chunk) for a_p uncached prefill tokens under the
+// decode batched-token budget (ChunkTokens). a_p ≤ 0 (fully cached / empty) ⇒ (0, 0):
+// no prefill work, no per-chunk ITL inflation.
+func (d *EDPPDecider) chunkTerms(ap int) (nChunks, deltaPfChunk float64) {
+	if ap <= 0 {
+		return 0, 0
+	}
+	chunk := ap
+	if d.cfg.ChunkTokens > 0 && d.cfg.ChunkTokens < chunk {
+		chunk = d.cfg.ChunkTokens
+	}
+	return math.Ceil(float64(ap) / float64(chunk)), d.coeffs.CPf * float64(chunk)
+}
+
+// reqKVNeed is ⌈a_r / blockSize⌉ (a_r = full input length; oracle-safe). 0 when BlockSize ≤ 0.
+func (d *EDPPDecider) reqKVNeed(req *Request) int64 {
+	if d.cfg.BlockSize <= 0 {
+		return 0
+	}
+	return int64((len(req.InputTokens) + d.cfg.BlockSize - 1) / d.cfg.BlockSize)
+}
+
+// decideJoint implements the joint P/D routing rule (--edpp-joint): it enumerates every
+// (decode d, placement) candidate — local (prefill+decode on d) and disagg (decode on d,
+// prefill on each prefill node p) — computes the NORMALIZED absolute objective J(d,·) for
+// each, and returns the argmin. Unlike the reduced rule (which differences ttft_p−ttft_d
+// for a single fixed d), J carries every term with its divisor and uses the ABSOLUTE
+// per-candidate admission-delay predictor T̂(a), so the argmin correctly ranks distinct
+// decode nodes. Restricted to the scorer's single d it reproduces the reduced local-vs-
+// disagg decision (§5.5; see TestJoint_ReducesToScorerSliceMatchesReduced).
+//
+// Determinism (INV-6): decode and prefill snapshots are iterated in ascending instance-ID
+// order, local is considered before disagg, and a strictly-lower J (by more than 1e-12)
+// is required to replace the incumbent — so ties resolve to the lowest-index, local-first
+// candidate, matching the reduced rule's strict Disaggregate = LHS > RHS tie handling.
+func (d *EDPPDecider) decideJoint(req *Request, state *RouterState) DisaggregationDecision {
+	class := req.SLOClass
+	n := d.normFor(class)
+
+	// Per-class virtual queues, normalized by their τ (as in the reduced rule).
+	var zTTFT, zITL float64
+	if z := d.zByClass[class]; z != nil {
+		zTTFT = z.zTTFT / n.tauTTFT
+		zITL = z.zITL / n.tauITL
+	}
+
+	// Deterministic candidate ordering (INV-6): sort snapshots by instance ID.
+	decodeSnaps := sortedSnapshotsByID(stateSnapshots(state))
+	var prefillSnaps []RoutingSnapshot
+	if d.prefillSnapshots != nil {
+		prefillSnaps = sortedSnapshotsByID(d.prefillSnapshots())
+	}
+
+	reqKVNeed := d.reqKVNeed(req)
+	wd := d.coeffs.Wd(len(req.InputTokens), d.nHatFor(class).mean())
+
+	type cand struct {
+		dID, pID string
+		local    bool
+		J        float64
+	}
+	var best *cand
+	consider := func(c cand) {
+		if best == nil || c.J < best.J-1e-12 {
+			cc := c
+			best = &cc
+		}
+	}
+
+	for _, ds := range decodeSnaps {
+		dID := ds.ID
+		// Decode-side occupancy predictor inputs for candidate d.
+		bDec, kv, sPfD := ds.BatchSize, ds.KvTokensInUse, ds.ResidentPrefillTokens
+		tIterD := d.coeffs.tIterDecode(bDec, kv, sPfD)
+		_, qdRaw := d.instWorkRaw(dID)
+		qd := qdRaw / n.wStarD
+		decodeCtx := AdmissionContext{
+			QWork: qdRaw, Mu: d.coeffs.muDecode(bDec, kv, sPfD),
+			BatchSize: ds.BatchSize, MaxBatchSize: int(ds.MaxBatchSize),
+			FreeKVBlocks: ds.FreeKVBlocks, ReqKVNeed: reqKVNeed,
+			TIter: tIterD, QueueDepth: ds.QueueDepth,
+			AdmissionRate: admissionRateFromSnapshot(ds), RemainingStepsEst: d.decodeRemStepsEst(ds, class),
+			Running: censorOracleRemaining(ds.RunningDecode),
+		}
+		tAdmD := d.tadmEstimator.EstimateTAdm(decodeCtx)
+
+		// Decode backlog term (same for local and disagg on this d — cancels within a d,
+		// distinguishes across d): q_d·(W_d/W*_d).
+		jDecodeBacklog := qd * (wd / n.wStarD)
+
+		// --- local: prefill+decode co-resident on d ---
+		apLoc := d.apForInstance(req, dID)
+		nChunksLoc, deltaPfLoc := d.chunkTerms(apLoc)
+		wpLoc := d.coeffs.Wp(maxInt(apLoc, 0), len(req.InputTokens))
+		tHatLocal := tAdmD + nChunksLoc*(tIterD+deltaPfLoc) // ABSOLUTE T̂_local(d)
+		jLocal := jDecodeBacklog +
+			qd*(wpLoc/n.wStarD) +
+			zTTFT*(tHatLocal/n.tauTTFT) +
+			zITL*(deltaPfLoc/n.tauITL) // prefill-on-decode ITL inflation lands on local only
+		consider(cand{dID: dID, local: true, J: jLocal})
+
+		// --- disagg: decode on d, prefill on each prefill node p ---
+		for _, ps := range prefillSnaps {
+			pID := ps.ID
+			apP := d.apForInstance(req, pID)
+			nChunksP, deltaPfP := d.chunkTerms(apP)
+			wpP := d.coeffs.Wp(maxInt(apP, 0), len(req.InputTokens))
+			qpRaw, _ := d.instWorkRaw(pID)
+			qp := qpRaw / n.wStarP
+			sPfP := ps.ResidentPrefillTokens
+			tIterP := d.coeffs.tIterPrefill(sPfP)
+			prefillCtx := AdmissionContext{
+				QWork: qpRaw, Mu: d.coeffs.muPrefill(sPfP),
+				BatchSize: ps.BatchSize, MaxBatchSize: int(ps.MaxBatchSize),
+				FreeKVBlocks: ps.FreeKVBlocks, ReqKVNeed: reqKVNeed,
+				TIter: tIterP, QueueDepth: ps.QueueDepth,
+				AdmissionRate: admissionRateFromSnapshot(ps), RemainingStepsEst: d.prefillRemStepsEst(ps),
+				Running: ps.RunningPrefill,
+			}
+			tAdmP := d.tadmEstimator.EstimateTAdm(prefillCtx)
+			tHatDisagg := tAdmP + nChunksP*(tIterP+deltaPfP) + float64(d.cfg.CXferUs) // ABSOLUTE T̂_disagg(d,p)
+			jDisagg := jDecodeBacklog +
+				qp*(wpP/n.wStarP) +
+				zTTFT*(tHatDisagg/n.tauTTFT) +
+				d.transferPenalty(n) // disagg pays the KV-transfer penalty; no local ITL inflation
+			consider(cand{dID: dID, pID: pID, local: false, J: jDisagg})
+		}
+	}
+
+	if best == nil {
+		return DisaggregationDecision{Disaggregate: false} // no candidates (empty snapshots)
+	}
+	if best.local {
+		return DisaggregationDecision{Disaggregate: false, DecodePodOverride: best.dID}
+	}
+	return DisaggregationDecision{Disaggregate: true, DecodePodOverride: best.dID, PrefillPodHint: best.pID}
+}
+
+// stateSnapshots returns state.Snapshots (nil-safe).
+func stateSnapshots(state *RouterState) []RoutingSnapshot {
+	if state == nil {
+		return nil
+	}
+	return state.Snapshots
+}
+
+// sortedSnapshotsByID returns a copy of snaps sorted ascending by instance ID, so the
+// joint enumeration order (and its deterministic tie-break) is stable across runs (INV-6).
+func sortedSnapshotsByID(snaps []RoutingSnapshot) []RoutingSnapshot {
+	if len(snaps) == 0 {
+		return nil
+	}
+	out := make([]RoutingSnapshot, len(snaps))
+	copy(out, snaps)
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out
+}
+
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 // selectedDecodeSnapshot returns the decode snapshot this request would land on
