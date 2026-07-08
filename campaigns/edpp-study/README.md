@@ -41,7 +41,7 @@ The study asks two separate questions (see `FINDINGS.md` "Framing"):
 | **This orientation guide** | `campaigns/edpp-study/README.md` | ✅ tracked |
 | **Backlog** | `campaigns/edpp-study/TODO.md` | ✅ tracked |
 | **Reproduce scripts** | `campaigns/edpp-study/repro_stage_a.sh`, `repro_stage_b.sh` | ✅ tracked |
-| **Paper-figure scripts** | `repro_work_model_sweep.sh` (Fig 1), `repro_ttft_d_local.sh` (ttft_d Figs A/B/C) | ✅ tracked |
+| **Paper-figure scripts** | `repro_work_model_sweep.sh` (Fig 1), `repro_ttft_d_local.sh` (ttft_d Figs A/B/C), `repro_ttft_p_local.sh` (ttft_p Phase 1) | ✅ tracked |
 | **Analysis scripts** | `campaigns/edpp-study/analyze/*.py` | ✅ tracked |
 | **Workload specs** | `campaigns/edpp-study/specs/*.yaml` | mostly tracked |
 | **Run outputs (traces, bias.json)** | `campaigns/edpp-study/out/` | ⛔ gitignored (reproducible) |
@@ -112,7 +112,8 @@ strings `"true"`/`"false"` (Go bools). Zero in a timing/`t_adm` column means "ph
 `request_id, slo_class, input_tokens, disaggregated, prefill_instance, decode_instance` ·
 `prefill_enqueue`/`prefill_schedule`/`prefill_t_adm` (realized prefill admission delay = schedule−enqueue) ·
 `decode_enqueue`/`decode_schedule`/`decode_t_adm` · `local_enqueue`/`local_schedule`/`local_t_adm`
-(non-disagg path; `local_t_adm` currently always 0 — see FINDINGS Stage A limitation) ·
+(non-disagg path; `local_t_adm = local_schedule − local_enqueue`, now populated — the earlier
+hardcoded-0 gap was fixed in `BuildPDOutcomeRecords`, 2026-07-08) ·
 `realized_ttft`/`realized_mean_itl`/`realized_e2e` · `completed` (RequestE2Es>0 proxy — looser than the
 sim's completed count; see FINDINGS).
 
@@ -342,6 +343,83 @@ then an exploratory topology×workload sweep comparing the shipped **reduced** E
   hypothesis) while shaving a hair of goodput, and **ties-to-loses on cache-asymmetric** (reduced already
   optimal at the loose SLO). Its prefill-rerouting lever only fires at 2P2D under cache asymmetry
   (`p_div=0.26`). Homogeneous-hardware LOCAL diagnostic; per-instance `θ_i` heterogeneity deferred.
+
+### 7.9.1 Reproduce "1P2D cache-uniform: 0.030 → 0.0225" — step by step (novice handover)
+
+Follow this from a clean checkout to reproduce the headline regret claim and understand every piece.
+
+**0. Build.** `cd inference-sim && go build -o blis main.go` (Go 1.22+).
+
+**1. Run the study — one command.** `bash campaigns/edpp-study/repro_joint.sh` (~a few minutes at the
+default `K=4`). It runs the correctness gates, then the 4-cell sweep, and prints a table. The row that IS
+the claim:
+```
+cell   workload    g_red   g_joint  reg_red  reg_joint  d_div   dir_lowerJ
+1P2D   synth_cf    0.990   0.979    0.030    0.0225     0.320   0.100
+```
+`reg_red 0.030` → `reg_joint 0.0225` is the ~25% regret cut (and `g_red 0.990` → `g_joint 0.979` is the
+"small goodput cost").
+
+**2. Where the two numbers physically live.** The script writes per-cell dirs under
+`campaigns/edpp-study/out/joint/` (gitignored). For this cell:
+- `out/joint/1P2D_synth_cf/regret_reduced/regret.json` → field `total_regret` = 0.030
+- `out/joint/1P2D_synth_cf/regret_joint/regret.json`   → field `total_regret` = 0.0225
+`cat` either to see the per-request regrets that sum to the total, plus each request's hindsight-best action.
+
+**3. What "regret" means here (the concept a newcomer needs).** Regret is an *exact, per-decision,
+hindsight* measure (the counterfactual-regret harness, §7.8) — NOT a formula. Procedure: take the policy's
+realized per-request `(decode,prefill)` plan; for `K` sampled requests, re-run the WHOLE simulation
+changing ONLY that one request's action to each alternative in `𝒜`; if any alternative yields higher
+**total** goodput, that gap is the decision's regret (clamped ≥0). `total_regret` = the sum over the `K`
+sampled requests. So "reduced 0.030" means: across the 4 sampled decisions, a single better choice (holding
+all others fixed) would have recovered 0.030 of goodput-fraction that reduced-EDPP left on the table;
+"joint 0.0225" means the joint argmin already makes ~25% of that better choice itself. It is a **local**
+(one-step-deviation) measure — not the global P/D optimum (that is the future MILP yardstick's job).
+
+**4. The two policies being compared.** Both are EDPP with the occupancy-aware `rollforward` admission
+estimator; the ONLY difference is the `--edpp-joint` flag. To run just this cell's two baselines by hand
+(the wrapper does this + the deviation sweep for you):
+```
+# reduced (scorer picks decode d; EDPP only decides local-vs-disagg for that d)
+./blis run --model meta-llama/llama-3.3-70b-instruct \
+  --workload-spec campaigns/edpp-study/specs/synth_cf.yaml \
+  --num-instances 3 --prefill-instances 1 --decode-instances 2 \
+  --pd-decider edpp --edpp-coeffs scripts/calibration/coeffs-llama70b-h100-tp4.json \
+  --edpp-tau-ttft 2s --edpp-tau-itl 150ms --edpp-tadm-estimator rollforward \
+  --slo-ttft "batch=2s" --slo-itl "batch=150ms" \
+  --pd-outcome-trace /tmp/reduced_outcome.csv --metrics-path /tmp/reduced.json
+# joint (EDPP enumerates all (d,p), picks the drift argmin — chooses d itself)
+./blis run … same flags … --edpp-joint --trace-level decisions --edpp-joint-trace /tmp/joint_trace.csv \
+  --pd-outcome-trace /tmp/joint_outcome.csv --metrics-path /tmp/joint.json
+```
+Then the wrapper feeds each run's plan to `analyze/counterfactual_regret.py` (capture-plan → K one-step
+deviations → `regret`) to produce the two `total_regret` numbers.
+
+**5. The workload.** `synth_cf` = the decode-bound synthetic-data-generation workload, 800 requests at
+`aggregate_rate 2.0`, with a **shared 2000-token system prompt** — so all decode nodes end up
+~equally cache-warm, which means the decode-node choice here is driven by **occupancy**, not cache. It is
+generated by `make_specs.py` (auto-regenerated if `specs/` is missing, since `specs/` is gitignored).
+
+**6. File map — where the joint rule lives (to modify it):**
+- `sim/edpp.go` — `decideJoint()` (enumerate `(d,p)` + argmin), `jointCandidateCost()` (the normalized
+  objective `J` per candidate — shared with the divergence eval so they can't drift), `apForInstance()`
+  (per-node cache-aware `a_p` via the instance-keyed `cacheQuery`), `qByInstance` (per-instance congestion
+  `Q_i`), `buildJointTrace()` (the scorer-vs-joint divergence record).
+- `sim/edpp_coeffs.go` — `Wp`/`Wd`/`deltaBarDecode` (the work + decode-marginal terms inside `J`).
+- `sim/trace/edpp_joint_csv.go` — the `--edpp-joint-trace` CSV writer; `sim/cluster/cluster.go` — flag
+  wiring, `OnRoute` per-instance attribution, the RNG-isolated shadow prefill scorer; `cmd/root.go` /
+  `cmd/replay.go` — the `--edpp-joint` / `--edpp-joint-trace` flags (run + replay).
+- **Design & the math:** `docs/superpowers/specs/2026-07-07-edpp-joint-mechanism-design.md` — §3 gives the
+  normalized `J(d,p)`, §3.1 reconciles it term-by-term to the formulation
+  `docs/design/2026-06-30-pd-joint-routing-problem-formulation.md` §5.3 (with the two documented
+  homogeneous-cut deviations: per-class `z_itl` not per-instance `Z^I_d`; single `θ` not `θ_i`).
+
+**7. What this result does and does NOT show.** It shows the joint argmin recovers part of the
+decode-*placement* regret the reduced rule leaves (by choosing `d` via the drift objective instead of the
+scorer) — on homogeneous hardware, where the only levers are occupancy and cache warmth. It does **not**
+show the expected larger win from per-instance hardware heterogeneity (`θ_i`); that needs a simulator-side
+change to serve same-role instances at different speeds and is **sub-project 2**. And it is a *local*
+diagnostic — the *global* optimality gap awaits the MILP yardstick.
 
 ## 8. FAQ (why things are the way they are)
 
