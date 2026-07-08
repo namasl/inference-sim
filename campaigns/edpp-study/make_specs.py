@@ -32,3 +32,22 @@ for name, base in BASE.items():
 _synth = pathlib.Path(BASE["synth"]).read_text()
 (OUT / "synth_cf.yaml").write_text(rewrite(_synth, 2.0, "synth", nreq=800))
 print("wrote synth_cf.yaml")
+
+# synth_asym.yaml: CACHE-ASYMMETRIC counterpart to synth_cf for the joint-mechanism
+# sweep (repro_joint.sh). synth_cf shares a 2000-token system prompt across every
+# request (prefix_group) so both decode nodes stay ~equally cache-warm and the
+# `precise-prefix-cache` scorer term is near-constant. synth_asym instead gives
+# every request a UNIQUE large prompt (no prefix_group => no shared prefix) with a
+# large input distribution, so as the run proceeds the two decode nodes genuinely
+# diverge in cache warmth and a_p differs across candidates — the regime where the
+# joint objective's cache/occupancy lever should bite differently than the reduced
+# fixed-decode rule. Same rate/size as synth_cf for a controlled comparison.
+_asym = rewrite(pathlib.Path(BASE["synth"]).read_text(), 2.0, "synth", nreq=800)
+# Drop the shared prefix: remove prefix_group + prefix_length lines entirely.
+_asym = re.sub(r"^\s*prefix_group:.*$\n?", "", _asym, flags=re.M)
+_asym = re.sub(r"^\s*prefix_length:.*$\n?", "", _asym, flags=re.M)
+# Large unique inputs: raise the lognormal input mean/spread so per-request KV
+# footprint is large and unique (median ~2000 tok, heavy tail).
+_asym = _asym.replace("mu: 5.259", "mu: 7.6").replace("sigma: 1.3824", "sigma: 1.0")
+(OUT / "synth_asym.yaml").write_text(_asym)
+print("wrote synth_asym.yaml")

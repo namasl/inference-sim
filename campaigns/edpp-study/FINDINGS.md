@@ -584,3 +584,134 @@ KV-transfer hop misses while local meets) ⇒ positive regret with a *local* hin
 **Reproduce:** `bash campaigns/edpp-study/repro_counterfactual.sh` (`K=…`, `TARGET_POLICY=…`,
 `SPEC=…` overridable). Diagnostic only (local one-step deviation), not the global optimum; it is the
 shared fixed-plan (`--pd-plan`) infrastructure for the later full-joint decider and the MILP yardstick.
+
+## Joint mechanism (sub-project 1) — reduced vs `--edpp-joint` sweep (2026-07-08)
+
+**What.** The reduced EDPP decider delegates the decode-node choice `d` to the composable scorer and
+only decides local-vs-disaggregate for a *fixed* `d`. The **joint** decider (`--edpp-joint`) instead
+enumerates every `(decode, prefill)` candidate over the pools and picks the drift-plus-penalty argmin.
+The counterfactual-regret finding above closed on a concrete hypothesis: reduced-EDPP's leftover regret
+is decode-node *placement* (every positive-regret decision was improved by moving decode to
+`instance_1`), which is exactly what a joint argmin over `d` should be able to recover. This is the test
+of that hypothesis. **Scope: HOMOGENEOUS hardware** — the joint objective's only active levers here are
+cache warmth and per-instance occupancy; per-instance hardware heterogeneity (`θ_i`) is deferred. It is
+a **LOCAL diagnostic** (the regret is one-step-deviation, not the global P/D optimum — the MILP
+yardstick's job).
+
+**Correctness gates (all PASS, run first — see `repro_joint.sh` stage 1).**
+- **(a) byte-identical off-path.** Two reduced-EDPP runs (`--edpp-joint` OFF) produce byte-identical
+  metrics **and** decision trace — the joint plumbing does not perturb the shipped reduced default (INV-6).
+- **(b) §5.5 reduction.** `TestJoint_ReducesToScorerSliceMatchesReduced` passes: the joint objective
+  restricted to the scorer's single decode reproduces the reduced local-vs-disagg decision.
+- **(c) joint-plan self-consistency.** Capturing the joint decider's realized `(d,p)` plan and replaying
+  it via `--pd-plan` reproduces the joint baseline `slo_attainment` exactly (INV-6/INV-13). **Caveat that
+  drove a harness fix:** the `--pd-outcome-trace` records `decode_instance` only for *disaggregated*
+  requests (empty for local); on replay an empty decode falls back to the scorer's decode. That is
+  faithful for reduced (which never overrides the scorer's decode) but NOT for joint, whose whole point
+  is to override the *local* decode. So the joint plan is captured from the **`--edpp-joint-trace`**
+  (which logs `joint_d`/`joint_p` for every request), not the outcome trace. With that source, replay ==
+  baseline (gate passes). The joint routing itself is faithful; only the outcome-trace capture path
+  could not represent a local-decode override.
+
+**Sweep (K=4 sampled deviations/policy/cell — SMALL, to bound runtime at `K·(|𝒜|−1)` sims per policy;
+`|𝒜|=4` at 1P2D, `6` at 2P2D. Numbers shift slightly with K; the *direction* is stable across K=4/6).**
+Cells = {1P2D, 2P2D} × {`synth_cf` cache-uniform (shared 2000-tok system prompt), `synth_asym`
+cache-asymmetric (unique large prompts, no shared prefix)}. Both policies use
+`--edpp-tadm-estimator rollforward`. SLO/τ: `ttft 2s`, `itl 150ms`.
+
+| cell | workload | goodput reduced | goodput joint | regret reduced | regret joint | any-divergence | p-divergence | dir: joint lower-J / tie |
+|---|---|---|---|---|---|---|---|---|
+| 1P2D | synth_cf (uniform) | **0.990** | 0.979 | 0.030 | **0.0225** | 0.320 | 0.000 | 10% / 90% |
+| 2P2D | synth_cf (uniform) | **0.990** | 0.979 | 0.030 | **0.0225** | 0.320 | 0.000 | 10% / 90% |
+| 1P2D | synth_asym (asym)  | **1.000** | 0.999 | **0.000** | 0.0012 | 0.328 | 0.000 | 20% / 80% |
+| 2P2D | synth_asym (asym)  | **1.000** | 0.999 | **0.000** | 0.0012 | 0.536 | **0.260** | 15% / 85% |
+
+**Honest reading — joint does NOT uniformly win.**
+- **Cache-uniform (`synth_cf`), both topologies:** joint **cuts leftover regret ~25%** (0.030→0.0225),
+  confirming the hypothesis directionally — the joint argmin recovers part of the decode-placement regret
+  the reduced rule leaves by delegating `d` to the scorer. But it **trades a hair of goodput** (0.990→0.979):
+  moving decode to the drift-optimal node is better in one-step hindsight yet the greedy per-request
+  argmin over-corrects slightly on the realized run. Divergence is all on `d` (`p_div=0`, only one
+  prefill node matters here); on the 32% of decisions where joint overrides the scorer's decode, it picks
+  a **strictly lower-J** candidate 10% of the time and a **J-tie (deterministic lower-index/lower-occupancy
+  break)** the other 90% — i.e. most overrides are occupancy tie-breaks, not large objective gaps.
+- **Cache-asymmetric (`synth_asym`), both topologies:** the loose batch SLO is met by *everyone* — reduced
+  goodput is **1.000 with ZERO regret** (already optimal), so there is nothing for joint to recover.
+  Joint instead introduces a **tiny positive regret (0.0012) and a hair of goodput loss** (1.000→0.99875):
+  a clean case where **joint ties-to-loses**. This is the intended stress of the asymmetric spec, and the
+  finding is that the joint lever has no headroom when the reduced rule is already optimal.
+- **The one place the prefill lever actually fires: 2P2D synth_asym** — `p_div=0.260` (vs 0 everywhere
+  else) and disagg-share on divergent rows jumps to 0.57. With unique large prompts and two prefill nodes,
+  the two decode/prefill nodes genuinely diverge in cache warmth, so the joint objective reroutes *prefill*
+  (not just decode) across candidates — exactly the `a_p`-differs regime the asymmetric spec was built to
+  create. It still doesn't convert to goodput here (SLO already met), but it demonstrates the joint
+  objective exercising the P-placement degree of freedom the reduced rule cannot.
+- **1P2D == 2P2D on `synth_cf`** (byte-identical rows): the workload is decode-bound with two decode nodes
+  in both topologies, so the extra prefill node in 2P2D is not on the critical path and prefill placement
+  never diverges — an observation, not a bug.
+
+**Verdict.** On homogeneous hardware the joint mechanism is a **modest, workload-dependent** change: it
+recovers ~25% of reduced-EDPP's decode-placement regret on the cache-uniform decode-bound workload
+(directionally confirming the regret hypothesis) while shaving a hair of realized goodput, and it
+ties-to-slightly-loses on the cache-asymmetric workload where the reduced rule is already optimal. Its
+distinctive P-rerouting only activates under cache asymmetry with ≥2 prefill nodes (2P2D synth_asym), and
+even there does not pay off at this loose SLO. The larger expected win — per-instance hardware
+heterogeneity (`θ_i`) — is deferred; these cells cannot show it. Divergence is dominated by
+occupancy/cache tie-breaks (~80–90% of overrides are J-ties), not large objective gaps; the argmin
+invariant holds (no divergent row picks a strictly higher J, verified by `joint_divergence.py`).
+
+**Reproduce:** `bash campaigns/edpp-study/repro_joint.sh` (`K=…` overridable; K=4 default keeps the
+4-cell sweep bounded). Artifacts per cell in `out/joint/<topo>_<workload>/` (`regret_*/regret.json`,
+`divergence.json`). Divergence analyzer + self-test: `analyze/joint_divergence.py` (`selftest`
+subcommand) and `analyze/test_joint_divergence.py`.
+
+## Estimator-accuracy figures (paper) — work model + ttft_d (2026-07-07/08)
+
+Paper figures validating the two things EDPP must *estimate* before it can measure them: per-request
+**work** (`W_p`/`W_d`) and the **local time-to-first-token** (`ttft_d = T_adm + prefill_time`). All on
+the **trained-physics** latency model, llama-70b-h100-tp4 frozen coeffs.
+
+### Fig 1 — work model vs load (`out/work_sweep/fig1_work_model.png`)
+Realized per-request trajectory work (summed per-step from the DES step engine — the SAME coefficients
+the closed form uses; see `simulator.go accumulateStepWork`) vs the closed-form `W_p`/`W_d`, over offered
+load 0.5–3.0 for synth + rag. **This validates the closed form against the model's own per-step physics,
+NOT against hardware** (that's `observe`/`calibrate`). Result: single-chunk prefill and decode are
+**float-exact and load-invariant** (|rel err| ~3e-16 / ~0); the only residual is **chunked prefill**
+(the documented `C_attn·(a_p²−Σsᵣ²)/2` term), bounded and rising mildly with load (synth p99 8%→19%
+across the sweep; rag ~21%). Reproduce: `bash campaigns/edpp-study/repro_work_model_sweep.sh`.
+
+### Figs A/B/C — ttft_d on a single collocated instance (`out/ttft_d_local/fig_{admission,prefill,ttft}.png`)
+Setup: ONE collocated engine (1P1D, `--edpp-c-xfer 100s` ⇒ every request local, no routing confound),
+sweeping offered load **ρ = arrival rate / λ\*** (λ\* = plateau throughput μ from one overloaded probe
+run — warmup-insensitive, unlike a throughput-ratio threshold) from ρ=0.5 (underload) to ρ=1.5 (overload).
+Three synthetic single-client archetypes spanning the prefill/decode spectrum: **synth** (decode-heavy),
+**mixed** (balanced, `specs/mixed_rate1.0.yaml`), **prefill** (prefill-heavy, `specs/prefill_rate1.0.yaml`).
+Real **rag is NOT used here** — its 15k–80k-tok prompts make a single-instance overload run take ~30 min,
+intractable to sweep. Estimators compared: **fluid** and **rollforward** only (`waiting` dropped);
+`--edpp-tadm-estimator` selects the one driving `ttft_d`. Metric: median over local requests of realized
+vs estimated, decomposed as `ttft_d = admission + prefill`.
+
+**Key result.** Up to capacity (ρ≤1) both fluid and rollforward track realized admission to **~1.0–1.2×**
+— reproducing the Stage C utilization-sweep result *in the collocated setting*. In **overload (ρ>1)** the
+estimators under-predict admission by 1–2 orders of magnitude (mixed ρ=1.5: realized 20 s vs est ~78 ms):
+they are **snapshot roll-forwards** — they project draining the queue observed at decision time, so they
+are blind to the non-stationary queue growth that continues *after* the request arrives. Stage C never
+saw this because its sweep stopped at ρ≈0.98 (sub-capacity by design); the two results are complementary,
+not contradictory. fluid ≈ rollforward on these workloads (they differ only in `N̂_out` prediction, which
+decode-bound/short-output archetypes don't stress). The TTFT figure is the clean bottom-line comparison;
+the admission/prefill split is only meaningful once `local_t_adm` is correctly recorded (see gap below).
+
+**Instrumentation gap fixed (cluster.go `BuildPDOutcomeRecords`).** The `--pd-outcome-trace` path
+formerly hardcoded `local_t_adm=0` for local requests, so the outcome trace silently reported zero local
+admission even at 20 s TTFT. The fix captures the local enqueue instant (`localEnqueueTimes`, now
+populated under `recordPDOutcomes` too) so `local_t_adm = local_schedule − local_enqueue` is emitted like
+the prefill/decode legs. The realized admission was always correct in the `--edpp-admission-trace`
+(`realized_t_adm`); the plotter reads it from there.
+
+**Reproduce:**
+```
+bash campaigns/edpp-study/repro_work_model_sweep.sh      # Fig 1 (work model vs load)
+bash campaigns/edpp-study/repro_ttft_d_local.sh          # Figs A/B/C (ttft_d vs load × 3 archetypes)
+# figures land in out/work_sweep/ and out/ttft_d_local/ (both gitignored)
+```
+Analysis scripts: `analyze/work_model_sweep.py`, `analyze/ttft_d_local.py`.
