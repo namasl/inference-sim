@@ -439,7 +439,7 @@ func TestEDPP_OnComplete_UpdatesVirtualQueues(t *testing.T) {
 	// z_ttft now flows through the awaiting/first-token path; a completion with no prior
 	// first-token reconciles it via the OnComplete fallback, so route the request first.
 	r2 := &Request{ID: "r2", SLOClass: "", ArrivalTime: 0}
-	d.OnRoute(r2, "r2", false, 1)
+	d.OnRoute(r2, "r2", false, 1, "", "")
 	d.OnComplete(r2, "r2", 150_000, 80_000) // TTFT 150ms (τ=100ms), ITL 80ms (τ=50ms)
 	z := d.zByClass[""]
 	if z == nil || z.zTTFT != 50_000 {
@@ -450,7 +450,7 @@ func TestEDPP_OnComplete_UpdatesVirtualQueues(t *testing.T) {
 	}
 	// A large under-target completion must floor each queue at 0, not go negative.
 	r3 := &Request{ID: "r3", SLOClass: "", ArrivalTime: 0}
-	d.OnRoute(r3, "r3", false, 1)
+	d.OnRoute(r3, "r3", false, 1, "", "")
 	d.OnComplete(r3, "r3", 0, 0)
 	if z.zTTFT != 0 || z.zITL != 0 {
 		t.Errorf("virtual queues not floored at 0: zTTFT=%v zITL=%v", z.zTTFT, z.zITL)
@@ -630,7 +630,7 @@ func TestEDPP_TransferPenalty_FixedTauRef_EngagesAtLooseDefault(t *testing.T) {
 	// 10 D-path routes of ap=1000: qdWork += (Wp(1000) + wd) each ≈ 121480 µs total.
 	for i := 0; i < 10; i++ {
 		r := &Request{ID: fmt.Sprintf("seed%d", i), SLOClass: "batch"}
-		d.OnRoute(r, r.ID, false /*D-path*/, 1000)
+		d.OnRoute(r, r.ID, false /*D-path*/, 1000, "", "")
 	}
 
 	state := decodeState("d0", 50, 0, 60_000) // heavy decode backlog, idle prefill
@@ -659,7 +659,7 @@ func TestEDPP_BookkeepingConservation(t *testing.T) {
 	r1 := &Request{ID: "r1", SLOClass: "", InputTokens: make([]int, 200), OutputTokens: []int{0}}
 	// First completion seeds N̂_out (no prior estimate ⇒ use a 1-token default), so
 	// route adds W_p only for the decode side until N̂_out is known.
-	d.OnRoute(r1, r1.ID, true /*toPrefill*/, 200)
+	d.OnRoute(r1, r1.ID, true /*toPrefill*/, 200, "", "")
 	if d.qpWork <= 0 {
 		t.Fatalf("qpWork must be > 0 after routing P, got %v", d.qpWork)
 	}
@@ -696,7 +696,7 @@ func TestEDPP_Forget_ReleasesBacklogWithoutZBump(t *testing.T) {
 	cfg := defaultTestEDPPConfig()
 	d := NewEDPPDecider(cfg, newTestAffineModel(), nil, nil)
 	r := &Request{ID: "drop1", SLOClass: "", InputTokens: make([]int, 200)}
-	d.OnRoute(r, r.ID, false /*toPrefill: D path, all work on decode*/, 200)
+	d.OnRoute(r, r.ID, false /*toPrefill: D path, all work on decode*/, 200, "", "")
 	qp, qd, n := d.BacklogForTest()
 	if (qp == 0 && qd == 0) || n != 1 {
 		t.Fatalf("after OnRoute: qp=%v qd=%v pending=%d; want nonzero backlog and 1 pending", qp, qd, n)
@@ -879,7 +879,7 @@ func TestEDPP_Anchor_SignalDirection(t *testing.T) {
 
 	// Increase decode backlog via D-path OnRoute: qdWork grows, so Q_d / W*_d grows.
 	extra := &Request{ID: "b", SLOClass: ""}
-	d.OnRoute(extra, extra.ID, false /*D-path*/, 500)
+	d.OnRoute(extra, extra.ID, false /*D-path*/, 500, "", "")
 	high := d.Decide(req, state).EDPPTrace.LHS
 
 	if high < low-1e-9 {
@@ -963,7 +963,7 @@ func TestEDPP_Anchor_UnitsDimensionless(t *testing.T) {
 
 		// Seed decode backlog via D-path OnRoute; token count fixed.
 		seed := &Request{ID: "s", SLOClass: ""}
-		d.OnRoute(seed, seed.ID, false, 200)
+		d.OnRoute(seed, seed.ID, false, 200, "", "")
 
 		// Seed z_itl AND z_ttft via OnComplete; realized latencies scaled by k to keep
 		// z values dimensionless-invariant.
@@ -971,7 +971,7 @@ func TestEDPP_Anchor_UnitsDimensionless(t *testing.T) {
 		//   z_ttft = (τ_ttft + 50_000*k − τ_ttft) / τ_ttft = 50_000*k / (100_000*k) = 0.5 (constant)
 		// Both ttftTerm and itlTerm are now non-zero and must scale invariantly.
 		breach := &Request{ID: "b", SLOClass: "", ArrivalTime: 0, OutputTokens: []int{1}}
-		d.OnRoute(breach, breach.ID, false, 1) // track so the OnComplete z_ttft fallback fires
+		d.OnRoute(breach, breach.ID, false, 1, "", "") // track so the OnComplete z_ttft fallback fires
 		d.OnComplete(breach, breach.ID, cfg.TauTTFTUs+50_000*k, cfg.TauITLUs+50_000*k)
 
 		return d.Decide(
@@ -1043,7 +1043,7 @@ func TestEDPP_Anchor_UnitsDimensionless_DecidesTrueInvariant(t *testing.T) {
 		// qdWork grows substantially, making Q_d/W*_d >> Q_p/W*_p (Q_p=0).
 		for i := 0; i < 10; i++ {
 			r := &Request{ID: fmt.Sprintf("ds%d_%d", k, i), SLOClass: ""}
-			d.OnRoute(r, r.ID, false /*D-path*/, 500)
+			d.OnRoute(r, r.ID, false /*D-path*/, 500, "", "")
 		}
 
 		// Also seed z_ttft and z_itl to exercise both terms.
@@ -1089,7 +1089,7 @@ func TestEDPP_WaitingOnly_DrainsAtAdmissionNotCompletion(t *testing.T) {
 	d := NewEDPPDecider(defaultTestEDPPConfig(), newTestAffineModel(), nil, nil)
 	// D-routed request: OnRoute adds wp+wd to qdWork.
 	r := &Request{ID: "d1", SLOClass: ""}
-	d.OnRoute(r, r.ID, false, 200) // Wp(200)=2000; wd=N̂_out(=1)·deltaBarDecode(2048)=2148 ⇒ qd=4148
+	d.OnRoute(r, r.ID, false, 200, "", "") // Wp(200)=2000; wd=N̂_out(=1)·deltaBarDecode(2048)=2148 ⇒ qd=4148
 	_, qd0, n0 := d.BacklogForTest()
 	if qd0 <= 0 || n0 != 1 {
 		t.Fatalf("after OnRoute: qd=%v pending=%d, want qd>0 pending=1", qd0, n0)
@@ -1116,7 +1116,7 @@ func TestEDPP_WaitingOnly_PDTwoSidedAdmission(t *testing.T) {
 	d := NewEDPPDecider(defaultTestEDPPConfig(), newTestAffineModel(), nil, nil)
 	// P-routed: OnRoute adds wp→qp, wd→qd.
 	r := &Request{ID: "p1", SLOClass: ""}
-	d.OnRoute(r, r.ID, true, 200) // qp += Wp(200)=2000 ; qd += wd=2148
+	d.OnRoute(r, r.ID, true, 200, "", "") // qp += Wp(200)=2000 ; qd += wd=2148
 	qp0, qd0, _ := d.BacklogForTest()
 	if math.Abs(qp0-2000) > 1e-9 || qd0 <= 0 {
 		t.Fatalf("after P OnRoute: qp=%v qd=%v", qp0, qd0)
@@ -1146,7 +1146,7 @@ func TestEDPP_Anchor_WaitingVsRunning(t *testing.T) {
 	d := NewEDPPDecider(cfg, newTestAffineModel(), nil, func() []RoutingSnapshot { return nil })
 	probe := &Request{ID: "x", InputTokens: make([]int, 200)}
 	state := &RouterState{SelectedInstance: "d0", Snapshots: []RoutingSnapshot{{ID: "d0", BatchSize: 2, KvTokensInUse: 1024}}}
-	d.OnRoute(&Request{ID: "w1", SLOClass: ""}, "w1", false, 500) // waiting work present
+	d.OnRoute(&Request{ID: "w1", SLOClass: ""}, "w1", false, 500, "", "") // waiting work present
 	lhsWaiting := d.Decide(probe, state).EDPPTrace.LHS
 	d.OnAdmit("w1", false) // w1 now running, not waiting
 	lhsRunning := d.Decide(probe, state).EDPPTrace.LHS
@@ -1200,7 +1200,7 @@ func newWaitingReq(id string, arrivalUs int64) *Request {
 func TestEDPP_FirstToken_BumpsZTTFTByMiss(t *testing.T) {
 	d := NewEDPPDecider(defaultTestEDPPConfig(), newTestAffineModel(), nil, nil)
 	req := newWaitingReq("r1", 0)
-	d.OnRoute(req, "r1", false, 3)
+	d.OnRoute(req, "r1", false, 3, "", "")
 	d.OnFirstToken("r1", 250_000)
 	if got := zval(d.zByClass[""]); math.Abs(got-150_000) > 1 {
 		t.Fatalf("zTTFT = %v, want 150000", got)
@@ -1210,7 +1210,7 @@ func TestEDPP_FirstToken_BumpsZTTFTByMiss(t *testing.T) {
 // First token at 50ms (< τ 100ms): SLO met ⇒ z stays floored at 0 (no positive pressure).
 func TestEDPP_FirstToken_MetSLO_NoPositiveZ(t *testing.T) {
 	d := NewEDPPDecider(defaultTestEDPPConfig(), newTestAffineModel(), nil, nil)
-	d.OnRoute(newWaitingReq("r1", 0), "r1", false, 3)
+	d.OnRoute(newWaitingReq("r1", 0), "r1", false, 3, "", "")
 	d.OnFirstToken("r1", 50_000)
 	if got := zval(d.zByClass[""]); got != 0 {
 		t.Fatalf("zTTFT = %v, want 0 (SLO met)", got)
@@ -1221,7 +1221,7 @@ func TestEDPP_FirstToken_MetSLO_NoPositiveZ(t *testing.T) {
 // token credits the certain lower-bound miss (200ms) into z_ttft — before any completion.
 func TestEDPP_ContinuousCredit_BeforeFirstToken(t *testing.T) {
 	d := NewEDPPDecider(defaultTestEDPPConfig(), newTestAffineModel(), nil, nil)
-	d.OnRoute(newWaitingReq("r1", 0), "r1", false, 3)
+	d.OnRoute(newWaitingReq("r1", 0), "r1", false, 3, "", "")
 	d.Decide(newWaitingReq("r2", 300_000), &RouterState{Clock: 300_000})
 	if got := zval(d.zByClass[""]); math.Abs(got-200_000) > 1 {
 		t.Fatalf("zTTFT = %v, want 200000 (credited lower bound)", got)
@@ -1232,7 +1232,7 @@ func TestEDPP_ContinuousCredit_BeforeFirstToken(t *testing.T) {
 // not 200+300.
 func TestEDPP_Credit_NoDoubleCount(t *testing.T) {
 	d := NewEDPPDecider(defaultTestEDPPConfig(), newTestAffineModel(), nil, nil)
-	d.OnRoute(newWaitingReq("r1", 0), "r1", false, 3)
+	d.OnRoute(newWaitingReq("r1", 0), "r1", false, 3, "", "")
 	d.Decide(newWaitingReq("x", 300_000), &RouterState{Clock: 300_000})
 	d.Decide(newWaitingReq("y", 400_000), &RouterState{Clock: 400_000})
 	if got := zval(d.zByClass[""]); math.Abs(got-300_000) > 1 {
@@ -1244,7 +1244,7 @@ func TestEDPP_Credit_NoDoubleCount(t *testing.T) {
 // observation: the long wait genuinely violated the SLO) and is no longer tracked.
 func TestEDPP_Forget_KeepsCredit(t *testing.T) {
 	d := NewEDPPDecider(defaultTestEDPPConfig(), newTestAffineModel(), nil, nil)
-	d.OnRoute(newWaitingReq("r1", 0), "r1", false, 3)
+	d.OnRoute(newWaitingReq("r1", 0), "r1", false, 3, "", "")
 	d.Decide(newWaitingReq("x", 300_000), &RouterState{Clock: 300_000})
 	d.Forget("r1")
 	if got := zval(d.zByClass[""]); math.Abs(got-200_000) > 1 {
@@ -1262,7 +1262,7 @@ func TestEDPP_OnComplete_FallbackBumpsZTTFT(t *testing.T) {
 	d := NewEDPPDecider(defaultTestEDPPConfig(), newTestAffineModel(), nil, nil)
 	req := newWaitingReq("r1", 0)
 	req.OutputTokens = []int{1, 2}
-	d.OnRoute(req, "r1", false, 3)
+	d.OnRoute(req, "r1", false, 3, "", "")
 	d.OnComplete(req, "r1", 250_000, 10_000)
 	if got := zval(d.zByClass[""]); math.Abs(got-150_000) > 1 {
 		t.Fatalf("zTTFT = %v, want 150000 (completion fallback)", got)
@@ -1274,7 +1274,7 @@ func TestEDPP_OnComplete_NoDoubleAfterFirstToken(t *testing.T) {
 	d := NewEDPPDecider(defaultTestEDPPConfig(), newTestAffineModel(), nil, nil)
 	req := newWaitingReq("r1", 0)
 	req.OutputTokens = []int{1, 2}
-	d.OnRoute(req, "r1", false, 3)
+	d.OnRoute(req, "r1", false, 3, "", "")
 	d.OnFirstToken("r1", 250_000)
 	d.OnComplete(req, "r1", 250_000, 10_000)
 	if got := zval(d.zByClass[""]); math.Abs(got-150_000) > 1 {

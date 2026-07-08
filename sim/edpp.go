@@ -182,11 +182,11 @@ const edppMinMu = 1e-3
 // cluster's feedSLOFeedback / feedAdmission). The decider never parses the key; it
 // only uses it as a map key.
 type SLOFeedbackDecider interface {
-	OnRoute(req *Request, key string, toPrefill bool, apTokens int)               // increment Q at routing
-	OnAdmit(key string, prefillSide bool)                                         // drain waiting-work share at admission
-	OnFirstToken(key string, nowUs int64)                                         // true up z_ttft from the realized first-token time
-	OnComplete(req *Request, key string, realizedTTFTUs, realizedMeanITLUs int64) // bump z_itl, update N̂_out (z_ttft owned by OnFirstToken)
-	Forget(key string)                                                            // release Q for a terminally non-completed routed request
+	OnRoute(req *Request, key string, toPrefill bool, apTokens int, decodeInst, prefillInst string) // increment Q at routing (per-pool + per-instance)
+	OnAdmit(key string, prefillSide bool)                                                           // drain waiting-work share at admission
+	OnFirstToken(key string, nowUs int64)                                                           // true up z_ttft from the realized first-token time
+	OnComplete(req *Request, key string, realizedTTFTUs, realizedMeanITLUs int64)                   // bump z_itl, update N̂_out (z_ttft owned by OnFirstToken)
+	Forget(key string)                                                                              // release Q for a terminally non-completed routed request
 }
 
 // edppAwaiting tracks a routed request still awaiting its first token, so z_ttft can be
@@ -207,6 +207,18 @@ type edppAwaiting struct {
 type edppPendingWork struct {
 	toPrefill bool
 	wp, wd    float64 // remaining µs in qp/qd (drained to 0 as each side is admitted)
+
+	// Routed instances recorded at OnRoute so the drains (OnAdmit/Forget) can mirror
+	// the pool-scalar decrement per-instance. decodeInst carries the wd share;
+	// prefillInst carries the wp share (disagg only). "" is ignored (nil-safe).
+	decodeInst, prefillInst string
+}
+
+// edppInstWork is the per-instance waiting-work accumulator (µs). It mirrors the
+// pool-level qp/qd scalars split by the routed instance, for the future joint
+// P/D routing reader; the reduced (pool-level) path never reads it.
+type edppInstWork struct {
+	wp, wd float64
 }
 
 // edppRunningMean is a per-class running mean of realized output lengths (N̂_out).
@@ -260,9 +272,15 @@ type EDPPDecider struct {
 	zByClass map[string]*edppClassState
 
 	// Conservation bookkeeping (design §6 conservation form).
-	qpWork, qdWork float64                     // running work-µs backlogs
-	pending        map[string]edppPendingWork  // per-request work, keyed by Request.ID
-	nHatOut        map[string]*edppRunningMean // per-class realized output-length estimate
+	qpWork, qdWork float64                    // running work-µs backlogs
+	pending        map[string]edppPendingWork // per-request work, keyed by Request.ID
+
+	// Per-instance congestion queues Q_i: the same waiting-work the pool scalars
+	// track, split by the routed instance. Populated always (in OnRoute/drained in
+	// OnAdmit/Forget) but READ only by the future joint P/D routing path. Invariant:
+	// sum over instances of wp == qpWork, and of wd == qdWork.
+	qByInstance map[string]*edppInstWork
+	nHatOut     map[string]*edppRunningMean // per-class realized output-length estimate
 
 	// Requests routed but not yet at their first token, keyed by the same conservation
 	// key as pending. Drives the continuous z_ttft credit (design: responsive z_ttft).
@@ -301,6 +319,7 @@ func NewEDPPDecider(cfg EDPPConfig, model LatencyModel, cacheQuery map[string]fu
 		zByClass:         make(map[string]*edppClassState),
 		coeffs:           cfg.Coeffs,
 		pending:          make(map[string]edppPendingWork),
+		qByInstance:      make(map[string]*edppInstWork),
 		nHatOut:          make(map[string]*edppRunningMean),
 
 		awaitingFirstToken: make(map[string]*edppAwaiting),
@@ -716,7 +735,7 @@ func (d *EDPPDecider) nHatFor(class string) *edppRunningMean {
 // OnRoute increments the work backlog for a committed request (design §6.1,
 // conservation form). apTokens is the uncached prompt token count (input-only; INV-9
 // safe). W_d uses the class N̂_out estimate at the nominal decode context.
-func (d *EDPPDecider) OnRoute(req *Request, key string, toPrefill bool, apTokens int) {
+func (d *EDPPDecider) OnRoute(req *Request, key string, toPrefill bool, apTokens int, decodeInst, prefillInst string) {
 	// Track every routed request for the continuous z_ttft credit, regardless of apTokens
 	// (a fully-cached request still has a TTFT and can still wait). The TTFT clock starts
 	// at arrival.
@@ -728,17 +747,69 @@ func (d *EDPPDecider) OnRoute(req *Request, key string, toPrefill bool, apTokens
 	wp := d.coeffs.Wp(apTokens, len(req.InputTokens))
 	// W_d now uses the exact discrete decode sum Wd(a_r, N̂_out); it no longer uses NomDecodeCtx.
 	wd := d.coeffs.Wd(len(req.InputTokens), d.nHatFor(req.SLOClass).mean())
-	pw := edppPendingWork{toPrefill: toPrefill}
+	pw := edppPendingWork{toPrefill: toPrefill, decodeInst: decodeInst, prefillInst: prefillInst}
 	if toPrefill {
 		pw.wp = wp // prefill work lands on the prefill pool
 		pw.wd = wd // decode-only work lands on the decode pool
 		d.qpWork += wp
 		d.qdWork += wd
+		// Mirror per-instance: prefill share → prefillInst, decode share → decodeInst.
+		d.instWork(prefillInst).wp += wp
+		d.instWork(decodeInst).wd += wd
 	} else {
 		pw.wd = wp + wd // mixed prefill+decode on the decode pool
 		d.qdWork += wp + wd
+		d.instWork(decodeInst).wd += wp + wd
 	}
 	d.pending[key] = pw
+}
+
+// instWork returns (creating if needed) the per-instance work accumulator for id.
+// id == "" is ignored and returns a throwaway accumulator (nil-safe), so an unknown
+// instance never panics and never pollutes the map with a "" key.
+func (d *EDPPDecider) instWork(id string) *edppInstWork {
+	if id == "" {
+		return &edppInstWork{}
+	}
+	w, ok := d.qByInstance[id]
+	if !ok {
+		w = &edppInstWork{}
+		d.qByInstance[id] = w
+	}
+	return w
+}
+
+// drainInst decrements the per-instance accumulator by (wp, wd), mirroring the
+// pool-scalar drain, and 0-clamps like the pool path. id == "" or an unknown id is
+// a no-op (the work was never attributed to a live instance). It never resurrects a
+// deleted key beyond what instWork already created at OnRoute.
+func (d *EDPPDecider) drainInst(id string, wp, wd float64) {
+	if id == "" {
+		return
+	}
+	w, ok := d.qByInstance[id]
+	if !ok {
+		return
+	}
+	w.wp -= wp
+	w.wd -= wd
+	if w.wp < 0 {
+		w.wp = 0
+	}
+	if w.wd < 0 {
+		w.wd = 0
+	}
+}
+
+// QByInstance returns a snapshot copy of the per-instance congestion queues Q_i
+// (waiting work µs, split into prefill Wp and decode Wd). For tests and the future
+// joint P/D routing reader; the reduced (pool-level) path does not consume it.
+func (d *EDPPDecider) QByInstance() map[string]struct{ Wp, Wd float64 } {
+	out := make(map[string]struct{ Wp, Wd float64 }, len(d.qByInstance))
+	for id, w := range d.qByInstance {
+		out[id] = struct{ Wp, Wd float64 }{Wp: w.wp, Wd: w.wd}
+	}
+	return out
 }
 
 // OnAdmit removes the waiting-work share of a routed request that has just been
@@ -754,9 +825,11 @@ func (d *EDPPDecider) OnAdmit(key string, prefillSide bool) {
 	}
 	if prefillSide {
 		d.qpWork -= pw.wp
+		d.drainInst(pw.prefillInst, pw.wp, 0) // mirror the wp decrement per-instance
 		pw.wp = 0
 	} else {
 		d.qdWork -= pw.wd
+		d.drainInst(pw.decodeInst, 0, pw.wd) // mirror the wd decrement per-instance
 		pw.wd = 0
 	}
 	if d.qpWork < 0 {
@@ -807,6 +880,8 @@ func (d *EDPPDecider) Forget(key string) {
 	}
 	d.qpWork -= pw.wp
 	d.qdWork -= pw.wd
+	d.drainInst(pw.prefillInst, pw.wp, 0) // mirror wp per-instance
+	d.drainInst(pw.decodeInst, 0, pw.wd)  // mirror wd per-instance
 	if d.qpWork < 0 {
 		d.qpWork = 0
 	}

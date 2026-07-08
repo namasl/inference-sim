@@ -2333,7 +2333,11 @@ func (cs *ClusterSimulator) executeDisaggregatedRouting(req *sim.Request, time i
 	// correlate back to req.ID — see feedSLOFeedback / edppConservationKey.
 	if cs.sloFeedback != nil {
 		ap := len(req.InputTokens) // uncached-prompt upper bound; INV-9 safe
-		cs.sloFeedback.OnRoute(req, req.ID, disaggDecision.Disaggregate, ap)
+		// The decode instance is pre-selected here (decode-first routing); the prefill
+		// instance is chosen later by PrefillRoutingEvent, so pass "" for it. Per-instance
+		// prefill attribution is therefore deferred (see per-instance Q_i note); the
+		// pool-level scalars are unaffected.
+		cs.sloFeedback.OnRoute(req, req.ID, disaggDecision.Disaggregate, ap, decodeDecision.TargetInstance, "")
 	}
 
 	// Find the target decode instance object (used in both paths below).
