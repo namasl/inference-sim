@@ -17,7 +17,8 @@
 - **Deterministic tie-break**: on equal `J`, pick the lowest instance index (then local before disagg) — INV-6.
 - **Occupancy-aware `T̂`**: joint mode uses the estimator selected by `--edpp-tadm-estimator` (the harness passes `rollforward`); evaluated per candidate snapshot.
 - **INV-9**: `Decide` reads only `len(req.InputTokens)`, cache, `N̂_out`, snapshots — never `req.OutputTokens`. **INV-13**: `--edpp-joint` on run AND replay.
-- The objective `J(d,p)` (spec §3): `q_d·W_d + (p=local?q_d:q_p)·W_p(a_p(loc),a_r) + z_ttft·T̂-terms + z_itl·(m_dec+1{local}m_pf) + V·c_xfer·1{disagg}`, normalized by `W*` as the reduced rule does.
+- The objective `J(d,p)` is the **normalized** form in spec §3/§3.1 — every term carries its divisor:
+  `q_d·W_d + (p=local?q_d:q_p)·W_p(a_p(loc),a_r) + z_ttft·T̂(a)/τ_ttft + z_itl·(m_dec+1{local}m_pf)/τ_itl + V·c_xfer·(τ_ref/τ_ttft)·1{disagg}`, with `q_i=Q_i/W*`. Use the **absolute** per-candidate `T̂(a)` (NOT the reduced rule's `ttft_p−ttft_d` difference); extract the reduced rule's normalized term helpers (`/τ`, `W*`), not its differenced decision expression. Two documented homogeneous-cut deviations from §5.3: per-class `z_itl` (not per-instance `Z^I_d`) and single `θ` (not `θ_i`).
 - Go tests: `go test ./sim/... -run <name>`; build `go build -o blis main.go`; gofmt before commit.
 
 ---

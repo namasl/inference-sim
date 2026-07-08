@@ -65,18 +65,43 @@ asymmetric across nodes? — but the answers are whatever the runs show.
 
 ## 3. The objective, per candidate
 
-Reduced to homogeneous coefficients with per-class scalar `z` (§5.3):
+This is the formulation's §5.3 decision rule (its **normalized** form, lines 586–635), evaluated per
+candidate and argmin'd over `𝒜` — i.e. §5.5's "full-joint = the same rule over all actions." **Every term
+carries its normalizer** (this is what makes them commensurable and gives the tight-SLO-class behavior; the
+shipped reduced rule already implements exactly these divisors — reuse them, do not drop them):
 
 ```
-J(d,p) =  q_d·W_d(a_r, ô)                            (decode congestion, always on d)
-        + (p=local ? q_d : q_p)·W_p(a_p(loc), a_r)   (prefill congestion; a_p from the prefill LOCATION's cache)
-        + z_ttft·(T̂_disagg(d,p) or T̂_local(d))       (TTFT term, per-candidate occupancy-aware T̂)
-        + z_itl·(m_dec(d) + 1{p=local}·m_pf(d))       (ITL term, per-class z, per-candidate marginal)
-        + V·c_xfer·1{p≠local}                         (transfer penalty)
+J(d,p) =  q_d·W_d(a_r, ô)                                   (decode congestion; q_i = Q_i / W*)
+        + (p=local ? q_d : q_p)·W_p(a_p(loc), a_r)          (prefill congestion; a_p from the prefill LOCATION's cache)
+        + z_ttft · T̂(a) / τ_ttft                            (TTFT term)
+        + z_itl · (m_dec(d) + 1{p=local}·m_pf(d)) / τ_itl   (ITL term)
+        + V · c_xfer · (τ_ref / τ_ttft) · 1{p≠local}        (transfer penalty)
 ```
-all normalized by `W*` as in the reduced rule (same normalizers, homogeneous). `a_p(loc)` is the prefill
-location's cache-adjusted uncached tokens (§2.4); for `p=local` it is `d`'s cache, for `p∈𝒫` it is `p`'s
-cache. `ô = N̂_out` (INV-9-safe). argmin over `(d,p)`.
+where `q_i = Q_i/W*`, `W* ≈ μ_nom·τ_ref` (same `W*` as the reduced rule); `z_ttft`/`z_itl` are the
+**relative-form** deficits (`max{z + (realized/τ − 1), 0}`, per §5.3); `T̂(a)` is the **absolute**
+per-candidate forward TTFT (§5.3): `T̂_local(d)=T̂_adm(d)+prefill_on_d`,
+`T̂_disagg(d,p)=T̂_adm(p)+prefill_on_p+transfer+T̂_adm(d)` — occupancy-aware (`rollforward`). `a_p(loc)` is the
+prefill location's cache-adjusted uncached tokens (§2.4): `d`'s cache for `p=local`, `p`'s cache for `p∈𝒫`.
+`ô = N̂_out` (INV-9-safe). argmin over `(d,p)`, deterministic tie-break (§5).
+
+**Use absolute `T̂(a)`, NOT the reduced rule's difference `(ttft_p − ttft_d)`.** The difference form is a
+pairwise-fixed-`d` artifact (§5.5 *derives* the reduced `lhs>rhs` inequality from `J(d,p*) < J(d,local)`).
+The joint argmin ranks candidates by their own absolute `J(a)`, so extract the reduced rule's *normalized
+term helpers* (the `/τ` divisors, `W*`), **not** its differenced decision expression.
+
+### 3.1 Reconciliation with formulation §5.3 (exact mapping + the two deviations)
+
+Term-by-term this `J(d,p)` **is** §5.3: congestion `Σ_i q_i·Δwork_i(a)` (local→`q_d·(W_p+W_d)`,
+disagg→`q_d·W_d+q_p·W_p`) ✓ exact; TTFT `z^T_c·T̂(a)/τ^T_c` ✓; ITL `z^I·m(a)/τ^I` ✓ structure;
+transfer `V·c_xfer·(τ_ref/τ^T_c)·1{disagg}` ✓. Two **intentional homogeneous-cut deviations** from §5.3
+(both deferred to sub-project 2, §4/§8):
+1. **ITL uses per-class scalar `z_itl`, not per-instance `Z^I_d`** — so the ITL term discriminates decode
+   candidates only via the per-candidate marginal `m_dec(d)`, not a per-instance deficit. (§5.3 is per-instance.)
+2. **Single global `θ`, not per-instance `θ_i`** — homogeneous hardware. (§5.3 evaluates each `Δwork_i`/`T̂`
+   with instance `i`'s own coefficients; here all instances share `d.coeffs`. Cache still makes `W_p`/`T̂`
+   differ per candidate via `a_p`, §1.)
+Everything else — the argmin structure, per-instance `Q_i`, absolute per-candidate `T̂`, the normalizers — is
+the formulation rule verbatim.
 
 ## 4. Deferred to sub-project 2 (gated on simulator work)
 
