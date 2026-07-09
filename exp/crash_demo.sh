@@ -2,8 +2,6 @@
 # Demonstrates the system-freeze that occurs when many blis processes are
 # launched in parallel on Fedora (observed on F41 and F44).
 #
-# *** DO NOT RUN ON A MACHINE YOU CAN'T REACH OVER SSH. ***
-#
 # Symptom: after a few seconds the desktop becomes unresponsive (mouse/kb
 # stall, fan ramps to max). Recovery typically requires a hard reboot.
 #
@@ -19,23 +17,22 @@
 #   4. Set GOMEMLIMIT in the env:    GOMEMLIMIT=1500MiB ./blis ...
 #
 # Usage:
-#   N=2 exp/crash_demo.sh    # try the smallest count first
-#   exp/crash_demo.sh        # defaults to nproc — most likely to freeze
+#   N=2 ./crash_demo.sh    # try the smallest count first
+#   ./crash_demo.sh        # defaults to nproc — most likely to freeze
 
 set -uo pipefail
-cd "$(dirname "$0")/.."
 
 N=${N:-$(nproc)}
 LOGDIR="${LOGDIR:-/tmp/blis-crash-demo}"
 mkdir -p "$LOGDIR"
 
 echo "Launching $N parallel blis runs. Logs: $LOGDIR"
-echo "If the desktop freezes, ssh in and: pkill -9 blis"
 
 for i in $(seq 1 "$N"); do
   ./blis run \
+    --lazy-generation \
     --model meta-llama/llama-3.3-70b-instruct \
-    --workload-spec workloads/inference-perf-interactive-chat.yaml \
+    --workload-spec crash_demo.yaml \
     --num-instances 4 --tp 4 --hardware H100 \
     --seed "$i" \
     --post-hoc-detector composite \
