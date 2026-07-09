@@ -48,12 +48,12 @@ JOBS="${JOBS:-$(nproc 2>/dev/null || echo 4)}"
 # Per-workload rate sweeps. Approximately geometric, chosen to span
 # moderately-loaded → heavily-loaded for 16 H100 GPUs (4×TP=4) on llama-3.3-70b.
 # Override any of these via env var when invoking the script.
-CHAT_RATES="${CHAT_RATES:-5 10 20 50 100 200}"
-CODE_RATES="${CODE_RATES:-0.01 0.02 0.05 0.1 0.2 0.5 1 2 5 10}"
-DEEPRESEARCH_RATES="${DEEPRESEARCH_RATES:-0.2 0.5 1 2 5 10}"
-REASONING_RATES="${REASONING_RATES:-0.2 0.5 1 2 5 10}"
-BATCHSUMMARIZATION_RATES="${BATCHSUMMARIZATION_RATES:-0.2 0.5 1 2 5 10}"
-BATCHSYNTHETIC_RATES="${BATCHSYNTHETIC_RATES:-0.2 0.5 1 2 5 10 20}"
+CHAT_RATES="${CHAT_RATES:-5 10 20 50 100 200 500}"
+CODE_RATES="${CODE_RATES:-0.01 0.02 0.05 0.1 0.2 0.5 1 2 5 10 20 50 100}"
+DEEPRESEARCH_RATES="${DEEPRESEARCH_RATES:-0.2 0.5 1 2 5 10 20 50 100}"
+REASONING_RATES="${REASONING_RATES:-0.2 0.5 1 2 5 10 20 50 100 200}"
+BATCHSUMMARIZATION_RATES="${BATCHSUMMARIZATION_RATES:-0.2 0.5 1 2 5 10 20 50 100}"
+BATCHSYNTHETIC_RATES="${BATCHSYNTHETIC_RATES:-0.2 0.5 1 2 5 10 20 50 100}"
 
 SEEDS="${SEEDS:-42 123 777}"
 MODEL="meta-llama/llama-3.3-70b-instruct"
@@ -99,32 +99,12 @@ ARMS=(
   # "pd-3p1d-edpp|./exp/blis-edpp|--num-instances 4 --prefill-instances 3 --decode-instances 1 --prefill-tp 4 --decode-tp 4 --hardware H100 --pd-transfer-bandwidth 10.3 --pd-decider edpp"
 )
 
-CSV_HEADER="arm,rate,seed,throughput_rps,tokens_per_sec,completed,ttft_mean_ms,ttft_p90_ms,ttft_p95_ms,ttft_p99_ms,e2e_mean_ms,e2e_p90_ms,e2e_p95_ms,e2e_p99_ms,itl_mean_ms,itl_p90_ms,itl_p95_ms,itl_p99_ms,timeouts,preemptions,disagg_count,sat_level,sat_score"
+CSV_HEADER="arm,rate,seed,throughput_rps,tokens_per_sec,completed,ttft_mean_ms,ttft_p90_ms,ttft_p95_ms,ttft_p99_ms,e2e_mean_ms,e2e_p90_ms,e2e_p95_ms,e2e_p99_ms,itl_mean_ms,itl_p90_ms,itl_p95_ms,itl_p99_ms,timeouts,preemptions,disagg_count,sat_level,sat_score,goodput_rps,slo_attainment"
 
-# Run a single (workload, arm, rate, seed) cell and write its .csvrow.
-# All inputs come via positional args so this is safe to invoke from a
-# background subshell.
-run_cell() {
-  local wl_name=$1 arm=$2 bin=$3 flags=$4 rate=$5 seed=$6
-  local cfg_yaml="$OUTDIR/${wl_name}-${rate}.yaml"
-  local metrics="$OUTDIR/${wl_name}-${arm}-${rate}-${seed}.json"
-  local log="$OUTDIR/${wl_name}-${arm}-${rate}-${seed}.log"
-  local row="$OUTDIR/${wl_name}-${arm}-${rate}-${seed}.csvrow"
-
-  # shellcheck disable=SC2086
-  "$bin" run \
-    --model "$MODEL" \
-    --workload-spec "$cfg_yaml" \
-    --seed "$seed" \
-    $flags \
-    --post-hoc-detector composite \
-    --metrics-path "$metrics" > "$log" 2>&1
-
-  # PD metrics live in stdout, not the JSON. Aggregate arm has no PD metrics;
-  # default disagg=0.
-  local disagg
-  disagg=$(grep -oE 'Disaggregated Requests: [0-9]+' "$log" | grep -oE '[0-9]+$' || echo 0)
-
+# Extract the per-cell CSV row from a metrics JSON and write it to $row.
+# Shared by run_cell's fresh-run and skip paths so the two stay in lockstep.
+emit_row() {
+  local metrics=$1 disagg=$2 arm=$3 rate=$4 seed=$5 row=$6
   jq -r --arg arm "$arm" --arg r "$rate" --arg s "$seed" --argjson d "$disagg" '
     [$arm, $r, $s,
      (.responses_per_sec // 0),
@@ -137,11 +117,72 @@ run_cell() {
      (.preemption_count // 0),
      $d,
      (.saturation.level // ""),
-     (.saturation.score // 0)
+     (.saturation.score // 0),
+     (.goodput_rps // ""),
+     (.slo_attainment // "")
     ] | @csv
   ' "$metrics" > "$row"
+}
 
-  local ttft e2e sat
+# Run a single (workload, arm, rate, seed) cell and write its .csvrow.
+# All inputs come via positional args so this is safe to invoke from a
+# background subshell.
+#
+# Idempotency: a cell whose metrics JSON already exists and parses is skipped
+# (its .csvrow is regenerated so Phase 3 assembly still finds it). A cell whose
+# blis run fails writes a .fail marker instead of aborting the pool — the marker
+# is collected into the post-run failure banner. run_cell always returns 0 so
+# the dispatch loop's `wait -n` never trips `set -e`.
+run_cell() {
+  local wl_name=$1 arm=$2 bin=$3 flags=$4 rate=$5 seed=$6
+  local cfg_yaml="$OUTDIR/${wl_name}-${rate}.yaml"
+  local metrics="$OUTDIR/${wl_name}-${arm}-${rate}-${seed}.json"
+  local log="$OUTDIR/${wl_name}-${arm}-${rate}-${seed}.log"
+  local row="$OUTDIR/${wl_name}-${arm}-${rate}-${seed}.csvrow"
+  local fail="$OUTDIR/${wl_name}-${arm}-${rate}-${seed}.fail"
+  local disagg ttft e2e sat
+
+  # Skip if a valid result already exists (idempotency). Still regenerate the
+  # .csvrow so Phase 3 assembly finds it, and clear any stale .fail marker.
+  if [[ -f "$metrics" ]] && jq -e . "$metrics" > /dev/null 2>&1; then
+    rm -f "$fail"
+    disagg=$(grep -oE 'Disaggregated Requests: [0-9]+' "$log" 2>/dev/null | grep -oE '[0-9]+$' || echo 0)
+    emit_row "$metrics" "$disagg" "$arm" "$rate" "$seed" "$row"
+    ttft=$(jq -r '.ttft_p99_ms // 0' "$metrics")
+    e2e=$(jq -r  '.e2e_p99_ms  // 0' "$metrics")
+    sat=$(jq -r  '.saturation.level // "?"' "$metrics")
+    printf "[%-26s] %-20s rate=%-8s seed=%-4s SKIP  ttft_p99=%8.1fms e2e_p99=%9.1fms sat=%-10s disagg=%s\n" \
+      "$wl_name" "$arm" "$rate" "$seed" "$ttft" "$e2e" "$sat" "$disagg" >&2
+    return 0
+  fi
+
+  # shellcheck disable=SC2086
+  local rc=0
+  "$bin" run \
+    --model "$MODEL" \
+    --workload-spec "$cfg_yaml" \
+    --seed "$seed" \
+    $flags \
+    --post-hoc-detector composite \
+    --metrics-path "$metrics" > "$log" 2>&1 || rc=$?
+
+  if (( rc != 0 )); then
+    # Record the failure for the post-run banner; drop any stale row so Phase 3
+    # doesn't assemble a partial result for this cell.
+    rm -f "$row"
+    printf '%s  arm=%s  rate=%s  seed=%s  (exit %d)  log=%s\n' \
+      "$wl_name" "$arm" "$rate" "$seed" "$rc" "$log" > "$fail"
+    printf "[%-26s] %-20s rate=%-8s seed=%-4s FAILED (exit %d) — see %s\n" \
+      "$wl_name" "$arm" "$rate" "$seed" "$rc" "$log" >&2
+    return 0
+  fi
+  rm -f "$fail"
+
+  # PD metrics live in stdout, not the JSON. Aggregate arm has no PD metrics;
+  # default disagg=0.
+  disagg=$(grep -oE 'Disaggregated Requests: [0-9]+' "$log" | grep -oE '[0-9]+$' || echo 0)
+  emit_row "$metrics" "$disagg" "$arm" "$rate" "$seed" "$row"
+
   ttft=$(jq -r '.ttft_p99_ms // 0' "$metrics")
   e2e=$(jq -r  '.e2e_p99_ms  // 0' "$metrics")
   sat=$(jq -r  '.saturation.level // "?"' "$metrics")
@@ -174,6 +215,10 @@ for wl_name in "${WORKLOAD_ORDER[@]}"; do
   total_cells=$(( total_cells + ${#ARMS[@]} * ${#rates[@]} * ${#seeds[@]} ))
 done
 echo "Dispatching $total_cells cells across $JOBS workers..."
+
+# Clear stale failure markers from a prior run so the post-run banner reflects
+# only this invocation. (run_cell also clears its own marker on success/skip.)
+rm -f "$OUTDIR"/*.fail 2>/dev/null || true
 
 running=0
 dispatched=0
@@ -226,6 +271,21 @@ for wl_name in "${WORKLOAD_ORDER[@]}"; do
     done
   done
 
+  # Per-workload failure banner — collected from this workload's .fail markers.
+  shopt -s nullglob
+  wl_fails=("$OUTDIR/${wl_name}"-*.fail)
+  shopt -u nullglob
+  if (( ${#wl_fails[@]} > 0 )); then
+    printf "\n\033[1;31m%s\033[0m\n" "$(printf '=%.0s' {1..80})"
+    printf "\033[1;31m  FAILED CELLS in workload '%s' — %d cell(s) failed (re-run to retry)\033[0m\n" \
+      "$wl_name" "${#wl_fails[@]}"
+    printf "\033[1;31m%s\033[0m\n" "$(printf '=%.0s' {1..80})"
+    for f in "${wl_fails[@]}"; do
+      printf "\033[1;31m  x  %s\033[0m\n" "$(cat "$f")"
+    done
+    printf "\033[1;31m%s\033[0m\n\n" "$(printf '=%.0s' {1..80})"
+  fi
+
   echo "  Summary (seed-mean per arm × rate, sorted by rate then TTFT p99):"
   printf "  %-20s %-8s %10s %10s %10s %10s %8s %12s\n" \
     "arm" "rate" "ttft_p99" "e2e_p99" "itl_p99" "rps" "disagg" "sat(mode)"
@@ -264,3 +324,24 @@ for wl_name in "${WORKLOAD_ORDER[@]}"; do
 done
 
 echo "All results in: $OUTDIR"
+
+# Cross-workload failure summary — printed last so it's impossible to miss.
+# Each failed cell left a .fail marker (workers can't append to a shared array
+# from background subshells, so we collect from the filesystem instead).
+shopt -s nullglob
+fail_markers=("$OUTDIR"/*.fail)
+shopt -u nullglob
+if (( ${#fail_markers[@]} > 0 )); then
+  printf "\n"
+  printf "\033[1;31m%s\033[0m\n" "$(printf '#%.0s' {1..80})"
+  printf "\033[1;31m%s\033[0m\n" "$(printf '#%.0s' {1..80})"
+  printf "\033[1;31m##  SWEEP FINISHED WITH %d FAILURE(S) — re-run this script to retry%-*s##\033[0m\n" \
+    "${#fail_markers[@]}" 1 ""
+  printf "\033[1;31m%s\033[0m\n" "$(printf '#%.0s' {1..80})"
+  for f in "${fail_markers[@]}"; do
+    printf "\033[1;31m  x  %s\033[0m\n" "$(cat "$f")"
+  done
+  printf "\033[1;31m%s\033[0m\n" "$(printf '#%.0s' {1..80})"
+  printf "\033[1;31m%s\033[0m\n\n" "$(printf '#%.0s' {1..80})"
+  exit 1
+fi
