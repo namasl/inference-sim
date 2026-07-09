@@ -715,3 +715,77 @@ bash campaigns/edpp-study/repro_ttft_d_local.sh          # Figs A/B/C (ttft_d vs
 # figures land in out/work_sweep/ and out/ttft_d_local/ (both gitignored)
 ```
 Analysis scripts: `analyze/work_model_sweep.py`, `analyze/ttft_d_local.py`.
+
+### ttft_p — Phase 1: single 1P1D disaggregated pipeline (`out/ttft_p_local/fig_{ttft_p,prefill_adm}.png`)
+Mirror of the ttft_d figure for the DISAGGREGATED path: 1P1D, `--pd-decider edpp --edpp-c-xfer 0s` ⇒ EDPP
+disaggregates ~98.5% of requests onto the single prefill + single decode engine (no pool/routing
+confound; `--pd-decider edpp` is required — only EDPP's `Decide` computes/logs `ttft_p`). Validates
+`ttft_p = prefill-pool admission + prefill compute + KV transfer + decode-side first-token` against
+realized outcomes, fluid & rollforward, same ρ=offered/λ\* plateau-probe load axis, same synth/mixed/
+prefill archetypes. λ\*: synth 0.72, mixed 2.99, prefill 7.47 req/s — note prefill's disagg λ\* (7.47)
+**exceeds its collocated λ\* (5.66)** because disaggregation frees the decode engine from prefill
+contention (the expected prefill-heavy disaggregation payoff). Decomposition option (b): two figures —
+total `ttft_p`, plus the prefill-pool admission component.
+
+**Key results.**
+- **`fig_ttft_p` (total, the deliverable):** realized TTFT rises with load; `ttft_p` is essentially FLAT
+  (fluid ≡ rollforward) — mild OVER-prediction at low load, accurate near ρ=1, UNDER-prediction above.
+  Crucially **no overload explosion** (TTFT bounded ~100–180ms even at ρ=1.5, vs ttft_d's 20 s): on the
+  disaggregated path prefill runs on the uncontended engine, so decode backlog hits ITL/E2E, not
+  first-token. Same snapshot-based load-insensitivity as ttft_d, far gentler failure — the disaggregation
+  TTFT payoff, visible.
+- **`fig_prefill_adm` (component):** prefill-pool admission is **accurately estimated (~1.06×: realized
+  15.6ms vs est 16.6ms)** but nearly FLAT and small — on 1P1D the single prefill engine is not the
+  bottleneck, so this term barely moves with load. The one real signal is prefill-workload at ρ=1.5,
+  where realized prefill admission rises to 24.8ms (prefill engine finally saturates) and the estimate
+  misses the onset. NOTE the auto-zoomed y-axis (~15–25ms) visually exaggerates the ~1ms gap.
+- **fluid ≡ rollforward in `ttft_p`**: they agree on prefill-pool admission (which dominates ttft_p's
+  admission term); the decode-pool 2× over-prediction (Stage C T2) enters ttft_p only as a tiny
+  first-token component, so it doesn't surface.
+
+**Limitation / Phase 2.** The prefill-admission decomposition is idle on 1P1D because the prefill engine
+has slack. To make prefill-pool admission the load-sensitive term it needs a **prefill-bottlenecked
+topology (e.g. 1P3D)**, plus 2P2D / 3P1D — deferred to Phase 2 (multi-instance pools need load-balancing
+`--prefill/decode-routing-scorers` to avoid shared-prefix pinning, as the ttft_d k>1 exploration found).
+
+**Reproduce:** `bash campaigns/edpp-study/repro_ttft_p_local.sh` → `out/ttft_p_local/fig_{ttft_p,prefill_adm}.png`.
+Analysis script: `analyze/ttft_p_local.py`.
+
+## Policy comparison — all five §5 deciders (2026-07-09)
+
+*(The "§5 deciders" = the baseline table in the joint-routing formulation,
+`docs/design/2026-06-30-pd-joint-routing-problem-formulation.md`, section 5.)* Goodput
+(`slo_attainment`) + one-step counterfactual regret (`total_regret`, K=4) for `never` / `always` /
+`prefix-threshold` / reduced-EDPP / joint-EDPP, same cells as the joint sweep. Reproduce:
+`bash campaigns/edpp-study/repro_policy_comparison.sh` (artifacts in `out/policy_cmp/<cell>/`).
+
+| cell | never | always | prefix-threshold | reduced-EDPP | joint-EDPP |
+|---|---|---|---|---|---|
+| 1P2D synth_cf (cache-uniform, decode-bound) | **0.399** / NA | **1.000** / 0.000 | **1.000** / 0.000 | 0.990 / 0.030 | 0.979 / 0.0225 |
+| 2P2D synth_cf | 0.399 / NA | 1.000 / 0.000 | 1.000 / 0.000 | 0.990 / 0.030 | 0.979 / 0.0225 |
+| 1P2D synth_asym (loose SLO) | 1.000 / NA | 1.000 / 0.000 | 1.000 / 0.000 | 1.000 / 0.000 | 0.999 / 0.0012 |
+| 2P2D synth_asym | 1.000 / NA | 1.000 / 0.000 | 1.000 / 0.000 | 1.000 / 0.000 | 0.999 / 0.0012 |
+
+(`never` regret = NA: its all-local run produces no `--pd-outcome-trace` rows — "need
+PD/disaggregation enabled" — so no plan to sweep. Goodput is unaffected. This is the deferred
+`--pd-outcome-trace`-omits-local-`decode_instance` gap.)
+
+**Honest reading (this reframes the joint-mechanism result).**
+- **On synth_cf (decode-bound), full disaggregation is optimal and trivial baselines win.** `always`
+  and `prefix-threshold` reach **goodput 1.000 with ZERO one-step regret** — they beat BOTH EDPP
+  variants (reduced 0.990, joint 0.979). `never` collapses to **0.399** (all-local on 2 mixed nodes ⇒
+  decode saturation). So: (i) this workload SHOULD disaggregate (Q1: never ≪ always), and (ii) the
+  right amount is *all of it* — EDPP's selectivity (it keeps ~some requests local) is a small
+  **liability** here, and joint's decode-node reshuffling costs a hair more than reduced.
+- **So the "regret" reduced/joint leave (0.030 / 0.0225) is regret *against the always baseline being
+  available*** — EDPP leaves goodput on the table precisely by NOT fully disaggregating like `always`
+  does. Joint recovers ~25% of it (consistent with the joint-mechanism section) but neither EDPP
+  variant reaches the trivial baselines' 1.000 on this workload.
+- **synth_asym (loose SLO): everyone ties at ~1.000** — the batch SLO is met by all policies, so there
+  is no separation; joint again shaves a hair (0.999).
+- **The takeaway for the paper.** On uniform/decode-bound synth at equal hardware, the standard
+  baselines (`always`/`prefix-threshold`) are already optimal, so neither reduced- nor joint-EDPP can
+  demonstrate value — echoing the equal-HW Q2 verdict in the EDPP worklog memory. The joint mechanism's
+  distinctive lever (per-instance cost via `θ_i`) is invisible here because all decode instances are
+  identical; `always`/`never` cannot express a per-instance cost tradeoff, so a workload where they
+  CANNOT be optimal (heterogeneous hardware — sub-project 2) is required to show the joint rule's edge.
