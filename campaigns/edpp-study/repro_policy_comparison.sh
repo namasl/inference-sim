@@ -128,13 +128,13 @@ echo "policy comparison — K=$K, estimator=$ESTIMATOR, prefix-threshold=$PREFIX
 printf '%-8s %-10s' cell workload
 for p in $POLICIES; do printf ' %-18s' "$p(g/reg)"; done; printf '\n'
 
-for topo in 1P2D 2P2D; do
+for topo in ${TOPOS:-1P2D 2P2D}; do
   if [[ "$topo" == "1P2D" ]]; then
     TOPO=(--num-instances 3 --prefill-instances 1 --decode-instances 2); DECODES="instance_1 instance_2"; PREFILLS="instance_0"
   else
     TOPO=(--num-instances 4 --prefill-instances 2 --decode-instances 2); DECODES="instance_2 instance_3"; PREFILLS="instance_0 instance_1"
   fi
-  for wl in synth_cf synth_asym; do
+  for wl in ${WORKLOADS:-synth_cf synth_asym}; do
     SPEC="campaigns/edpp-study/specs/${wl}.yaml"
     cdir="$OUT/${topo}_${wl}"; mkdir -p "$cdir"
     CELL_COMMON=(--model "$MODEL" --workload-spec "$SPEC" "${TOPO[@]}" "${SLO[@]}")

@@ -626,6 +626,18 @@ cache-asymmetric (unique large prompts, no shared prefix)}. Both policies use
 | 1P2D | synth_asym (asym)  | **1.000** | 0.999 | **0.000** | 0.0012 | 0.328 | 0.000 | 20% / 80% |
 | 2P2D | synth_asym (asym)  | **1.000** | 0.999 | **0.000** | 0.0012 | 0.536 | **0.260** | 15% / 85% |
 
+> **CORRECTION (2026-07-09, K=50) — the "~25% regret cut" below was a small-sample (K=4) artifact and is
+> RETRACTED.** Re-running the 1P2D `synth_cf` cell with K=50 sampled requests (same seed; see
+> `campaigns/edpp-study/repro_policy_comparison.sh` / `out/policy_cmp_k50/`) reverses the direction:
+> **reduced total_regret 0.2188 (frac_positive 0.44) vs joint 0.3213 (frac_positive 0.46)** — joint's regret
+> is ~47% *higher*, and its goodput is lower (0.979 vs 0.990). So on this homogeneous decode-bound cell
+> **joint-EDPP does NOT beat reduced-EDPP — it is slightly worse on both goodput and regret.** The K=4
+> numbers in the table/prose below are kept for provenance but do NOT support the "joint recovers
+> decode-placement regret" hypothesis at tight statistics. This strengthens the overall verdict (joint's
+> value needs heterogeneous `θ_i`, not visible on homogeneous hardware) — it does not weaken it. Note
+> `total_regret` is a sum over K, so the K=4 (0.030) and K=50 (0.2188) magnitudes are not comparable; the
+> reduced-vs-joint *direction* at fixed K is what flipped.
+
 **Honest reading — joint does NOT uniformly win.**
 - **Cache-uniform (`synth_cf`), both topologies:** joint **cuts leftover regret ~25%** (0.030→0.0225),
   confirming the hypothesis directionally — the joint argmin recovers part of the decode-placement regret
@@ -777,10 +789,13 @@ PD/disaggregation enabled" — so no plan to sweep. Goodput is unaffected. This 
   decode saturation). So: (i) this workload SHOULD disaggregate (Q1: never ≪ always), and (ii) the
   right amount is *all of it* — EDPP's selectivity (it keeps ~some requests local) is a small
   **liability** here, and joint's decode-node reshuffling costs a hair more than reduced.
-- **So the "regret" reduced/joint leave (0.030 / 0.0225) is regret *against the always baseline being
-  available*** — EDPP leaves goodput on the table precisely by NOT fully disaggregating like `always`
-  does. Joint recovers ~25% of it (consistent with the joint-mechanism section) but neither EDPP
-  variant reaches the trivial baselines' 1.000 on this workload.
+- **So the "regret" reduced/joint leave is regret *against the always baseline being available*** — EDPP
+  leaves goodput on the table precisely by NOT fully disaggregating like `always` does, and neither EDPP
+  variant reaches the trivial baselines' 1.000 on this workload. **(K=50 update — supersedes the K=4
+  numbers above.)** At K=50 sampled requests, reduced total_regret **0.2188** vs joint **0.3213** — **joint
+  leaves MORE on the table than reduced, not less.** The K=4 "joint ~25% lower" was a small-sample artifact
+  (see the CORRECTION banner in the "Joint mechanism" section). So on this homogeneous decode-bound cell the
+  ordering is `always ≈ prefix-threshold (optimal) > reduced-EDPP > joint-EDPP`.
 - **synth_asym (loose SLO): everyone ties at ~1.000** — the batch SLO is met by all policies, so there
   is no separation; joint again shaves a hair (0.999).
 - **The takeaway for the paper.** On uniform/decode-bound synth at equal hardware, the standard
