@@ -1,0 +1,151 @@
+# BLIS workload — mirror of inference-perf workload-catalog/deep-research
+# Source: github.com/kubernetes-sigs/inference-perf/blob/main/workload-catalog/deep-research/config.json
+# Target model: meta-llama/llama-3.3-70b-instruct (128K context)
+#
+# CONTEXT CAP — catalog dynamic context greatly exceeds 128K as-is
+#   Catalog dynamic_system_prompt_len: exponential mean=45000, [2000, 150000].
+#   At the mean, the initial context alone is 45K; with 15 turns of accumulating
+#   context, total context at the final round would reach ~100K+ on average, and
+#   up to hundreds of thousands of tokens in the tail. We cap the initial
+#   prefix and truncate per-turn input/output to fit within 128K (see budgets).
+#
+# WHY THIS WORKLOAD
+#   The catalog tags this as suitable_optimizations: ["Prefix aware routing",
+#   "KV cache offloading"], prefill_decode_ratio: 150.0 (extremely prefill-bound
+#   due to the growing context window). A deep-research agent ingests web pages
+#   and documents across many turns, emitting short trace logs each round and
+#   a large final report at the end. Context swells exponentially as loops
+#   accumulate information — the canonical KV cache offloading stress test.
+#
+# Catalog → BLIS mapping
+#   shared_system_prompt_len (fixed 2000 tok)
+#   + dynamic_system_prompt_len (exponential mean=45000, [2000, 150000])
+#                                              → prefix_length: 25000
+#       BLIS prefix_length is a single fixed value. We collapse both components:
+#       2000 (shared) + 23000 ≈ the ~40th percentile of exponential(mean=45000).
+#       This preserves the workload's "large initial context" character without
+#       breaking 128K. The catalog's exponential tail (mean=45000, max=150000)
+#       is truncated — a 256K+ model would be needed for full fidelity.
+#       With prefix_sharing: per_member (cohort of 5, matching inference-perf's
+#       num_conversations: 5), each session gets its own unique 25K token sequence,
+#       correctly modeling that each research session loads different documents.
+#       Note: config.json says distribution_type: "exponential". inference-perf.yaml
+#       approximates it with lognormal (exponential is not yet supported by the
+#       inference-perf tool). We use the catalog spec (exponential) as intent.
+#       Remaining loss: per-session initial-context LENGTH variation (exponential
+#       spread collapsed to fixed 25K).
+#
+#   input_sequence_length_per_turn (lognormal mean=3000, std=2500, [500, 15000])
+#                                              → input_distribution (lognormal)
+#       Per-turn input delta (new content ingested each research loop).
+#       Catalog max is 15000; truncated to 8000 for 128K budget (see budget below).
+#
+#   output_sequence_length (bimodal mean=300, std=850, [50, 4000])
+#                                              → output_distribution (lognormal)
+#       Config.json specifies bimodal: short trace/log outputs each round plus
+#       a massive final report at session end. BLIS has no native bimodal type.
+#       Lognormal(mu=4.604, sigma=1.483) moment-matches the catalog mean=300 and
+#       std=850 and approximates the right-skewed nature (median ~100 tokens,
+#       occasional large outputs up to max=2000). Catalog max=4000 truncated to
+#       2000 for 128K budget.
+#       DEVIATION: true bimodal per-round output (short logs vs final report)
+#       not representable in BLIS without per-round output distribution support.
+#       inference-perf.yaml also approximates with normal(mean=300, std=850).
+#
+#   number_of_turns (normal mean=15, std=8.5, [2, 50])
+#                                              → max_rounds: 10
+#       Catalog mean is 15 turns, max 50. Capped to 10 for 128K budget (see
+#       budget below). At 10 rounds the mean accumulated context is ~58K (fits);
+#       p95 is ~112K (fits). Catalog turns beyond 10 require >128K at p95.
+#       Lost: per-session turn-count variation (single max_rounds value).
+#
+#   time_between_turns (normal mean=25s, std=12s, [5, 60])
+#                                              → think_time_us: 25_000_000
+#       Constant at catalog mean. Lost: think-time variation.
+#
+#   multi_turn: true                           → reasoning.multi_turn (accumulate)
+#
+# Lognormal (μ, σ) computed from catalog (mean, std):
+#   input_per_turn (mean=3000, std=2500):
+#     sigma² = ln(1 + (2500/3000)²) = ln(1.694) = 0.5268 → sigma ≈ 0.7262
+#     mu     = ln(3000) − 0.2634                          ≈ 7.743
+#   output (mean=300, std=850):
+#     sigma² = ln(1 + (850/300)²)  = ln(9.028) = 2.200  → sigma ≈ 1.4833
+#     mu     = ln(300) − 1.100                           ≈ 4.604
+#
+# Context budget (128K) — with prefix=25000, max_rounds=10, max_in=8000, max_out=2000:
+#   Mean:  prefix(25000) + 10 × (isl_mean=3000 + osl_mean=300)   = 58000  ✓
+#   p95:   prefix(25000) + 10 × (isl_p95≈7600  + osl_p95≈1150)   ≈ 112480 ✓
+#   Worst: prefix(25000) + 10 × (max_in=8000   + max_out=2000)    = 125000 ✓
+#   (Context grows via accumulate: each round appends prior input+output tokens)
+#
+# Remaining gaps vs catalog (cannot fix without BLIS schema changes or larger context):
+#   - Per-session initial-context LENGTH variation (exponential spread) collapsed to fixed
+#     25000; per-session token uniqueness now modeled via prefix_sharing: per_member.
+#   - Catalog exponential tail (mean=45000, max=150000) truncated to 25000.
+#   - Bimodal output (short log traces vs long final report) not representable;
+#     lognormal approximation blends both into a single heavy-tailed distribution.
+#   - Per-session turn-count variation (catalog: normal [2,50]) collapsed to max_rounds=10.
+#   - Catalog max turns (50) and per-turn input (15000) truncated for 128K budget.
+#   - Think-time variation (catalog: normal std=12s) not representable; fixed mean used.
+#   - Open-loop Poisson arrival vs catalog's closed-loop concurrency stages.
+#   - input_sequence_type_token_ratio: 0.08 is metadata BLIS doesn't model.
+#
+# Run:
+#   ./blis run --model meta-llama/llama-3.3-70b-instruct \
+#     --workload-spec workloads/inference-perf-deep-research.yaml \
+#     --num-instances 4 --routing-policy weighted
+
+version: "2"
+seed: 42
+category: language
+aggregate_rate: 20
+num_requests: 200
+
+# Goodput SLOs from config.json metadata.slos (target percentile noted per field).
+goodput_slo_targets:
+  standard:
+    ttft_ms: 10000  # ttft_p90_ms
+    itl_ms: 100     # itl_p99_ms
+
+cohorts:
+  - id: "deep-research"
+    population: 5     # matches inference-perf num_conversations: 5
+    tenant_id: "research-agents"
+    slo_class: "standard"
+    rate_fraction: 1.0
+    streaming: true
+    arrival:
+      process: poisson
+    input_distribution:
+      type: lognormal
+      params:
+        mu: 7.743
+        sigma: 0.7262
+        min: 500
+        max: 8000
+        # Catalog max is 15000; truncated to 8000 for 128K budget. See comment header.
+    output_distribution:
+      type: lognormal
+      params:
+        mu: 4.604
+        sigma: 1.4833
+        min: 50
+        max: 2000
+        # Catalog specifies bimodal [50, 4000]; lognormal approximation used (BLIS
+        # has no bimodal type). Max truncated from 4000 to 2000 for 128K budget.
+    prefix_group: "deep-research-system-prompt"
+    prefix_length: 25000
+    prefix_sharing: per_member
+    reasoning:
+      reason_ratio_distribution:
+        type: gaussian
+        params:
+          mean: 0
+          std_dev: 0
+          min: 0
+          max: 0
+      multi_turn:
+        max_rounds: 10
+        think_time_us: 25000000
+        context_growth: accumulate
