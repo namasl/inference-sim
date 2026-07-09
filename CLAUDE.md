@@ -114,6 +114,32 @@ go build -o blis main.go
 ./blis calibrate --trace-header t.yaml --trace-data d.csv --sim-results results.json \
   --slo-ttft "critical=100ms" --slo-e2e "critical=5s" --report calibration.json
 
+# Run with lazy request generation (alpha, #1441). Streams requests from the
+# workload generator into the cluster instead of pre-generating the full
+# slice — reduces peak generator memory from O(total_requests) to
+# O(num_clients + max_session_rounds): the heap holds one entry per client,
+# and per-client reasoning state holds at most one session's pending rounds.
+# (Cluster-side memory still scales with in-flight cluster requests, which
+# this PR does not change.)
+# Falls back to the eager generator with a one-line warning for:
+#   - workloads with per-window parameters (time-varying)
+#   - concurrency clients (Concurrency > 0)
+#   - reasoning clients with SingleSession=false (multi-session)
+# Supported: single-shot, single-session reasoning, prefix-group sharing,
+# multi-client / cohort workloads. Behavior with the flag off is unchanged.
+./blis run --model qwen/qwen3-14b --lazy-generation
+
+# Observe with lazy request generation (alpha, #1443). Same flag, default, and
+# semantics as `blis run` — streams requests from the generator into the observe
+# dispatch loop instead of pre-generating the full slice, with the same eager
+# fallback (time-varying / concurrency / multi-session). Observe already paces
+# itself against the real server, so the memory win is smaller than run's; the
+# flag mainly makes run and observe share one generation pipeline (#1438). Default
+# (flag off) dispatch behavior is unchanged.
+./blis observe --server-url http://localhost:8000 --model qwen/qwen3-14b \
+  --workload chatbot --rate 10 --num-requests 100 --lazy-generation \
+  --trace-header trace.yaml --trace-data trace.csv
+
 # Convert workload formats
 ./blis convert preset --name chatbot --rate 10 --num-requests 100
 ./blis convert servegen --path data/

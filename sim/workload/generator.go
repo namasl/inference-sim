@@ -22,53 +22,8 @@ func GenerateRequests(spec *WorkloadSpec, horizon int64, maxRequests int64) ([]*
 	if maxRequests < 0 {
 		return nil, fmt.Errorf("maxRequests must be non-negative, got %d", maxRequests)
 	}
-	// Mutual exclusion: at most one primary workload source allowed (R1).
-	// Clients+Cohorts compose (cohorts expand into clients), but
-	// InferencePerf and ServeGenData are exclusive alternatives.
-	var sourceNames []string
-	if len(spec.Clients) > 0 {
-		sourceNames = append(sourceNames, "clients")
-	}
-	if spec.ServeGenData != nil {
-		sourceNames = append(sourceNames, "servegen_data")
-	}
-	if spec.InferencePerf != nil {
-		sourceNames = append(sourceNames, "inference_perf")
-	}
-	if len(sourceNames) > 1 {
-		return nil, fmt.Errorf("workload sources {%s} are mutually exclusive; specify exactly one of: clients, servegen_data, inference_perf", strings.Join(sourceNames, ", "))
-	}
-	// Expand inference-perf spec if specified (populates spec.Clients)
-	if spec.InferencePerf != nil && len(spec.Clients) == 0 {
-		expanded, err := ExpandInferencePerfSpec(spec.InferencePerf, spec.Seed)
-		if err != nil {
-			return nil, fmt.Errorf("expanding inference-perf spec: %w", err)
-		}
-		spec.Clients = expanded.Clients
-		if spec.Category == "" {
-			spec.Category = expanded.Category
-		}
-		// Always use the expanded aggregate rate — per-stage rates define the
-		// ground truth. A user-specified aggregate_rate would silently scale
-		// all per-stage rates by the wrong factor.
-		if spec.AggregateRate > 0 && spec.AggregateRate != expanded.AggregateRate {
-			logrus.Warnf("overriding aggregate_rate %.2f with sum of stage rates %.2f",
-				spec.AggregateRate, expanded.AggregateRate)
-		}
-		spec.AggregateRate = expanded.AggregateRate
-	}
-
-	// Load ServeGen data if specified (populates spec.Cohorts)
-	if spec.ServeGenData != nil && len(spec.Clients) == 0 && len(spec.Cohorts) == 0 {
-		if err := loadServeGenData(spec); err != nil {
-			return nil, fmt.Errorf("loading ServeGen data: %w", err)
-		}
-	}
-
-	UpgradeV1ToV2(spec)
-
-	if err := spec.Validate(); err != nil {
-		return nil, fmt.Errorf("invalid workload spec: %w", err)
+	if err := validateAndExpandSpec(spec); err != nil {
+		return nil, err
 	}
 
 	// Build working client list without mutating spec.Clients (idempotency, INV-6).
@@ -143,7 +98,7 @@ func GenerateRequests(spec *WorkloadSpec, horizon int64, maxRequests int64) ([]*
 		}
 
 		// Get prefix for this client's group
-		var prefix []int
+		var prefix []sim.TokenID
 		if client.PrefixGroup != "" {
 			prefix = prefixes[client.PrefixGroup]
 		}
@@ -174,25 +129,19 @@ func GenerateRequests(spec *WorkloadSpec, horizon int64, maxRequests int64) ([]*
 				if client.Lifecycle != nil && !isInActiveWindow(startTime, client.Lifecycle) {
 					continue
 				}
+				// Prefix is passed in so reasoning.go can seed the shared session
+				// buffer once at index 0 — eliminating the per-round prefix copy
+				// that would otherwise defeat the sessionTokenBuffer storage win
+				// (#1445). reasoning.go sets req.PrefixLength accordingly.
 				reasoningReqs, err := GenerateReasoningRequests(
 					clientRNG, client.Reasoning,
 					inputSampler, outputSampler,
 					startTime,
 					client.ID, client.TenantID, client.SLOClass, client.Model,
+					prefix,
 				)
 				if err != nil {
 					return nil, fmt.Errorf("client %q reasoning: %w", client.ID, err)
-				}
-				// Prepend shared prefix to each round's input (BC-1, #516).
-				// NOTE: reasoning.go builds contextPrefix from raw newInputTokens,
-				// NOT from req.InputTokens. The prefix must be prepended here in
-				// the caller, not passed into GenerateReasoningRequests, to avoid
-				// double-prepend with context accumulation.
-				if len(prefix) > 0 {
-					for _, req := range reasoningReqs {
-						req.InputTokens = append(append([]int{}, prefix...), req.InputTokens...)
-						req.PrefixLength = len(prefix)
-					}
 				}
 				// Set Deadline and SLOTargetUs on all reasoning requests (not set in reasoning.go)
 				for _, req := range reasoningReqs {
@@ -241,17 +190,12 @@ func GenerateRequests(spec *WorkloadSpec, horizon int64, maxRequests int64) ([]*
 					inputSampler, outputSampler,
 					currentTime,
 					client.ID, client.TenantID, client.SLOClass, client.Model,
+					prefix,
 				)
 				if err != nil {
 					return nil, fmt.Errorf("client %q reasoning: %w", client.ID, err)
 				}
-				// Prepend shared prefix to each round's input (BC-2, #516)
-				if len(prefix) > 0 {
-					for _, req := range reasoningReqs {
-						req.InputTokens = append(append([]int{}, prefix...), req.InputTokens...)
-						req.PrefixLength = len(prefix)
-					}
-				}
+				// Prefix is seeded into the shared buffer inside reasoning.go (#1445).
 				// Set Deadline and SLOTargetUs on all reasoning requests (not set in reasoning.go)
 				for _, req := range reasoningReqs {
 					req.Deadline = computeDeadline(req.ArrivalTime, client.Timeout, true)
@@ -303,8 +247,8 @@ func GenerateRequests(spec *WorkloadSpec, horizon int64, maxRequests int64) ([]*
 				continue
 			}
 
-			var inputTokens []int
-			var outputTokens []int
+			var inputTokens []sim.TokenID
+			var outputTokens []sim.TokenID
 			var textCount, imageCount, audioCount, videoCount int
 
 			if client.Multimodal != nil {
@@ -326,7 +270,7 @@ func GenerateRequests(spec *WorkloadSpec, horizon int64, maxRequests int64) ([]*
 
 			var prefixLength int
 			if len(prefix) > 0 {
-				inputTokens = append(append([]int{}, prefix...), inputTokens...)
+				inputTokens = append(append([]sim.TokenID{}, prefix...), inputTokens...)
 				prefixLength = len(prefix)
 			}
 
@@ -459,14 +403,14 @@ func GenerateWorkload(spec *WorkloadSpec, horizon int64, maxRequests int64) (*Ge
 		// to pass to the SessionBlueprint for follow-up round generation.
 		// Match by ClientID to avoid conflating clients that share TenantID/SLOClass
 		// (e.g. all stages in a multi-stage workload share the same prefixGroup TenantID).
-		var prefixTokens []int
+		var prefixTokens []sim.TokenID
 		if client.PrefixGroup != "" && client.PrefixLength > 0 {
 			for _, req := range reqs {
 				if req.SessionID != "" && req.RoundIndex == 0 && req.ClientID == client.ID {
 					// The first PrefixLength tokens of InputTokens are the prefix
-					if len(req.InputTokens) >= client.PrefixLength {
-						prefixTokens = make([]int, client.PrefixLength)
-						copy(prefixTokens, req.InputTokens[:client.PrefixLength])
+					if req.InputLen() >= int64(client.PrefixLength) {
+						prefixTokens = make([]sim.TokenID, client.PrefixLength)
+						copy(prefixTokens, req.InputTokenSlice(0, int64(client.PrefixLength)))
 					}
 					break
 				}
@@ -576,7 +520,7 @@ func GenerateWorkload(spec *WorkloadSpec, horizon int64, maxRequests int64) (*Ge
 			return nil, fmt.Errorf("client %q output distribution: %w", client.ID, err)
 		}
 
-		var prefix []int
+		var prefix []sim.TokenID
 		if client.PrefixGroup != "" {
 			prefix = prefixes[client.PrefixGroup]
 		}
@@ -605,7 +549,7 @@ func GenerateWorkload(spec *WorkloadSpec, horizon int64, maxRequests int64) (*Ge
 
 			var prefixLength int
 			if len(prefix) > 0 {
-				inputTokens = append(append([]int{}, prefix...), inputTokens...)
+				inputTokens = append(append([]sim.TokenID{}, prefix...), inputTokens...)
 				prefixLength = len(prefix)
 			}
 
@@ -705,6 +649,104 @@ func lastWindowEndUs(lifecycle *LifecycleSpec) int64 {
 // newRandFromSeed creates a new *rand.Rand from a seed (avoids importing math/rand in callers).
 func newRandFromSeed(seed int64) *rand.Rand {
 	return rand.New(rand.NewSource(seed))
+}
+
+// validateAndExpandSpec performs the spec-mutating prelude shared by
+// GenerateRequests and GenerateWorkloadLazy: mutual-exclusion check across
+// primary workload sources, inference-perf expansion, ServeGen data load,
+// v1→v2 upgrade, and final Validate.
+//
+// Mutates spec in place: spec.Clients may be populated by InferencePerf /
+// ServeGen expansion; spec.AggregateRate may be overridden by the
+// inference-perf expanded value.
+func validateAndExpandSpec(spec *WorkloadSpec) error {
+	// Mutual exclusion: at most one primary workload source allowed (R1).
+	// Clients+Cohorts compose (cohorts expand into clients), but
+	// InferencePerf and ServeGenData are exclusive alternatives.
+	var sourceNames []string
+	if len(spec.Clients) > 0 {
+		sourceNames = append(sourceNames, "clients")
+	}
+	if spec.ServeGenData != nil {
+		sourceNames = append(sourceNames, "servegen_data")
+	}
+	if spec.InferencePerf != nil {
+		sourceNames = append(sourceNames, "inference_perf")
+	}
+	if len(sourceNames) > 1 {
+		return fmt.Errorf("workload sources {%s} are mutually exclusive; specify exactly one of: clients, servegen_data, inference_perf", strings.Join(sourceNames, ", "))
+	}
+	if err := expandClientsAndCohorts(spec); err != nil {
+		return err
+	}
+	UpgradeV1ToV2(spec)
+	if err := spec.Validate(); err != nil {
+		return fmt.Errorf("invalid workload spec: %w", err)
+	}
+	return nil
+}
+
+// ExpandClientsAndCohorts performs only the spec-populating expansion
+// step shared by GenerateRequests and GenerateWorkloadLazy: inference-perf
+// expansion into spec.Clients and ServeGen data load into spec.Cohorts.
+//
+// Mutates spec in place. Idempotent: callers may invoke it before the
+// generators run (e.g., cmd/root.go pre-populates spec.Clients so that
+// applyTimeoutToSpec covers every client even when the original spec
+// only set InferencePerf — fixes the --lazy-generation + inference-perf
+// timeout divergence found in PR #1453 review).
+//
+// After expansion, the consumed marker (spec.InferencePerf or
+// spec.ServeGenData) is cleared so the generators' subsequent
+// validateAndExpandSpec call does not flag the (Clients > 0 + marker)
+// state as a mutual-exclusion violation. This is the canonical form:
+// after expansion, the workload is fully expressed through spec.Clients
+// and spec.Cohorts. Note: this clearing means downstream
+// spec.Validate() loses the inference-perf "slo_class skip" marker;
+// callers that need that semantic should not pre-expand.
+//
+// Does NOT run mutual-exclusion checks or spec.Validate(). The
+// generators run those themselves.
+func ExpandClientsAndCohorts(spec *WorkloadSpec) error {
+	if err := expandClientsAndCohorts(spec); err != nil {
+		return err
+	}
+	// Clear consumed markers — see godoc for rationale.
+	spec.InferencePerf = nil
+	spec.ServeGenData = nil
+	return nil
+}
+
+func expandClientsAndCohorts(spec *WorkloadSpec) error {
+	// Expand inference-perf spec if specified (populates spec.Clients).
+	// Idempotent: the len(spec.Clients) == 0 guard prevents re-expansion
+	// if a prior call already ran.
+	if spec.InferencePerf != nil && len(spec.Clients) == 0 {
+		expanded, err := ExpandInferencePerfSpec(spec.InferencePerf, spec.Seed)
+		if err != nil {
+			return fmt.Errorf("expanding inference-perf spec: %w", err)
+		}
+		spec.Clients = expanded.Clients
+		if spec.Category == "" {
+			spec.Category = expanded.Category
+		}
+		// Always use the expanded aggregate rate — per-stage rates define the
+		// ground truth. A user-specified aggregate_rate would silently scale
+		// all per-stage rates by the wrong factor.
+		if spec.AggregateRate > 0 && spec.AggregateRate != expanded.AggregateRate {
+			logrus.Warnf("overriding aggregate_rate %.2f with sum of stage rates %.2f",
+				spec.AggregateRate, expanded.AggregateRate)
+		}
+		spec.AggregateRate = expanded.AggregateRate
+	}
+	// Load ServeGen data if specified (populates spec.Cohorts).
+	// Idempotent for the same reason as above.
+	if spec.ServeGenData != nil && len(spec.Clients) == 0 && len(spec.Cohorts) == 0 {
+		if err := loadServeGenData(spec); err != nil {
+			return fmt.Errorf("loading ServeGen data: %w", err)
+		}
+	}
+	return nil
 }
 
 // DefaultTimeoutUs is the default per-request timeout (300s = 5 minutes).
@@ -865,7 +907,7 @@ func generateRequestsForWindow(
 	allClients []ClientSpec,
 	aggregateRate float64,
 	rng *rand.Rand,
-	prefix []int,
+	prefix []sim.TokenID,
 ) ([]*sim.Request, error) {
 	// Step 1: Resolve parameters with fallback to client-level defaults.
 	arrival, inputDist, outputDist, _ := resolveWindowParameters(client, window)
@@ -934,20 +976,14 @@ func generateRequestsForWindow(
 				inputSampler, outputSampler,
 				startTime,
 				client.ID, client.TenantID, client.SLOClass, client.Model,
+				prefix,
 			)
 			if err != nil {
 				// BC-9: Propagate error with client ID context
 				return nil, fmt.Errorf("client %q reasoning: %w", client.ID, err)
 			}
 
-			// BC-2: Prepend shared prefix to each round's input
-			if len(prefix) > 0 {
-				for _, req := range reasoningReqs {
-					req.InputTokens = append(append([]int{}, prefix...), req.InputTokens...)
-					req.PrefixLength = len(prefix)
-				}
-			}
-
+			// BC-2: prefix is seeded into the shared buffer inside reasoning.go (#1445).
 			// BC-3: Set Deadline on all reasoning requests
 			for _, req := range reasoningReqs {
 				req.Deadline = computeDeadline(req.ArrivalTime, client.Timeout, true)
@@ -980,20 +1016,14 @@ func generateRequestsForWindow(
 				inputSampler, outputSampler,
 				currentTime,
 				client.ID, client.TenantID, client.SLOClass, client.Model,
+				prefix,
 			)
 			if err != nil {
 				// BC-9: Propagate error with client ID context
 				return nil, fmt.Errorf("client %q reasoning: %w", client.ID, err)
 			}
 
-			// BC-2: Prepend shared prefix to each round's input
-			if len(prefix) > 0 {
-				for _, req := range reasoningReqs {
-					req.InputTokens = append(append([]int{}, prefix...), req.InputTokens...)
-					req.PrefixLength = len(prefix)
-				}
-			}
-
+			// BC-2: prefix is seeded into the shared buffer inside reasoning.go (#1445).
 			// BC-3: Set Deadline on all reasoning requests
 			for _, req := range reasoningReqs {
 				req.Deadline = computeDeadline(req.ArrivalTime, client.Timeout, true)

@@ -40,7 +40,7 @@ type ClusterSimulator struct {
 	// before any drop/route/admission decision. Goodput denominator (issue #1409, BC-5).
 	injectedByClass map[string]int64
 	trace                 *trace.SimulationTrace    // nil when trace-level is "none" (BC-1: zero overhead)
-	preGeneratedRequests  []*sim.Request            // Pre-generated requests (all workload paths unified)
+	requestSource         RequestSource             // Source of requests to inject as arrival events. Drained once by Run().
 	inFlightRequests      map[string]int            // instance ID → dispatched-but-not-completed count (#463)
 	evictionTracker       *EvictionTracker          // tracks routed sheddable requests for in-flight eviction (nil unless --in-flight-eviction set)
 	gatewayEvicted        int                       // count of requests evicted in-flight from instances (INV-1: gw_evicted)
@@ -106,7 +106,7 @@ type ClusterSimulator struct {
 	// cacheQueryFn maps instance IDs to KV cache query functions for precise
 	// prefix cache scoring. Built after instance construction; deferred instances
 	// are added in NodeReadyEvent.Execute. Nil when no instances exist yet.
-	cacheQueryFn map[string]func([]int) int
+	cacheQueryFn map[string]func([]sim.TokenID) int
 
 	// Cache block staleness is managed by CachedSnapshotProvider via
 	// ObservabilityConfig.CacheBlocks (unified in #1060).
@@ -121,6 +121,27 @@ type ClusterSimulator struct {
 	progressHook               sim.ProgressHook
 	simClockProgressIntervalUs int64
 	nextSnapshotClockUs        int64
+
+	// arrivalHook fires once per fresh arrival (initial workload and
+	// follow-ups from closed-loop sessions). It does NOT fire for requests
+	// re-injected by the REDIRECT drain policy — whether or not a prior
+	// ClusterArrivalEvent fired, emitting here would duplicate or create
+	// a spurious record. Nil unless SetArrivalHook was called.
+	//
+	// Contract:
+	//   - Fires at most once per (logical) request.
+	//   - Called from ClusterArrivalEvent.Execute on the cluster's single
+	//     Run() goroutine (no concurrency). Firing at execute time — not
+	//     push time — is what makes the hook clock-monotonic per INV-3.
+	//   - Must be cheap (recording-only). Heavy work belongs in Run finalization.
+	//   - Receives the *sim.Request pointer the cluster will inject. The hook
+	//     must not mutate the request — it is shared with the cluster pipeline.
+	//
+	// Determinism (INV-6): the hook sees requests in the same monotonic
+	// non-decreasing ArrivalTime order the cluster enqueues them.
+	// fireArrivalHook() panics on a regression.
+	arrivalHook         func(*sim.Request)
+	lastArrivalHookTime int64 // monotonicity guard for arrivalHook (us)
 }
 
 // effectiveAnalyzerConfig applies WVA reference defaults to zero-valued fields.
@@ -143,15 +164,21 @@ func effectiveAnalyzerConfig(cfg V2SaturationAnalyzerConfig) V2SaturationAnalyze
 }
 
 // NewClusterSimulator creates a ClusterSimulator with N instances.
-// All workload generation now happens externally — requests are passed in directly.
+// Requests are pulled from requestSource (which yields in non-decreasing
+// ArrivalTime order, exactly once each) at the start of Run().
+//
 // onRequestDone is an optional callback invoked when a request reaches a terminal state
 // (completed, length-capped, timed out, or dropped). The callback returns follow-up
 // requests which are routed through the cluster pipeline (not injected locally).
 // Pass nil for non-session workloads.
-// Panics if config.NumInstances < 1.
-func NewClusterSimulator(config DeploymentConfig, requests []*sim.Request, onRequestDone func(*sim.Request, int64) []*sim.Request) *ClusterSimulator {
+//
+// Panics if config.NumInstances < 1 or if requestSource is nil.
+func NewClusterSimulator(config DeploymentConfig, requestSource RequestSource, onRequestDone func(*sim.Request, int64) []*sim.Request) *ClusterSimulator {
 	if config.NumInstances < 1 {
 		panic("ClusterSimulator: NumInstances must be >= 1")
+	}
+	if requestSource == nil {
+		panic("ClusterSimulator: requestSource must not be nil (use NewSliceRequestSource(nil) for an empty workload)")
 	}
 
 	// Validate pool topology and overrides early (before instance construction).
@@ -242,7 +269,7 @@ func NewClusterSimulator(config DeploymentConfig, requests []*sim.Request, onReq
 		config:               config,
 		instances:            make([]*InstanceSimulator, 0, config.NumInstances),
 		rng:                  rng,
-		preGeneratedRequests: requests,
+		requestSource:        requestSource,
 		clusterEvents:        make(ClusterEventQueue, 0),
 		admissionLatency:     config.AdmissionLatency,
 		routingLatency:       config.RoutingLatency,
@@ -578,13 +605,13 @@ func (cs *ClusterSimulator) registerInstanceCacheQueryFn(id InstanceID, inst *In
 		// to CacheQuery at call time, picking up refreshed snapshots automatically.
 		cs.snapshotProvider.AddCacheInstance(id, inst)
 		idStr := string(id)
-		cs.cacheQueryFn[idStr] = func(tokens []int) int {
+		cs.cacheQueryFn[idStr] = func(tokens []sim.TokenID) int {
 			return cs.snapshotProvider.CacheQuery(idStr, tokens)
 		}
 	} else {
 		// Oracle mode: closure captures inst directly for live-state queries.
 		idStr := string(id)
-		cs.cacheQueryFn[idStr] = func(tokens []int) int {
+		cs.cacheQueryFn[idStr] = func(tokens []sim.TokenID) int {
 			return inst.GetCachedBlockCount(tokens)
 		}
 	}
@@ -609,9 +636,60 @@ func (cs *ClusterSimulator) pushArrival(req *sim.Request, timeUs int64) {
 	cs.pendingArrivals++
 }
 
-// Run executes the cluster simulation using online routing pipeline:
-// generates requests centrally, schedules ClusterArrivalEvents, runs a shared-clock
-// event loop processing cluster events before instance events, then finalizes.
+// fireArrivalHook is called from ClusterArrivalEvent.Execute on the single
+// path that all fresh arrivals (initial workload and closed-loop follow-ups)
+// traverse at their effective arrival time. Firing here — rather than at
+// pushArrival — gives the hook a clock-monotonic stream (INV-3), so trace
+// records emerge already in arrival order without a downstream sort.
+// REDIRECT re-injections are skipped: req.Redirected=true marks requests
+// the drain policy is rerouting internally. Whether or not a prior
+// ClusterArrivalEvent fired for this request, emitting a trace record
+// here would either duplicate an existing record or create a spurious
+// one for internally-rerouted work.
+//
+// Horizon semantics: ClusterArrivalEvents whose timestamp exceeds
+// config.Horizon never execute (cluster.go event loop short-circuits past
+// Horizon), so the hook does NOT see beyond-horizon follow-ups. This is
+// intentional — a request that never arrived to the cluster has no place
+// in the exported trace, and excluding it strengthens INV-13 (replay reads
+// the same trace the run produced).
+func (cs *ClusterSimulator) fireArrivalHook(req *sim.Request, timeUs int64) {
+	if cs.arrivalHook == nil || req.Redirected {
+		return
+	}
+	if timeUs < cs.lastArrivalHookTime {
+		panic(fmt.Sprintf("ClusterSimulator: arrival hook received out-of-order request %q (timeUs=%d < last=%d) — INV-3/INV-6 violation: arrivals must be non-decreasing in ArrivalTime",
+			req.ID, timeUs, cs.lastArrivalHookTime))
+	}
+	cs.lastArrivalHookTime = timeUs
+	cs.arrivalHook(req)
+}
+
+// SetArrivalHook installs a callback fired once per fresh request arrival
+// (initial workload + closed-loop session follow-ups). The hook does NOT
+// fire for requests re-injected by the REDIRECT drain policy.
+//
+// Must be called before Run(); panics otherwise. Pass nil to clear; the
+// monotonicity guard (lastArrivalHookTime) is reset to zero on clear so
+// a subsequently installed hook starts from a clean baseline.
+//
+// Used by `blis run` to capture TraceV2 records at the arrival boundary
+// (issue #1440), replacing the eager post-run RequestsToTraceRecords pass.
+func (cs *ClusterSimulator) SetArrivalHook(hook func(*sim.Request)) {
+	if cs.hasRun {
+		panic("ClusterSimulator: SetArrivalHook must be called before Run()")
+	}
+	cs.arrivalHook = hook
+	if hook == nil {
+		// Reset the monotonicity floor so a future hook installation does
+		// not inherit the previous hook's timestamp watermark.
+		cs.lastArrivalHookTime = 0
+	}
+}
+
+// Run executes the cluster simulation using online routing pipeline: drains the
+// configured RequestSource into ClusterArrivalEvents, runs a shared-clock event
+// loop processing cluster events before instance events, then finalizes.
 // Panics if called more than once.
 func (c *ClusterSimulator) Run() error {
 	if c.hasRun {
@@ -619,13 +697,7 @@ func (c *ClusterSimulator) Run() error {
 	}
 	c.hasRun = true
 
-	// 1. Use pre-generated requests (all workload paths now pre-generate)
-	requests := c.preGeneratedRequests
-	if len(requests) == 0 {
-		logrus.Warn("[cluster] no requests provided — simulation will produce zero results")
-	}
-
-	// 2. Schedule ClusterArrivalEvents (NC-1: no pre-dispatch before event loop)
+	// 1. Schedule ClusterArrivalEvents (NC-1: no pre-dispatch before event loop)
 	heap.Init(&c.clusterEvents)
 
 	// Phase 1C: schedule the first ScalingTickEvent when the autoscaler is enabled (T015).
@@ -638,8 +710,24 @@ func (c *ClusterSimulator) Run() error {
 		})
 	}
 
-	for _, req := range requests {
+	// 2. Drain the request source to schedule arrival events. The source is
+	// required to yield in non-decreasing ArrivalTime order (RequestSource
+	// contract — caller obligation, not verified here); we count emissions to
+	// preserve today's "no requests" warning.
+	arrivalCount := 0
+	for {
+		req, ok := c.requestSource.Next()
+		if !ok {
+			break
+		}
+		if req == nil {
+			panic("ClusterSimulator: RequestSource.Next() returned (nil, true) — implementation contract violation (Next must never return ok=true with a nil request)")
+		}
 		c.pushArrival(req, req.ArrivalTime)
+		arrivalCount++
+	}
+	if arrivalCount == 0 {
+		logrus.Warn("[cluster] no requests provided — simulation will produce zero results")
 	}
 
 	// 3. Shared-clock event loop (BC-4: cluster events before instance events)
@@ -2000,6 +2088,9 @@ func (cs *ClusterSimulator) executeDisaggregatedRouting(req *sim.Request, time i
 	cs.parentRequests[parent.ID] = parent
 
 	// Create prefill sub-request: same input, no output (completes after prefill).
+	// InputTokens is a slice-header alias of req.InputTokens (#1445) — the
+	// sub-request views the same underlying token buffer, no flatten. If
+	// Request.InputTokens ever becomes lazy/chained, this site must update.
 	prefillSubReq := &sim.Request{
 		ID:           parent.PrefillSubReqID,
 		InputTokens:  req.InputTokens,

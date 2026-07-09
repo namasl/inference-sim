@@ -42,13 +42,13 @@ func TestClusterSimulator_InFlightRequests_VisibleInRoutingState(t *testing.T) {
 		reqs[i] = &sim.Request{
 			ID:           "vis_req_" + string(rune('a'+i)),
 			ArrivalTime:  0, // All arrive at t=0
-			InputTokens:  make([]int, 16),
-			OutputTokens: make([]int, 8),
+			InputTokens:  make([]sim.TokenID, 16),
+			OutputTokens: make([]sim.TokenID, 8),
 			State:        sim.StateQueued,
 		}
 	}
 
-	cs := NewClusterSimulator(config, reqs, nil)
+	cs := NewClusterSimulator(config, NewSliceRequestSource(reqs), nil)
 
 	mustRun(t, cs)
 
@@ -110,13 +110,13 @@ func TestClusterSimulator_InFlightRequests_CounterfactualIncludesInFlight(t *tes
 		reqs[i] = &sim.Request{
 			ID:           "cf_req_" + string(rune('a'+i)),
 			ArrivalTime:  0,
-			InputTokens:  make([]int, 16),
-			OutputTokens: make([]int, 8),
+			InputTokens:  make([]sim.TokenID, 16),
+			OutputTokens: make([]sim.TokenID, 8),
 			State:        sim.StateQueued,
 		}
 	}
 
-	cs := NewClusterSimulator(config, reqs, nil)
+	cs := NewClusterSimulator(config, NewSliceRequestSource(reqs), nil)
 
 	mustRun(t, cs)
 
@@ -166,7 +166,7 @@ func TestClusterSimulator_InFlightRequests_DrainsToZeroAfterCompletion(t *testin
 	}
 	requests := testGenerateRequests(42, 10000000, 2.0/1e6, 6,
 		0, 16, 0, 16, 16, 8, 0, 8, 8)
-	cs := NewClusterSimulator(config, requests, nil)
+	cs := NewClusterSimulator(config, NewSliceRequestSource(requests), nil)
 
 	mustRun(t, cs)
 
@@ -204,12 +204,12 @@ func TestClusterSimulator_InFlightRequests_DroppedUnservable_Decrements(t *testi
 		reqs[i] = &sim.Request{
 			ID:           fmt.Sprintf("drop_req_%d", i),
 			ArrivalTime:  int64(i * 1000),
-			InputTokens:  make([]int, 200), // 200 tokens / 16 block_size = 13 blocks > 5 total
-			OutputTokens: make([]int, 8),
+			InputTokens:  make([]sim.TokenID, 200), // 200 tokens / 16 block_size = 13 blocks > 5 total
+			OutputTokens: make([]sim.TokenID, 8),
 			State:        sim.StateQueued,
 		}
 	}
-	cs := NewClusterSimulator(config, reqs, nil)
+	cs := NewClusterSimulator(config, NewSliceRequestSource(reqs), nil)
 	mustRun(t, cs)
 
 	// All requests should be dropped as unservable
@@ -256,12 +256,12 @@ func TestClusterSimulator_InFlightRequests_CompletionBasedDecrement(t *testing.T
 		reqs[i] = &sim.Request{
 			ID:           fmt.Sprintf("causal_req_%d", i),
 			ArrivalTime:  0,
-			InputTokens:  make([]int, 16),
-			OutputTokens: make([]int, 8),
+			InputTokens:  make([]sim.TokenID, 16),
+			OutputTokens: make([]sim.TokenID, 8),
 			State:        sim.StateQueued,
 		}
 	}
-	cs := NewClusterSimulator(config, reqs, nil)
+	cs := NewClusterSimulator(config, NewSliceRequestSource(reqs), nil)
 	mustRun(t, cs)
 
 	// Key assertion: at least one routing decision sees InFlightRequests > QueueDepth + BatchSize
