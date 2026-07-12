@@ -804,3 +804,35 @@ PD/disaggregation enabled" — so no plan to sweep. Goodput is unaffected. This 
   distinctive lever (per-instance cost via `θ_i`) is invisible here because all decode instances are
   identical; `always`/`never` cannot express a per-instance cost tradeoff, so a workload where they
   CANNOT be optimal (heterogeneous hardware — sub-project 2) is required to show the joint rule's edge.
+
+## T-A — cheap heterogeneity de-risk (hand analysis) (2026-07-12)
+
+Goal (TODO.md "ROADMAP", T-A): before investing in the heterogeneity simulator work, confirm/refute that
+the joint rule (`--edpp-joint`) CAN beat `always`/`never` under heterogeneity.
+
+**Hand analysis of the joint objective `J`** (formulation
+`docs/design/2026-06-30-pd-joint-routing-problem-formulation.md`, section 5.3), comparing `J(M1,local)` vs
+`J(M2,local)` for two decode instances at equal occupancy — the choice is driven by which node is *cheaper*
+for the request:
+- **Cache-warm node** (smaller uncached `a_p`) → smaller `W_p`/`T̂` → joint prefers it. **But the shipped
+  scorer is `precise-prefix-cache`, already cache-aware**, so `always`/`never`+scorer route to the warm node
+  too — **joint has NO edge here.** This explains why the cache-asymmetric `synth_asym` cells were null
+  (see "Policy comparison").
+- **Faster-hardware node** (smaller `θ_i`: `C0`/`C1`/`α`) → smaller `W_d`/`T_iter` → joint prefers it. **The
+  scorer is NOT hardware-cost-aware** (prefix/queue/kv only) — so the baselines CANNOT preferentially pick
+  the faster node. **This is joint's real, unique edge.**
+
+**Conclusion: the thesis is not dead — the mechanism has headroom, but specifically for HARDWARE-`θ`
+heterogeneity, not cache.** So there is no cheap empirical shortcut via cache asymmetry.
+
+**Feasibility of the empirical opportunity test.** (a) EDPP builds ONE global latency model
+(`sim/cluster/cluster.go:437`) — per-instance `θ_i` in the *decider* is a code change (T-B). (b) The
+*simulator* CAN serve a heterogeneous decode pool via a node-pool bundle: placement is role-blind,
+deterministic first-fit in pool-declaration order (`sim/cluster/infra_placement.go:184`,
+`PlaceInstance(..., gpuType="")`), so two GPU pools sized to land prefill→poolA, decode→poolA, decode→poolB
+put the two decode nodes on different hardware (`simCfg.HWConfig` per instance drives latency) — **no code
+change**. So the fixed-plan brute-force "opportunity" test (does the optimum beat `always`/`never` under
+hardware heterogeneity — no `θ_i` needed) is feasible, but requires authoring a node-pool bundle
+(2 GPU types + capacity-forced placement) — real setup, not free. The joint-*capture* test additionally
+needs per-instance `θ_i` (T-B). Since both share the node-pool serving setup, the efficient path is likely
+minimal T-B (node-pool serving + `θ_i` indexing) rather than a separate opportunity-only harness.
