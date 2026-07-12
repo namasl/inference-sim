@@ -850,3 +850,73 @@ bundle into `DeploymentConfig.HWConfigByGPU` (small: mirror the `bundle.NodePool
 `θ_i`) AND is a prerequisite for T-B. Path: (1) wire `hw_config_by_gpu`; (2) confirm two decode nodes run
 at different speeds; (3) brute-force opportunity test (optimum vs always/never under hardware heterogeneity);
 (4) if headroom → per-instance `θ_i` in EDPP (rest of T-B).
+
+---
+
+## Hardware-θ opportunity test (T-A steps 1–3, 2026-07-12) — HEADROOM CONFIRMED; joint captures it
+
+**Setup.** `hw_config_by_gpu` bundle wiring now merged (branch `feat/edpp-estimator-validation`,
+commits `60dcdaa..b07a79f`), so a `--policy-config` bundle can serve a heterogeneous decode pool. Bundle
+`campaigns/edpp-study/specs/hetero_hw/bundle_1p2d.yaml`: 1P2D where placement (first-fit, TP=4 ⇒ 4 GPUs/instance)
+lands `instance_0`=prefill(H100), `instance_1`=decode(H100 **fast**), `instance_2`=decode(A100 **slow**,
+deliberately crippled to 400 TFLOPS/0.7 TB/s). Workload `specs/hetero_hw/synth_hw.yaml`: homogeneous
+decode-bound (isl 256, osl 512, prefix 0, batch SLO), N=60 @ rate 1.0 — so the ONLY interesting lever is
+*which decode instance* a request lands on. SLO `--slo-itl batch=50ms` (fast idle ITL ~17ms MEETS, slow
+~74ms VIOLATES); `--slo-ttft batch=10s` loose.
+
+**Serving heterogeneity confirmed (step 2).** Pinning all 60 decode → `instance_1` gives ITL 16.97ms /
+e2e 8.7s; all → `instance_2` gives ITL 73.84ms / e2e 37.7s (4.3× ITL, 4.4× latency) — driven purely by
+`hw_config_by_gpu`. The fast node alone serves all 60 within SLO (no saturation at this load).
+
+**Opportunity test (step 3): the optimum beats every hardware-blind policy.** Fixed-plan fast-fraction
+sweep is exactly linear (goodput = #routed-to-fast / 60: 0→0.25→0.50→0.75→1.00) — at this SLO each
+fast-routed req meets, each slow-routed req violates, no contention. So the fixed-plan **optimum = all-fast
+= goodput 1.00**. Hardware-BLIND decode routing (always decider, various scorers), single seed 42:
+
+| decode routing (hardware-blind)                     | goodput | fast/slow split |
+|-----------------------------------------------------|---------|-----------------|
+| default PD profile `precise-prefix-cache:2,queue-depth:1` | 0.00    | 0 / 60          |
+| `queue-depth:1`                                     | 0.40    | 24 / 36         |
+| `active-requests:1`                                 | 0.75    | 45 / 15         |
+| `load-balance` / `kv-utilization` / `running-requests` | 0.77    | 46 / 14         |
+| **fixed-plan optimum (all-fast)**                   | **1.00**| 60 / 0          |
+
+Two honest caveats on the baseline: (1) the DEFAULT profile is *pathological* here — `precise-prefix-cache`
+(weight 2, prefix_length 0) pins all decode to one instance (the slow one) → 0.00; the naive "0→1" headline
+overstates the gap. (2) Load-aware blind scorers *implicitly* exploit speed (the fast node drains faster ⇒
+looks less loaded ⇒ attracts more) and reach 0.77 "for free" without any hardware knowledge. **But no
+hardware-blind policy closes the last ~0.23 to the optimum** — that residual is the genuine hardware-θ headroom.
+
+**KEY RESULT — joint-EDPP captures the headroom; reduced-EDPP does not (4 seeds).** Placing the actual
+deciders on this scale (`--edpp-coeffs coeffs-llama70b-h100-tp4.json`, τ_ttft 10s, τ_itl 50ms, rollforward):
+
+| seed | reduced-EDPP (default profile) | **joint-EDPP** | best blind (always+load-balance) | optimum |
+|------|-------------------------------|----------------|----------------------------------|---------|
+| 42   | 0.00                          | 0.97           | 0.77                             | 1.00    |
+| 7    | 0.00                          | 0.97           | 0.72                             | 1.00    |
+| 123  | 0.00                          | 1.00           | 0.73                             | 1.00    |
+| 2024 | 1.00 (scorer-luck)            | 0.98           | 0.77                             | 1.00    |
+
+Robust ordering: **joint (0.97–1.00) ≫ best hardware-blind (0.72–0.77) > reduced (0.0, scorer-luck-dependent)**.
+joint routes 58/60 → fast. **This is the FIRST workload where joint STRICTLY and SUBSTANTIALLY beats reduced**
+— the exact opposite of the homogeneous-hardware result (Joint mechanism / K=50 correction: joint ≤ reduced there).
+
+**MECHANISM (important, and it revises a prior belief).** joint uses a SINGLE homogeneous θ, so it does NOT
+model the speed gap directly. It prefers the fast node because the slow node visibly ACCUMULATES more
+congestion: joint's per-instance `Q_i` term (`qByInstance`) + per-candidate occupancy-aware `T̂` (rollforward)
+are both higher for the backed-up slow candidate, so argmin J avoids it. reduced-EDPP delegates decode
+selection to the scorer, so it inherits the scorer's blindness (0.0 pathological / 0.77 load-aware) exactly.
+So the prior claim "joint's value REQUIRES heterogeneous θ_i / is invisible on homogeneous HW" is too strong:
+**joint captures most hardware-θ headroom REACTIVELY via per-instance congestion, before any per-instance θ_i.**
+Per-instance θ_i (T-B) becomes the PROACTIVE refinement — predict slowness before congestion accrues, and
+close the residual 0.97→1.00 — not the thing that first unlocks the win.
+
+**Decision gate: PASSED.** Headroom exists (optimum 1.00 vs best blind 0.77) and joint already realizes it
+(≈0.97–1.00), giving the paper a concrete positive joint-vs-reduced result that was absent on homogeneous HW.
+
+**Caveats / next (rigor before paper-grade).** One archetype (homogeneous decode-bound, small prefill),
+one speed gap (~4.3× ITL), one binary-separating SLO, N=60, 4 seeds. The optimum here is DEGENERATE
+("all-fast", because the load fits entirely on the fast node) — the natural harder test is load that
+SATURATES the fast node, forcing a non-trivial speed-weighted split, to show joint computes the RIGHT split
+(not just "avoid the slow node") and to expose where reactive-congestion joint falls short of proactive θ_i.
+Artifacts: `campaigns/edpp-study/specs/hetero_hw/`, out `/tmp/hwopp` (regenerate via the commands in this section).
