@@ -1206,6 +1206,31 @@ func resolveEDPPCoeffs(pdDecider, coeffsPath string) sim.EDPPCoeffs {
 	return c
 }
 
+// hwConfigByGPUFromBundle converts a policy bundle's per-GPU hardware calibration
+// map (yaml-tagged sim.HardwareCalibBundleConfig mirror) into the sim.HardwareCalib
+// map consumed by cluster.DeploymentConfig.HWConfigByGPU. Node-pool-placed instances
+// whose gpu_type matches a key use that pool's calibration instead of the CLI --gpu
+// calibration (sim/cluster/cluster.go). All six fields are copied verbatim.
+// Returns nil when the bundle is nil or supplies no hw_config_by_gpu (no override;
+// backward-compatible with all existing callers).
+func hwConfigByGPUFromBundle(bundle *sim.PolicyBundle) map[string]sim.HardwareCalib {
+	if bundle == nil || len(bundle.HWConfigByGPU) == 0 {
+		return nil
+	}
+	out := make(map[string]sim.HardwareCalib, len(bundle.HWConfigByGPU))
+	for gpu, hc := range bundle.HWConfigByGPU {
+		out[gpu] = sim.HardwareCalib{
+			TFlopsPeak: hc.TFlopsPeak,
+			TFlopsFP8:  hc.TFlopsFP8,
+			BwPeakTBs:  hc.BwPeakTBs,
+			MfuPrefill: hc.MfuPrefill,
+			MfuDecode:  hc.MfuDecode,
+			MemoryGiB:  hc.MemoryGiB,
+		}
+	}
+	return out
+}
+
 // registerSimConfigFlags registers all simulation-engine configuration flags
 // on the given command. Called by both runCmd and replayCmd to avoid
 // duplicating ~50 flag registrations.
@@ -1702,6 +1727,7 @@ var runCmd = &cobra.Command{
 			bundleAnalyzerCfg                    cluster.V2SaturationAnalyzerConfig
 			bundleNodePools                      []cluster.NodePoolConfig
 			bundleInstanceLifecycle              cluster.InstanceLifecycleConfig
+			bundleHWConfigByGPU                  map[string]sim.HardwareCalib
 		)
 		if bundle != nil {
 			if bundle.Autoscaler.IntervalUs > 0 {
@@ -1740,6 +1766,10 @@ var runCmd = &cobra.Command{
 				},
 				WarmStartInitialInstances: bundle.InstanceLifecycle.WarmStartInitialInstances,
 			}
+			// Per-GPU hardware calibration: node-pool-placed instances use the
+			// pool's hw_config_by_gpu entry (TFlopsPeak, BwPeakTBs, MFU, ...) instead
+			// of the CLI --gpu calibration (consumed at sim/cluster/cluster.go).
+			bundleHWConfigByGPU = hwConfigByGPUFromBundle(bundle)
 		}
 		// CLI flag overrides bundle value when explicitly set.
 		if cmd.Flags().Changed("model-autoscaler-interval-us") {
@@ -1953,6 +1983,7 @@ var runCmd = &cobra.Command{
 			HPAScrapeDelay:                  cluster.DelaySpec{Mean: bundleHPAScrapeDelayMean, Stddev: bundleHPAScrapeDelayStddev},
 			AutoscalerAnalyzerConfig:        bundleAnalyzerCfg,
 			NodePools:                       bundleNodePools,
+			HWConfigByGPU:                   bundleHWConfigByGPU,
 			InstanceLifecycle:               bundleInstanceLifecycle,
 		}
 		// Session callback installation (Constraint 3 fix):
