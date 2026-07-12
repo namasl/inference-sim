@@ -836,3 +836,17 @@ hardware heterogeneity — no `θ_i` needed) is feasible, but requires authoring
 (2 GPU types + capacity-forced placement) — real setup, not free. The joint-*capture* test additionally
 needs per-instance `θ_i` (T-B). Since both share the node-pool serving setup, the efficient path is likely
 minimal T-B (node-pool serving + `θ_i` indexing) rather than a separate opportunity-only harness.
+
+**T-A spike outcome (node-pool serving feasibility) — a small code change is needed.** Verified: the
+per-GPU hardware map `hw_config_by_gpu` (documented in `docs/reference/configuration.md`, with e.g.
+H100=1979 TFLOPS/3.35 TB/s vs A100=1248/2.0) is a `DeploymentConfig` field (`sim/cluster/deployment.go:166`)
+but is **NEVER populated by any non-test code** (no assignment in `cmd/`), and `PolicyBundle`
+(`sim/bundle.go`) parses strictly (`KnownFields(true)`) without an `hw_config_by_gpu` field — so a
+`--policy-config` YAML carrying it would ERROR. Net: **no code-free path to heterogeneous decode serving.**
+Node-pools DO load via `--policy-config` and placement is deterministic/role-blind
+(`sim/cluster/infra_placement.go:184`), so the ONLY missing piece is wiring `hw_config_by_gpu` from the
+bundle into `DeploymentConfig.HWConfigByGPU` (small: mirror the `bundle.NodePools` wiring at
+`cmd/root.go:1721`). This minimal change unblocks BOTH the opportunity test (fixed-plan brute-force, no
+`θ_i`) AND is a prerequisite for T-B. Path: (1) wire `hw_config_by_gpu`; (2) confirm two decode nodes run
+at different speeds; (3) brute-force opportunity test (optimum vs always/never under hardware heterogeneity);
+(4) if headroom → per-instance `θ_i` in EDPP (rest of T-B).
