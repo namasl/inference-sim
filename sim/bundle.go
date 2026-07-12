@@ -15,15 +15,16 @@ import (
 // Nil pointer fields mean "not set in YAML" — they do not override DeploymentConfig.
 // String fields use empty string for "not set".
 type PolicyBundle struct {
-	Admission     AdmissionConfig        `yaml:"admission"`
-	Routing       RoutingConfig          `yaml:"routing"`
-	Priority      PriorityConfig         `yaml:"priority"`
-	Scheduler     string                 `yaml:"scheduler"`
-	Preemption    PreemptionConfig       `yaml:"preemption"`
-	TenantBudgets map[string]float64     `yaml:"tenant_budgets"`  // nil = no tenant enforcement
-	NodePools         []NodePoolBundleConfig        `yaml:"node_pools"`         // nil = no node pools
-	Autoscaler        AutoscalerBundleConfig        `yaml:"autoscaler"`         // IntervalUs=0 = disabled
-	InstanceLifecycle InstanceLifecycleBundleConfig `yaml:"instance_lifecycle"` // zero = instant loading
+	Admission         AdmissionConfig                      `yaml:"admission"`
+	Routing           RoutingConfig                        `yaml:"routing"`
+	Priority          PriorityConfig                       `yaml:"priority"`
+	Scheduler         string                               `yaml:"scheduler"`
+	Preemption        PreemptionConfig                     `yaml:"preemption"`
+	TenantBudgets     map[string]float64                   `yaml:"tenant_budgets"`     // nil = no tenant enforcement
+	NodePools         []NodePoolBundleConfig               `yaml:"node_pools"`         // nil = no node pools
+	Autoscaler        AutoscalerBundleConfig               `yaml:"autoscaler"`         // IntervalUs=0 = disabled
+	InstanceLifecycle InstanceLifecycleBundleConfig        `yaml:"instance_lifecycle"` // zero = instant loading
+	HWConfigByGPU     map[string]HardwareCalibBundleConfig `yaml:"hw_config_by_gpu"`   // nil = no per-GPU override
 }
 
 // AdmissionConfig holds admission policy configuration.
@@ -32,7 +33,7 @@ type AdmissionConfig struct {
 	TokenBucketCapacity   *float64 `yaml:"token_bucket_capacity"`
 	TokenBucketRefillRate *float64 `yaml:"token_bucket_refill_rate"`
 	// Tier-shed options (Phase 1B): only used when policy = "tier-shed".
-	TierShedThreshold   *int `yaml:"tier_shed_threshold"`   // nil = use default (0)
+	TierShedThreshold   *int `yaml:"tier_shed_threshold"`    // nil = use default (0)
 	TierShedMinPriority *int `yaml:"tier_shed_min_priority"` // nil = use default (3)
 	// GAIE-legacy options: only used when policy = "gaie-legacy".
 	GAIEQDThreshold *float64 `yaml:"gaie_qd_threshold"` // nil = use default (5)
@@ -73,6 +74,18 @@ type NodePoolBundleConfig struct {
 	CostPerHour       float64         `yaml:"cost_per_hour"`
 }
 
+// HardwareCalibBundleConfig mirrors sim.HardwareCalib for YAML loading in PolicyBundle.
+// sim.HardwareCalib carries json tags only (CamelCase); this yaml-tagged mirror lets a
+// policy-config supply per-GPU hardware in snake_case. Converted to sim.HardwareCalib in cmd/.
+type HardwareCalibBundleConfig struct {
+	TFlopsPeak float64 `yaml:"tflops_peak"`
+	TFlopsFP8  float64 `yaml:"tflops_fp8"` // optional; 0 = no native FP8
+	BwPeakTBs  float64 `yaml:"bw_peak_tbs"`
+	MfuPrefill float64 `yaml:"mfu_prefill"`
+	MfuDecode  float64 `yaml:"mfu_decode"`
+	MemoryGiB  float64 `yaml:"memory_gib"` // optional
+}
+
 // DelayBundleSpec mirrors cluster.DelaySpec for YAML loading. Mean and Stddev in seconds.
 type DelayBundleSpec struct {
 	Mean   float64 `yaml:"mean"`
@@ -91,8 +104,8 @@ type AnalyzerBundleConfig struct {
 // InstanceLifecycleBundleConfig holds instance lifecycle timing for YAML loading.
 // Mean and Stddev are in seconds; converted to microseconds when building DeploymentConfig.
 type InstanceLifecycleBundleConfig struct {
-	LoadingDelay               DelayBundleSpec `yaml:"loading_delay"`
-	WarmStartInitialInstances  bool            `yaml:"warm_start_initial_instances"`
+	LoadingDelay              DelayBundleSpec `yaml:"loading_delay"`
+	WarmStartInitialInstances bool            `yaml:"warm_start_initial_instances"`
 }
 
 // AutoscalerBundleConfig holds autoscaler pipeline configuration.
@@ -127,17 +140,17 @@ func LoadPolicyBundle(path string) (*PolicyBundle, error) {
 // Valid policy name registries. Unexported to prevent external mutation.
 // Used by Validate(), factory functions, and ValidatePolicyName().
 var (
-	validAdmissionPolicies = map[string]bool{"": true, "always-admit": true, "token-bucket": true, "reject-all": true, "tier-shed": true, "gaie-legacy": true}
-	validRoutingPolicies   = map[string]bool{"": true, "round-robin": true, "least-loaded": true, "weighted": true, "always-busiest": true}
-	validSchedulers        = map[string]bool{"": true, "fcfs": true, "priority-fcfs": true, "sjf": true, "reverse-priority": true}
-	validPreemptionPolicies  = map[string]bool{"": true, "fcfs": true, "priority": true}
-	validLatencyBackends          = map[string]bool{"": true, "roofline": true, "trained-physics": true}
-	validDisaggregationDeciders   = map[string]bool{"": true, "never": true, "always": true, "prefix-threshold": true, "edpp": true}
-	validEncodeDeciders           = map[string]bool{"": true, "never": true, "always": true, "multimodal": true}
-	validSaturationDetectors      = map[string]bool{"": true, "never": true, "utilization": true, "concurrency": true}
+	validAdmissionPolicies      = map[string]bool{"": true, "always-admit": true, "token-bucket": true, "reject-all": true, "tier-shed": true, "gaie-legacy": true}
+	validRoutingPolicies        = map[string]bool{"": true, "round-robin": true, "least-loaded": true, "weighted": true, "always-busiest": true}
+	validSchedulers             = map[string]bool{"": true, "fcfs": true, "priority-fcfs": true, "sjf": true, "reverse-priority": true}
+	validPreemptionPolicies     = map[string]bool{"": true, "fcfs": true, "priority": true}
+	validLatencyBackends        = map[string]bool{"": true, "roofline": true, "trained-physics": true}
+	validDisaggregationDeciders = map[string]bool{"": true, "never": true, "always": true, "prefix-threshold": true, "edpp": true}
+	validEncodeDeciders         = map[string]bool{"": true, "never": true, "always": true, "multimodal": true}
+	validSaturationDetectors    = map[string]bool{"": true, "never": true, "utilization": true, "concurrency": true}
 	// Post-hoc backlog classifiers selected via --saturation-classifier (#1391, #1392).
 	// Distinct from validSaturationDetectors (runtime, used by --flow-control).
-	validBacklogClassifiers       = map[string]bool{"": true, "slope-based": true, "drain-ratio": true}
+	validBacklogClassifiers = map[string]bool{"": true, "slope-based": true, "drain-ratio": true}
 )
 
 // IsValidAdmissionPolicy returns true if name is a recognized admission policy.
@@ -367,6 +380,15 @@ func (b *PolicyBundle) Validate() error {
 		}
 		if np.CostPerHour < 0 {
 			return fmt.Errorf("node_pools[%d] %q: cost_per_hour must be >= 0, got %v", i, np.Name, np.CostPerHour)
+		}
+	}
+	// Validate per-GPU hardware overrides. Use !(x > 0) so NaN is also rejected.
+	for gpu, hc := range b.HWConfigByGPU {
+		if !(hc.TFlopsPeak > 0) {
+			return fmt.Errorf("hw_config_by_gpu[%q]: tflops_peak must be > 0, got %v", gpu, hc.TFlopsPeak)
+		}
+		if !(hc.BwPeakTBs > 0) {
+			return fmt.Errorf("hw_config_by_gpu[%q]: bw_peak_tbs must be > 0, got %v", gpu, hc.BwPeakTBs)
 		}
 	}
 	// Validate instance lifecycle config.

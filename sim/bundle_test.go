@@ -355,7 +355,6 @@ func TestValidRoutingPolicyNames_Sorted(t *testing.T) {
 	}
 }
 
-
 func TestValidSchedulerNames_ReturnsAllNames(t *testing.T) {
 	names := ValidSchedulerNames()
 	assert.Contains(t, names, "fcfs")
@@ -717,5 +716,62 @@ func TestPolicyBundle_Validate_InstanceLifecycle(t *testing.T) {
 				t.Errorf("Validate() = %v, want error containing %q", err, tc.wantErr)
 			}
 		})
+	}
+}
+
+func TestPolicyBundle_HWConfigByGPU_RoundTrip(t *testing.T) {
+	yamlSrc := `
+scheduler: fcfs
+node_pools:
+  - {name: fast, gpu_type: H100, gpus_per_node: 4, gpu_memory_gib: 80, initial_nodes: 1, min_nodes: 1, max_nodes: 1}
+hw_config_by_gpu:
+  H100: {tflops_peak: 1979.0, bw_peak_tbs: 3.35, mfu_prefill: 0.5, mfu_decode: 0.5}
+  A100: {tflops_peak: 1248.0, bw_peak_tbs: 2.0, mfu_prefill: 0.5, mfu_decode: 0.5}
+`
+	path := writeTempYAML(t, yamlSrc)
+	b, err := LoadPolicyBundle(path)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if err := b.Validate(); err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	h := b.HWConfigByGPU["H100"]
+	if h.TFlopsPeak != 1979.0 || h.BwPeakTBs != 3.35 || h.MfuPrefill != 0.5 {
+		t.Fatalf("H100 parsed wrong: %+v", h)
+	}
+	if b.HWConfigByGPU["A100"].TFlopsPeak != 1248.0 {
+		t.Fatalf("A100 tflops parsed wrong: %+v", b.HWConfigByGPU["A100"])
+	}
+}
+
+// A bundle without hw_config_by_gpu must parse and leave the map nil (config-plumbing only).
+func TestPolicyBundle_HWConfigByGPU_AbsentIsNil(t *testing.T) {
+	path := writeTempYAML(t, "scheduler: fcfs\n")
+	b, err := LoadPolicyBundle(path)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if b.HWConfigByGPU != nil {
+		t.Fatalf("HWConfigByGPU should be nil when absent, got %+v", b.HWConfigByGPU)
+	}
+	if err := b.Validate(); err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+}
+
+func TestPolicyBundle_HWConfigByGPU_RejectsNonPositive(t *testing.T) {
+	for _, bad := range []string{
+		"hw_config_by_gpu:\n  H100: {tflops_peak: 0, bw_peak_tbs: 3.35}\n",
+		"hw_config_by_gpu:\n  H100: {tflops_peak: 1979.0, bw_peak_tbs: 0}\n",
+	} {
+		path := writeTempYAML(t, "scheduler: fcfs\n"+bad)
+		b, err := LoadPolicyBundle(path)
+		if err != nil {
+			t.Fatalf("load %q: %v", bad, err)
+		}
+		if err := b.Validate(); err == nil {
+			t.Fatalf("expected validation error for %q", bad)
+		}
 	}
 }
