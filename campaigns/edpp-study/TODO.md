@@ -13,6 +13,51 @@ Two separate questions, often conflated:
   `always` (disaggregate all) and `never`-within-the-same-split (disaggregate none) bracket EDPP;
   an oracle/hindsight-optimal per-request labeling is the gold standard.
 
+## ROADMAP / open threads (2026-07-12) — read this first
+
+**Where we are (the honest strategic read).** The joint mechanism (`--edpp-joint`, sub-project 1) is built
+and merge-ready, but on EVERY homogeneous workload tested it shows **no benefit**: on decode-bound synth,
+`always`/`prefix-threshold` are optimal (goodput 1.000, zero one-step regret) and both EDPP variants are
+slightly worse; the K=4 "joint cuts regret ~25%" was a small-sample artifact — at K=50 joint's regret is
+HIGHER than reduced (0.32 vs 0.22). See FINDINGS "Policy comparison" + the K=50 CORRECTION in "Joint
+mechanism". **The joint rule's only distinctive lever is per-instance cost via `θ_i`, invisible on
+homogeneous hardware — so the paper's value case now rests entirely on the heterogeneous regime.**
+
+**CHOSEN NEXT STEP → T-A. De-risk heterogeneity CHEAPLY before any simulator build.** Confirm (or refute)
+that the joint rule CAN beat `always`/`never` under heterogeneity, using tools that need NO simulator change:
+(a) hand/paper analysis on a 2-decode toy (one node 2× faster or cache-warm) — does the joint objective `J`
+(formulation `docs/design/2026-06-30-pd-joint-routing-problem-formulation.md` §5.3) pick the cheaper node
+while `always`/`never` structurally cannot express the per-instance tradeoff? (b) the fixed-plan brute-force
+micro-yardstick (enumerate assignments on a tiny heterogeneous trace via `--pd-plan`, find the optimum, check
+it diverges from the baselines). ~an afternoon. Decision gate: if even the toy shows no headroom, the thesis
+needs rethinking BEFORE investing in T-B.
+
+**T-B. Sub-project 2 — heterogeneous `θ_i` (the value case; critical path IF T-A is promising).** Requires a
+SIMULATOR-side change: `resolveConfigForRole` (`sim/cluster/cluster.go`) serves hardware POOL-WIDE, so two
+same-role decode instances can't run at different speeds today. Build: per-instance/per-profile hardware
+serving + per-instance `θ_i` loading/indexing in EDPP + per-instance `Z^I_i` (deferred from sub-project 1).
+Then re-run the 5-policy comparison + regret on a heterogeneous decode pool where `always`/`never` CANNOT be
+optimal. This is where joint should finally win — or not.
+
+**T-C. MILP global-optimum yardstick (formulation doc §6).** The scalable offline optimum → the absolute
+"how far from optimal" for every policy (the counterfactual-regret harness only gives LOCAL one-step
+deviations). Independent of T-A/T-B; strengthens all results incl. the homogeneous ones already collected.
+Earlier scoping: exact-sim brute-force is a tiny-N validator only; the real yardstick is an LP/MILP surrogate
+over the §3 model (scipy.optimize.milp/linprog, HiGHS — no new dep), validated against the brute-force at small N.
+
+**T-D. `z_itl` responsive-update fix.** `z_itl` still has the completion-lag flaw `z_ttft` had (FINDINGS "ITL
+decision path"): needs the responsive-update treatment, but the observable is an ITL *rate* not a wait, so it
+needs its own in-flight ITL-miss signal design. Smaller, estimator-side.
+
+**T-E. Prefill-saturating validation.** The Stage C admission estimators for the prefill pool are unproven
+under a saturated prefill queue (FINDINGS "Utilization sweep" / "Stage C"). Needs a prefill-bound workload.
+
+**T-F. Housekeeping / paper.** (i) README `campaigns/edpp-study/README.md` §2 references paper-figure scripts
+(`repro_work_model_sweep.sh`, `repro_ttft_d_local.sh`, `analyze/work_model_sweep.py`, `ttft_d_local.py`) that
+are UNTRACKED → either commit them or drop the doc rows (user decision). (ii) INFOCOM paper draft
+(`infocom/joint-pd-routing.tex`) — keep figures/claims in sync with the corrected findings (esp. the
+retracted ~25% joint result).
+
 **Status:** experiments so far answered Q1 for the uniform decode-bound workload (synth): don't
 disaggregate — you need more decode nodes, which EDPP can't provide; EDPP ranges harmless→harmful.
 **Q2 — the correctness of the per-request decision — is NOT yet determined.** That is the priority.
