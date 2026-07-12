@@ -115,9 +115,11 @@ func TestHWConfigByGPU_ConverterCopiesAllFields(t *testing.T) {
 hw_config_by_gpu:
   H100:
     tflops_peak: 1979.0
+    tflops_fp8: 3958.0
     bw_peak_tbs: 3.35
     mfu_prefill: 0.5
     mfu_decode: 0.5
+    memory_gib: 80.0
   A100:
     tflops_peak: 1248.0
     bw_peak_tbs: 2.0
@@ -156,6 +158,12 @@ hw_config_by_gpu:
 	}
 	if a100.BwPeakTBs != 2.0 || a100.MfuPrefill != 0.3 || a100.MfuDecode != 0.3 {
 		t.Errorf("A100 fields not copied verbatim: %+v", a100)
+	}
+	if h100.TFlopsFP8 != 3958.0 {
+		t.Errorf("H100 TFlopsFP8 not copied verbatim: got %v, want 3958.0", h100.TFlopsFP8)
+	}
+	if h100.MemoryGiB != 80.0 {
+		t.Errorf("H100 MemoryGiB not copied verbatim: got %v, want 80.0", h100.MemoryGiB)
 	}
 }
 

@@ -457,6 +457,9 @@ node_pools:
 # ensuring pool-placed instances use the correct TFlopsPeak/BwPeakTBs for roofline math.
 # Omitting this field (zero value) is safe: no override, backward-compatible with all callers.
 # Keys must exactly match the gpu_type strings used in the node_pools entries above.
+# NOTE: a per-GPU entry here FULLY REPLACES the CLI --hardware calibration for that GPU type
+# (whole-struct assignment, not a field merge). A partial entry (e.g. only tflops_peak/bw_peak_tbs
+# set) does NOT inherit CLI MFU or other values — unset fields stay zero.
 hw_config_by_gpu:
   H100:
     tflops_peak: 1979.0    # FP16 TFLOPS
