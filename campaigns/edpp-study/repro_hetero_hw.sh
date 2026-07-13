@@ -77,4 +77,40 @@ for s in $SEEDS; do
   ./blis run --model "$MODEL" --workload-spec "$SPEC" --seed "$s" "${TOPO[@]}" --pd-plan "$OUT/plan_allfast.csv" "${SLO[@]}" --metrics-path "$OUT/o_$s.json" >/dev/null 2>&1; O=$(gp "$OUT/o_$s.json")
   printf "%-5s| %-13s| %-11s| %-19s| %s\n" "$s" "$R" "$J" "$L" "$O" >&2
 done
-echo "done -> $OUT" >&2
+echo "done (under-capacity) -> $OUT" >&2
+
+# ---------------------------------------------------------------------------
+# SATURATING regime (SAT=1): cap per-instance concurrency and push arrival rate
+# so the fast node saturates and the optimum is a NON-degenerate interior split
+# (~86% fast). Shows reactive joint == blind load-balance (both undershoot the
+# optimum) — the concrete case for per-instance θ_i (T-B). See FINDINGS.md
+# "Saturating-regime follow-up".
+# ---------------------------------------------------------------------------
+[[ "${SAT:-0}" == "1" ]] || { echo "(set SAT=1 for the saturating-regime comparison)" >&2; exit 0; }
+
+RATE="${RATE:-10}"; CAPN="${CAPN:-8}"; OPT="${OPT:-86}"   # optimal fast-fraction at rate 10
+cat > "$SPECDIR/sat.yaml" <<YAML
+version: "2"
+seed: 42
+category: language
+aggregate_rate: $RATE
+num_requests: 400
+clients:
+  - {id: hw, tenant_id: batch-jobs, slo_class: batch, rate_fraction: 1.0, streaming: false, arrival: {process: poisson}, input_distribution: {type: constant, params: {value: 256}}, output_distribution: {type: constant, params: {value: 64}}, prefix_group: hw, prefix_length: 0}
+YAML
+SSPEC="$SPECDIR/sat.yaml"
+SSLO=(--slo-ttft "batch=60s" --slo-e2e "batch=8s" --slo-itl "batch=500ms")
+SCAP=(--max-num-running-reqs "$CAPN")
+python3 -c "
+import csv
+w=csv.DictWriter(open('$OUT/opt.csv','w',newline=''),fieldnames=['request_id','decode_instance','prefill_instance']);w.writeheader()
+for i in range(400): w.writerow({'request_id':f'request_{i}','decode_instance':('instance_1' if i%100<$OPT else 'instance_2'),'prefill_instance':'instance_0'})"
+echo "SATURATING rate=$RATE cap=$CAPN. seed | joint | blind-loadbal | reduced-loadbal | optimum($OPT% fast)" >&2
+for s in $SEEDS; do
+  J=$(./blis run --model "$MODEL" --workload-spec "$SSPEC" --seed "$s" "${TOPO[@]}" "${SCAP[@]}" --pd-decider edpp "${EC[@]}" --edpp-joint "${SSLO[@]}" --metrics-path "$OUT/sj_$s.json" >/dev/null 2>&1; gp "$OUT/sj_$s.json")
+  B=$(./blis run --model "$MODEL" --workload-spec "$SSPEC" --seed "$s" "${TOPO[@]}" "${SCAP[@]}" --pd-decider always --decode-routing-scorers "load-balance:1" "${SSLO[@]}" --metrics-path "$OUT/sb_$s.json" >/dev/null 2>&1; gp "$OUT/sb_$s.json")
+  R=$(./blis run --model "$MODEL" --workload-spec "$SSPEC" --seed "$s" "${TOPO[@]}" "${SCAP[@]}" --pd-decider edpp "${EC[@]}" --decode-routing-scorers "load-balance:1" "${SSLO[@]}" --metrics-path "$OUT/sr_$s.json" >/dev/null 2>&1; gp "$OUT/sr_$s.json")
+  O=$(./blis run --model "$MODEL" --workload-spec "$SSPEC" --seed "$s" "${TOPO[@]}" "${SCAP[@]}" --pd-plan "$OUT/opt.csv" "${SSLO[@]}" --metrics-path "$OUT/so_$s.json" >/dev/null 2>&1; gp "$OUT/so_$s.json")
+  printf "%-5s| %-6s| %-14s| %-16s| %s\n" "$s" "$J" "$B" "$R" "$O" >&2
+done
+echo "done (saturating) -> $OUT" >&2

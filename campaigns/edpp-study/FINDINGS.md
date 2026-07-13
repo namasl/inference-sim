@@ -920,3 +920,42 @@ one speed gap (~4.3× ITL), one binary-separating SLO, N=60, 4 seeds. The optimu
 SATURATES the fast node, forcing a non-trivial speed-weighted split, to show joint computes the RIGHT split
 (not just "avoid the slow node") and to expose where reactive-congestion joint falls short of proactive θ_i.
 Artifacts: `campaigns/edpp-study/specs/hetero_hw/`, out `/tmp/hwopp` (regenerate via the commands in this section).
+
+### Saturating-regime follow-up (2026-07-12) — reactive joint = blind load-balance; only θ_i closes the gap
+
+The opportunity test above used an UNDER-capacity regime (rate 1.0, the fast node alone serves all load),
+so its optimum was DEGENERATE ("all-fast") and joint's reactive congestion signal won easily. This follow-up
+builds the harder NON-DEGENERATE case: cap per-instance concurrency (`--max-num-running-reqs 8`), short
+decode (osl 64, both nodes meet an 8s e2e SLO when un-queued), and push arrival RATE until the fast node
+SATURATES so the optimum is a genuine interior speed-weighted split. Same 1P2D fast-H100/slow-A100 bundle.
+
+**Fixed-plan optimum is a non-trivial interior split.** At rate 10 (fast saturated: all-fast goodput 0.48,
+all-slow 0.03), the fast-fraction sweep peaks at **~86% fast / 14% slow → goodput 0.96** — dramatically above
+both extremes and above a naive 50/50 (~0.5). So using BOTH nodes, weighted toward the fast one, is optimal.
+
+**Every reactive/congestion-aware policy converges to ~77% fast and UNDERSHOOTS the optimum (3 seeds):**
+
+| seed | joint | blind load-balance | reduced+load-balance | fixed-plan optimum (86% fast) |
+|------|-------|--------------------|----------------------|-------------------------------|
+| 42   | 0.823 | 0.840              | 0.830                | 0.960                         |
+| 7    | 0.818 | 0.835              | 0.810                | 0.902                         |
+| 123  | 0.890 | 0.953              | 0.877                | 0.975                         |
+
+(reduced default profile still 0.02 — the `precise-prefix-cache` all-to-slow pin.) **Joint gives NO advantage
+over a plain hardware-blind load-balancer here (0.82 vs 0.84, sometimes marginally worse), and all three
+cluster at ~77% fast vs the optimal 86%** — leaving ~0.08–0.14 goodput unclaimed every seed.
+
+**WHY (the T-B motivation, sharpened).** Reactive congestion/load signals EQUALIZE queue depth / occupancy
+across instances. Queue-equalization is NOT the goodput-optimal split: because the fast node drains 4.3×
+faster, the optimum OVER-loads it relative to equal-queue (push it harder — its requests still meet SLO).
+Joint's per-instance `Q_i`/`T̂` terms equalize just like the blind load-balancer, so joint converges to the
+same ~77% fast. Closing the last ~0.1 to the 86% optimum requires PROACTIVE per-instance speed knowledge —
+i.e. per-instance `θ_i` in the decider (T-B) — which reactive signals provably cannot supply.
+
+**Synthesis of the two regimes (the paper's hardware-θ story).**
+- UNDER-capacity (fast has spare room): reactive joint WINS big (0.97 vs blind 0.77) — its congestion term
+  suffices to "avoid the slow node."
+- SATURATING (must use both, optimum is an interior speed-weighted split): reactive joint = blind
+  load-balance (~0.82), both undershoot the optimum (~0.96); per-instance `θ_i` is REQUIRED to hit the split.
+So hardware heterogeneity creates real headroom in BOTH regimes; joint captures the easy one reactively, and
+the hard one is the concrete, quantified case for T-B. Repro: `repro_hetero_hw.sh` (SAT=1 mode).

@@ -36,7 +36,14 @@ N=60; the optimum here is DEGENERATE (all-fast, load fits on the fast node). Nat
 workload forcing a non-trivial speed-weighted split (does joint compute the RIGHT split, and where does
 reactive-congestion joint fall short of proactive θ_i?), then T-B.
 
-**T-B. Sub-project 2 — heterogeneous `θ_i` (the value case; critical path IF T-A is promising).** Requires a
+**T-B — NOW WELL-MOTIVATED by T-A's saturating-regime result (2026-07-12).** T-A showed the concrete,
+quantified gap θ_i must close: in the SATURATING regime the goodput-optimal split is an interior ~86%-fast
+allocation (0.96), but joint == blind load-balance == reduced (~0.82) because reactive congestion equalizes
+queues rather than over-weighting the faster node. Per-instance `θ_i` in the decider is the mechanism to
+hit the optimal speed-weighted split. (In the under-capacity regime joint already wins reactively — θ_i is
+the refinement there.) See FINDINGS "Saturating-regime follow-up".
+
+**T-B. Sub-project 2 — heterogeneous `θ_i` (the value case).** Requires a
 SIMULATOR-side change: `resolveConfigForRole` (`sim/cluster/cluster.go`) serves hardware POOL-WIDE, so two
 same-role decode instances can't run at different speeds today. Build: per-instance/per-profile hardware
 serving + per-instance `θ_i` loading/indexing in EDPP + per-instance `Z^I_i` (deferred from sub-project 1).
