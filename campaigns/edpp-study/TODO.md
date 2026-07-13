@@ -23,14 +23,18 @@ HIGHER than reduced (0.32 vs 0.22). See FINDINGS "Policy comparison" + the K=50 
 mechanism". **The joint rule's only distinctive lever is per-instance cost via `θ_i`, invisible on
 homogeneous hardware — so the paper's value case now rests entirely on the heterogeneous regime.**
 
-**CHOSEN NEXT STEP → T-A. De-risk heterogeneity CHEAPLY before any simulator build.** Confirm (or refute)
-that the joint rule CAN beat `always`/`never` under heterogeneity, using tools that need NO simulator change:
-(a) hand/paper analysis on a 2-decode toy (one node 2× faster or cache-warm) — does the joint objective `J`
-(formulation `docs/design/2026-06-30-pd-joint-routing-problem-formulation.md` §5.3) pick the cheaper node
-while `always`/`never` structurally cannot express the per-instance tradeoff? (b) the fixed-plan brute-force
-micro-yardstick (enumerate assignments on a tiny heterogeneous trace via `--pd-plan`, find the optimum, check
-it diverges from the baselines). ~an afternoon. Decision gate: if even the toy shows no headroom, the thesis
-needs rethinking BEFORE investing in T-B.
+**T-A — DONE (2026-07-12), GATE PASSED, and better than expected.** Wired `hw_config_by_gpu` into the
+bundle (branch `feat/edpp-estimator-validation`, commits `60dcdaa..b07a79f`), stood up a fast-H100 +
+crippled-A100 1P2D decode pool (`repro_hetero_hw.sh`, `specs/hetero_hw/`), and ran the opportunity test.
+RESULT (FINDINGS "Hardware-θ opportunity test", 4 seeds): fixed-plan optimum 1.00 vs best hardware-blind
+scorer 0.77 (headroom is REAL — no blind policy closes it), and **joint-EDPP robustly captures it (0.97–1.0)
+while reduced-EDPP does not (0.0–0.77)** — the FIRST workload where joint strictly beats reduced. Mechanism:
+joint prefers the fast node REACTIVELY via per-instance `Q_i` + occupancy-aware `T̂` (slow node accrues
+visible congestion), NOT via θ. So the prior "joint needs per-instance θ_i" framing (below) is too strong —
+θ_i is now the PROACTIVE refinement, not the unlock. CAVEAT: one archetype / one speed gap / binary SLO /
+N=60; the optimum here is DEGENERATE (all-fast, load fits on the fast node). Natural next: a SATURATING
+workload forcing a non-trivial speed-weighted split (does joint compute the RIGHT split, and where does
+reactive-congestion joint fall short of proactive θ_i?), then T-B.
 
 **T-B. Sub-project 2 — heterogeneous `θ_i` (the value case; critical path IF T-A is promising).** Requires a
 SIMULATOR-side change: `resolveConfigForRole` (`sim/cluster/cluster.go`) serves hardware POOL-WIDE, so two
