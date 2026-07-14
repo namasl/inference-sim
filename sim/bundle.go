@@ -25,6 +25,7 @@ type PolicyBundle struct {
 	Autoscaler        AutoscalerBundleConfig               `yaml:"autoscaler"`         // IntervalUs=0 = disabled
 	InstanceLifecycle InstanceLifecycleBundleConfig        `yaml:"instance_lifecycle"` // zero = instant loading
 	HWConfigByGPU     map[string]HardwareCalibBundleConfig `yaml:"hw_config_by_gpu"`   // nil = no per-GPU override
+	CoeffsByGPU       map[string]string                    `yaml:"coeffs_by_gpu"`      // nil = no per-GPU θ override; value = EDPP coeffs file path
 }
 
 // AdmissionConfig holds admission policy configuration.
@@ -389,6 +390,13 @@ func (b *PolicyBundle) Validate() error {
 		}
 		if !(hc.BwPeakTBs > 0) {
 			return fmt.Errorf("hw_config_by_gpu[%q]: bw_peak_tbs must be > 0, got %v", gpu, hc.BwPeakTBs)
+		}
+	}
+	// Validate per-GPU coeffs overrides. Structural only — no filesystem I/O here;
+	// the file is loaded and validated in cmd/ (Task 6).
+	for gpu, path := range b.CoeffsByGPU {
+		if strings.TrimSpace(path) == "" {
+			return fmt.Errorf("coeffs_by_gpu[%q]: path must not be empty", gpu)
 		}
 	}
 	// Validate instance lifecycle config.

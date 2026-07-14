@@ -775,3 +775,45 @@ func TestPolicyBundle_HWConfigByGPU_RejectsNonPositive(t *testing.T) {
 		}
 	}
 }
+
+func TestPolicyBundle_CoeffsByGPU_RoundTrip(t *testing.T) {
+	yamlSrc := `
+scheduler: fcfs
+coeffs_by_gpu:
+  H100: scripts/calibration/coeffs-llama70b-h100-tp4.json
+  A100: scripts/calibration/coeffs-llama70b-a100crippled-tp4.json
+`
+	path := writeTempYAML(t, yamlSrc)
+	b, err := LoadPolicyBundle(path)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if got := b.CoeffsByGPU["H100"]; got != "scripts/calibration/coeffs-llama70b-h100-tp4.json" {
+		t.Fatalf("H100 path parsed wrong: %q", got)
+	}
+	if got := b.CoeffsByGPU["A100"]; got != "scripts/calibration/coeffs-llama70b-a100crippled-tp4.json" {
+		t.Fatalf("A100 path parsed wrong: %q", got)
+	}
+}
+
+func TestPolicyBundle_CoeffsByGPU_RejectsEmptyPath(t *testing.T) {
+	path := writeTempYAML(t, "scheduler: fcfs\ncoeffs_by_gpu:\n  H100: \"\"\n")
+	b, err := LoadPolicyBundle(path)
+	if err != nil {
+		t.Fatalf("load (parse) should succeed: %v", err)
+	}
+	if err := b.Validate(); err == nil {
+		t.Fatalf("expected Validate() error for empty coeffs_by_gpu path")
+	}
+}
+
+func TestPolicyBundle_CoeffsByGPU_AbsentIsNil(t *testing.T) {
+	path := writeTempYAML(t, "scheduler: fcfs\n")
+	b, err := LoadPolicyBundle(path)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if b.CoeffsByGPU != nil {
+		t.Fatalf("expected nil CoeffsByGPU when omitted, got %v", b.CoeffsByGPU)
+	}
+}
