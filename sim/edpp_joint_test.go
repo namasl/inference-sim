@@ -204,6 +204,83 @@ func TestJoint_DivergenceTrace_NilWhenDisabled(t *testing.T) {
 	}
 }
 
+func TestDecideJoint_HomogeneousCoeffsByGPU_ByteIdentical(t *testing.T) {
+	// INV-6 byte-identity: a joint decider whose CoeffsByGPU maps every GPU type back to
+	// the global coeffs must produce the SAME decision as one with no CoeffsByGPU, because
+	// coeffsFor returns d.coeffs for every candidate and the per-candidate wd/mDec recompute
+	// identical float values.
+	base := defaultTestEDPPConfig().Coeffs
+	prefill := func() []RoutingSnapshot { return []RoutingSnapshot{{ID: "P0"}} }
+	cache := coldCacheQuery("M0", "M1", "P0")
+
+	cfgPlain := defaultTestEDPPConfig()
+	cfgPlain.Joint = true
+	cfgDup := cfgPlain
+	cfgDup.CoeffsByGPU = map[string]EDPPCoeffs{"H100": base, "A100": base}
+
+	newState := func() *RouterState {
+		return &RouterState{
+			SelectedInstance: "M0",
+			Snapshots: []RoutingSnapshot{
+				{ID: "M0", GPUType: "H100", BatchSize: 3, KvTokensInUse: 512},
+				{ID: "M1", GPUType: "A100", BatchSize: 1, KvTokensInUse: 128},
+			},
+		}
+	}
+
+	dPlain := NewEDPPDecider(cfgPlain, newTestAffineModel(), cache, prefill)
+	dDup := NewEDPPDecider(cfgDup, newTestAffineModel(), cache, prefill)
+	// Identical virtual-queue pressure on both so a real (non-degenerate) argmin runs.
+	for _, dd := range []*EDPPDecider{dPlain, dDup} {
+		z := dd.ensureZ("batch")
+		z.zTTFT = 1e6
+		z.zITL = 1e6
+	}
+
+	got := dDup.Decide(reqBatch("r", 256), newState())
+	want := dPlain.Decide(reqBatch("r", 256), newState())
+	if got.Disaggregate != want.Disaggregate ||
+		got.DecodePodOverride != want.DecodePodOverride ||
+		got.PrefillPodHint != want.PrefillPodHint {
+		t.Fatalf("duplicate-θ decision {%v %q %q} != plain {%v %q %q} (byte-identity broken)",
+			got.Disaggregate, got.DecodePodOverride, got.PrefillPodHint,
+			want.Disaggregate, want.DecodePodOverride, want.PrefillPodHint)
+	}
+}
+
+func TestDecideJoint_PerInstanceTheta_PrefersFastGPU(t *testing.T) {
+	// θ_i is consumed: two decode candidates with IDENTICAL live state differ only in
+	// GPUType. The fast H100 sits at the HIGHER instance ID, so a tie-break would pick the
+	// slow A100 — asserting the fast node wins proves θ_i (not ordering) drove the argmin.
+	base := defaultTestEDPPConfig().Coeffs
+	slow := base
+	slow.AlphaD *= 4
+	slow.AlphaP *= 4 // keep AlphaD≈AlphaP (coeffs validator rejects >10% divergence)
+	slow.C0 *= 4
+	slow.C1 *= 4
+	slow.CPf *= 4
+
+	cfg := defaultTestEDPPConfig()
+	cfg.Joint = true
+	cfg.CoeffsByGPU = map[string]EDPPCoeffs{"H100": base, "A100": slow}
+	// No prefill pool: only local decode candidates are enumerated, so the decode-side
+	// physics (θ_i) is the sole differentiator between the two candidates.
+	d := NewEDPPDecider(cfg, newTestAffineModel(), coldCacheQuery("instance_1", "instance_2"), nil)
+	d.ensureZ("batch").zTTFT = 1e7 // TTFT pressure so the θ-dependent T̂_local dominates J
+
+	state := &RouterState{
+		SelectedInstance: "instance_1",
+		Snapshots: []RoutingSnapshot{
+			{ID: "instance_1", GPUType: "A100", BatchSize: 1},
+			{ID: "instance_2", GPUType: "H100", BatchSize: 1},
+		},
+	}
+	dec := d.Decide(reqBatch("r", 256), state)
+	if dec.DecodePodOverride != "instance_2" {
+		t.Fatalf("joint picked %q, want instance_2 (fast H100); θ_i not driving decode selection", dec.DecodePodOverride)
+	}
+}
+
 func TestJoint_ReducesToScorerSliceMatchesReduced(t *testing.T) {
 	// §5.5 reduction: joint J restricted to the scorer's single d reproduces the reduced
 	// local-vs-disagg decision. Build one reduced decider and one joint decider sharing an

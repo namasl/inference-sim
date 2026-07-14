@@ -712,9 +712,10 @@ func (d *EDPPDecider) instWorkRaw(id string) (wp, wd float64) {
 }
 
 // chunkTerms returns (n_chunks, δ_pf-chunk) for a_p uncached prefill tokens under the
-// decode batched-token budget (ChunkTokens). a_p ≤ 0 (fully cached / empty) ⇒ (0, 0):
-// no prefill work, no per-chunk ITL inflation.
-func (d *EDPPDecider) chunkTerms(ap int) (nChunks, deltaPfChunk float64) {
+// decode batched-token budget (ChunkTokens), where δ_pf-chunk = theta.CPf·chunk is charged
+// on the pool the prefill runs on (local ⇒ decode θ, disagg ⇒ prefill θ). a_p ≤ 0 (fully
+// cached / empty) ⇒ (0, 0): no prefill work, no per-chunk ITL inflation.
+func (d *EDPPDecider) chunkTerms(theta EDPPCoeffs, ap int) (nChunks, deltaPfChunk float64) {
 	if ap <= 0 {
 		return 0, 0
 	}
@@ -722,7 +723,7 @@ func (d *EDPPDecider) chunkTerms(ap int) (nChunks, deltaPfChunk float64) {
 	if d.cfg.ChunkTokens > 0 && d.cfg.ChunkTokens < chunk {
 		chunk = d.cfg.ChunkTokens
 	}
-	return math.Ceil(float64(ap) / float64(chunk)), d.coeffs.CPf * float64(chunk)
+	return math.Ceil(float64(ap) / float64(chunk)), theta.CPf * float64(chunk)
 }
 
 // reqKVNeed is ⌈a_r / blockSize⌉ (a_r = full input length; oracle-safe). 0 when BlockSize ≤ 0.
@@ -766,19 +767,13 @@ func (d *EDPPDecider) decideJoint(req *Request, state *RouterState) Disaggregati
 
 	reqKVNeed := d.reqKVNeed(req)
 	nHatOut := d.nHatFor(class).mean()
-	wd := d.coeffs.Wd(len(req.InputTokens), nHatOut)
-
-	// Base decode-step ITL marginal m_dec(d) = δ̄_dec at mean context (design §3
-	// z_itl term). m_dec is candidate-invariant under homogeneous θ (so argmin-invariant
-	// now) but is included for §3 fidelity and becomes discriminating under per-instance
-	// θ_i (sub-project 2). Added to BOTH local and disagg J (decode happens on d either way).
-	mDec := d.coeffs.deltaBarDecode(float64(len(req.InputTokens)) + nHatOut/2)
-	jDecodeITL := zITL * (mDec / n.tauITL)
 
 	// Candidate-invariant terms shared by every (d,·) cost evaluation this decision.
+	// wd (W_d) and mDec (m_dec = δ̄_dec) are now computed per candidate in
+	// jointCandidateCost under θ_i (they discriminate fast vs slow decode nodes).
 	ec := &jointEvalCtx{
 		req: req, n: n, zTTFT: zTTFT, zITL: zITL,
-		reqKVNeed: reqKVNeed, wd: wd, jDecodeITL: jDecodeITL,
+		reqKVNeed: reqKVNeed, nHatOut: nHatOut,
 	}
 
 	var best *cand
@@ -829,13 +824,12 @@ type cand struct {
 // argmin enumeration and from the scorer-slice shadow evaluation (divergence trace) without
 // recomputing them — and so both paths produce byte-identical arithmetic (INV-6).
 type jointEvalCtx struct {
-	req        *Request
-	n          edppNorm
-	zTTFT      float64
-	zITL       float64
-	reqKVNeed  int64
-	wd         float64
-	jDecodeITL float64
+	req       *Request
+	n         edppNorm
+	zTTFT     float64
+	zITL      float64
+	reqKVNeed int64
+	nHatOut   float64 // per-class realized output-length estimate; wd/mDec are now per-candidate (θ_i)
 }
 
 // jointCandidateCost evaluates the normalized joint objective J(d, ·) for one candidate:
@@ -846,12 +840,20 @@ type jointEvalCtx struct {
 // float result, INV-6).
 func (d *EDPPDecider) jointCandidateCost(ec *jointEvalCtx, ds RoutingSnapshot, ps *RoutingSnapshot) float64 {
 	n := ec.n
+	// Decode-side θ_i: the physics of the decode node ds (fast vs slow ranks correctly).
+	thetaD := d.coeffsFor(ds.GPUType)
 	bDec, kv, sPfD := ds.BatchSize, ds.KvTokensInUse, ds.ResidentPrefillTokens
-	tIterD := d.coeffs.tIterDecode(bDec, kv, sPfD)
+	tIterD := thetaD.tIterDecode(bDec, kv, sPfD)
+	// Per-candidate decode work W_d and base decode-step ITL marginal m_dec = δ̄_dec at mean
+	// context (design §3 z_itl term), both under this candidate's θ_i. Decode happens on d in
+	// both local and disagg, so jDecodeITL is added to both.
+	wd := thetaD.Wd(len(ec.req.InputTokens), ec.nHatOut)
+	mDec := thetaD.deltaBarDecode(float64(len(ec.req.InputTokens)) + ec.nHatOut/2)
+	jDecodeITL := ec.zITL * (mDec / n.tauITL)
 	_, qdRaw := d.instWorkRaw(ds.ID)
 	qd := qdRaw / n.wStarD
 	decodeCtx := AdmissionContext{
-		QWork: qdRaw, Mu: d.coeffs.muDecode(bDec, kv, sPfD),
+		QWork: qdRaw, Mu: thetaD.muDecode(bDec, kv, sPfD),
 		BatchSize: ds.BatchSize, MaxBatchSize: int(ds.MaxBatchSize),
 		FreeKVBlocks: ds.FreeKVBlocks, ReqKVNeed: ec.reqKVNeed,
 		TIter: tIterD, QueueDepth: ds.QueueDepth,
@@ -861,32 +863,34 @@ func (d *EDPPDecider) jointCandidateCost(ec *jointEvalCtx, ds RoutingSnapshot, p
 	tAdmD := d.tadmEstimator.EstimateTAdm(decodeCtx)
 
 	// Decode backlog term (same for local and disagg on this d — cancels within a d,
-	// distinguishes across d): q_d·(W_d/W*_d).
-	jDecodeBacklog := qd * (ec.wd / n.wStarD)
+	// distinguishes across d): q_d·(W_d/W*_d). The per-candidate W_d makes the fast node's
+	// smaller demand lower its J.
+	jDecodeBacklog := qd * (wd / n.wStarD)
 
 	if ps == nil {
-		// --- local: prefill+decode co-resident on d ---
+		// --- local: prefill+decode co-resident on d ⇒ prefill uses the decode θ_i ---
 		apLoc := d.apForInstance(ec.req, ds.ID)
-		nChunksLoc, deltaPfLoc := d.chunkTerms(apLoc)
-		wpLoc := d.coeffs.Wp(maxInt(apLoc, 0), len(ec.req.InputTokens))
+		nChunksLoc, deltaPfLoc := d.chunkTerms(thetaD, apLoc)
+		wpLoc := thetaD.Wp(maxInt(apLoc, 0), len(ec.req.InputTokens))
 		tHatLocal := tAdmD + nChunksLoc*(tIterD+deltaPfLoc) // ABSOLUTE T̂_local(d)
 		return jDecodeBacklog +
 			qd*(wpLoc/n.wStarD) +
 			ec.zTTFT*(tHatLocal/n.tauTTFT) +
-			ec.jDecodeITL + // base decode-step ITL marginal m_dec (candidate-invariant under homogeneous θ)
+			jDecodeITL + // base decode-step ITL marginal m_dec (per-candidate θ_i)
 			ec.zITL*(deltaPfLoc/n.tauITL) // prefill-on-decode ITL inflation lands on local only
 	}
 
-	// --- disagg: decode on d, prefill on node *ps ---
+	// --- disagg: decode on d, prefill on node *ps ⇒ prefill uses the prefill node's θ_i ---
+	thetaP := d.coeffsFor(ps.GPUType)
 	apP := d.apForInstance(ec.req, ps.ID)
-	nChunksP, deltaPfP := d.chunkTerms(apP)
-	wpP := d.coeffs.Wp(maxInt(apP, 0), len(ec.req.InputTokens))
+	nChunksP, deltaPfP := d.chunkTerms(thetaP, apP)
+	wpP := thetaP.Wp(maxInt(apP, 0), len(ec.req.InputTokens))
 	qpRaw, _ := d.instWorkRaw(ps.ID)
 	qp := qpRaw / n.wStarP
 	sPfP := ps.ResidentPrefillTokens
-	tIterP := d.coeffs.tIterPrefill(sPfP)
+	tIterP := thetaP.tIterPrefill(sPfP)
 	prefillCtx := AdmissionContext{
-		QWork: qpRaw, Mu: d.coeffs.muPrefill(sPfP),
+		QWork: qpRaw, Mu: thetaP.muPrefill(sPfP),
 		BatchSize: ps.BatchSize, MaxBatchSize: int(ps.MaxBatchSize),
 		FreeKVBlocks: ps.FreeKVBlocks, ReqKVNeed: ec.reqKVNeed,
 		TIter: tIterP, QueueDepth: ps.QueueDepth,
@@ -898,7 +902,7 @@ func (d *EDPPDecider) jointCandidateCost(ec *jointEvalCtx, ds RoutingSnapshot, p
 	return jDecodeBacklog +
 		qp*(wpP/n.wStarP) +
 		ec.zTTFT*(tHatDisagg/n.tauTTFT) +
-		ec.jDecodeITL + // base decode-step ITL marginal m_dec (same as local: decode is on d)
+		jDecodeITL + // base decode-step ITL marginal m_dec (same as local: decode is on d)
 		d.transferPenalty(n) // disagg pays the KV-transfer penalty; no local ITL inflation
 }
 
