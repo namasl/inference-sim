@@ -64,22 +64,23 @@ import (
 // the request's own class: a stricter class reads the same server backlog as more
 // threatening, and its realized-SLO feedback accumulates in its own virtual queue.
 type EDPPConfig struct {
-	TauTTFTUs         int64            // default τ_ttft: time-average TTFT SLO target (µs)
-	TauITLUs          int64            // default τ_itl: time-average ITL SLO target (µs)
-	TauRefUs          int64            // fixed reference τ for the transfer-penalty normalization (µs); makes the penalty scale 1/τ_ttft² like the other terms. Independent of the operating τ_ttft.
-	TauTTFTByClassUs  map[string]int64 // per-class τ_ttft overrides (µs); nil = use default for all
-	TauITLByClassUs   map[string]int64 // per-class τ_itl overrides (µs); nil = use default for all
-	V                 float64          // penalty/stability tradeoff knob (Neely's V); larger ⇒ fewer offloads
-	CXferUs           int64            // c_xfer: KV-transfer cost paid when routing P (µs)
-	NomPrefillTokens  int              // S_nom: nominal prefill chunk for the fixed prefill normalizer
-	NomDecodeCtx      int              // L_nom: nominal decode context for the fixed decode normalizer
-	BlockSize         int              // token block size for the prefix-cache a_p computation
-	ChunkTokens       int              // per-step prefill token budget (max_num_batched_tokens); caps δ_pf-chunk. 0 = no cap (whole prefill counts as one chunk)
-	Coeffs            EDPPCoeffs       // frozen E3 latency-law coefficients (design §1.1); required
-	TraceEnabled      bool             // when true, Decide attaches an EDPPDecisionTrace (intermediate rule terms) to each decision. Off ⇒ zero allocation.
-	TAdmEstimator     string           // admission-delay estimator name ("" ⇒ waiting, the current formula)
-	Joint             bool             // when true, Decide enumerates all (decode, prefill) candidates and picks the drift-plus-penalty argmin (joint P/D routing, --edpp-joint); false ⇒ the reduced fixed-d local-vs-disagg rule.
-	JointTraceEnabled bool             // when true (joint mode only), decideJoint attaches an EDPPJointDecisionTrace comparing the scorer's (d,p) pick to the joint argmin. Off ⇒ zero allocation, no shadow prefill scorer run.
+	TauTTFTUs         int64                 // default τ_ttft: time-average TTFT SLO target (µs)
+	TauITLUs          int64                 // default τ_itl: time-average ITL SLO target (µs)
+	TauRefUs          int64                 // fixed reference τ for the transfer-penalty normalization (µs); makes the penalty scale 1/τ_ttft² like the other terms. Independent of the operating τ_ttft.
+	TauTTFTByClassUs  map[string]int64      // per-class τ_ttft overrides (µs); nil = use default for all
+	TauITLByClassUs   map[string]int64      // per-class τ_itl overrides (µs); nil = use default for all
+	V                 float64               // penalty/stability tradeoff knob (Neely's V); larger ⇒ fewer offloads
+	CXferUs           int64                 // c_xfer: KV-transfer cost paid when routing P (µs)
+	NomPrefillTokens  int                   // S_nom: nominal prefill chunk for the fixed prefill normalizer
+	NomDecodeCtx      int                   // L_nom: nominal decode context for the fixed decode normalizer
+	BlockSize         int                   // token block size for the prefix-cache a_p computation
+	ChunkTokens       int                   // per-step prefill token budget (max_num_batched_tokens); caps δ_pf-chunk. 0 = no cap (whole prefill counts as one chunk)
+	Coeffs            EDPPCoeffs            // frozen E3 latency-law coefficients (design §1.1); required
+	CoeffsByGPU       map[string]EDPPCoeffs // per-GPU-type θ_i overrides; nil ⇒ use Coeffs for every candidate (homogeneous)
+	TraceEnabled      bool                  // when true, Decide attaches an EDPPDecisionTrace (intermediate rule terms) to each decision. Off ⇒ zero allocation.
+	TAdmEstimator     string                // admission-delay estimator name ("" ⇒ waiting, the current formula)
+	Joint             bool                  // when true, Decide enumerates all (decode, prefill) candidates and picks the drift-plus-penalty argmin (joint P/D routing, --edpp-joint); false ⇒ the reduced fixed-d local-vs-disagg rule.
+	JointTraceEnabled bool                  // when true (joint mode only), decideJoint attaches an EDPPJointDecisionTrace comparing the scorer's (d,p) pick to the joint argmin. Off ⇒ zero allocation, no shadow prefill scorer run.
 }
 
 // EDPPJointDecisionTrace records, for one joint (--edpp-joint) decision, the scorer's
@@ -293,6 +294,9 @@ type EDPPDecider struct {
 	// Frozen calibrated coefficients stored for use by downstream tasks.
 	coeffs EDPPCoeffs
 
+	// Per-GPU-type θ_i (design 2026-07-14). nil ⇒ homogeneous: coeffsFor returns coeffs.
+	coeffsByGPU map[string]EDPPCoeffs
+
 	// joint selects the (decode, prefill) argmin enumeration path (--edpp-joint).
 	// false ⇒ the reduced fixed-d local-vs-disagg rule (byte-identical legacy path).
 	joint bool
@@ -352,6 +356,11 @@ func (d *EDPPDecider) SetCaptureAdmissionContext(v bool) { d.captureAdmissionCtx
 // The per-class target maps are copied defensively.
 func NewEDPPDecider(cfg EDPPConfig, model LatencyModel, cacheQuery map[string]func([]int) int, prefillSnapshots func() []RoutingSnapshot) *EDPPDecider {
 	cfg.validate()
+	for gpu, c := range cfg.CoeffsByGPU {
+		if err := c.validate(); err != nil {
+			panic(fmt.Sprintf("NewEDPPDecider: coeffs_by_gpu[%q]: %v", gpu, err))
+		}
+	}
 	if model == nil {
 		panic("NewEDPPDecider: model must not be nil")
 	}
@@ -366,6 +375,7 @@ func NewEDPPDecider(cfg EDPPConfig, model LatencyModel, cacheQuery map[string]fu
 		joint:            cfg.Joint,
 		zByClass:         make(map[string]*edppClassState),
 		coeffs:           cfg.Coeffs,
+		coeffsByGPU:      cfg.CoeffsByGPU,
 		pending:          make(map[string]edppPendingWork),
 		qByInstance:      make(map[string]*edppInstWork),
 		nHatOut:          make(map[string]*edppRunningMean),
@@ -422,6 +432,19 @@ func (d *EDPPDecider) targetsFor(class string) (tauTTFTUs, tauITLUs int64) {
 		tauITLUs = v
 	}
 	return
+}
+
+// coeffsFor returns the per-GPU-type θ_i for gpuType, or the global coeffs when
+// no override exists (nil map, unmapped type, or empty gpuType). This is the single
+// selection point for per-instance heterogeneous coefficients; with no coeffs_by_gpu
+// it returns d.coeffs for every candidate, preserving byte-identity (INV-6).
+func (d *EDPPDecider) coeffsFor(gpuType string) EDPPCoeffs {
+	if gpuType != "" {
+		if c, ok := d.coeffsByGPU[gpuType]; ok {
+			return c
+		}
+	}
+	return d.coeffs
 }
 
 // normFor computes the class-resolved normalizers (E10–E12). μ_d^nom = 1 − α/τ_itl

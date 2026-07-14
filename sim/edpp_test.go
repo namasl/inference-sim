@@ -1281,3 +1281,31 @@ func TestEDPP_OnComplete_NoDoubleAfterFirstToken(t *testing.T) {
 		t.Fatalf("zTTFT = %v, want 150000 (no double bump)", got)
 	}
 }
+
+// --- Per-GPU θ store (Task 3) ---
+
+// TestEDPPDecider_CoeffsFor proves coeffsFor selects the per-GPU-type override when
+// present and falls back to the global coeffs for an unmapped type and for "". The
+// store is otherwise unused (not yet wired into the cost math), so this test only
+// exercises the selector itself (design 2026-07-14).
+func TestEDPPDecider_CoeffsFor(t *testing.T) {
+	base := EDPPCoeffs{AlphaD: 1000, AlphaP: 1000, C0: 100, C1: 1, CPf: 10, CAttn: 0}
+	a100 := EDPPCoeffs{AlphaD: 4000, AlphaP: 4000, C0: 400, C1: 4, CPf: 40, CAttn: 0}
+
+	cfg := defaultTestEDPPConfig()
+	if cfg.Coeffs != base {
+		t.Fatalf("defaultTestEDPPConfig().Coeffs = %+v, want %+v (test assumption)", cfg.Coeffs, base)
+	}
+	cfg.CoeffsByGPU = map[string]EDPPCoeffs{"A100": a100}
+	d := NewEDPPDecider(cfg, newTestAffineModel(), nil, nil)
+
+	if got := d.coeffsFor("A100"); got != a100 {
+		t.Fatalf("coeffsFor(A100) = %+v, want %+v", got, a100)
+	}
+	if got := d.coeffsFor("H100"); got != base { // unmapped ⇒ fallback
+		t.Fatalf("coeffsFor(unmapped) = %+v, want base %+v", got, base)
+	}
+	if got := d.coeffsFor(""); got != base { // empty ⇒ fallback
+		t.Fatalf("coeffsFor(\"\") = %+v, want base %+v", got, base)
+	}
+}
