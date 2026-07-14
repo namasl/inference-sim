@@ -242,3 +242,34 @@ func TestPoolFilteredSnapshots_CarryAdmissionRate(t *testing.T) {
 		t.Fatalf("buildPoolFilteredSnapshots AdmissionRate = %v, want parity with buildRouterState %v (little estimator reads 0 otherwise)", pfRate, rsRate)
 	}
 }
+
+// TestBuildPoolFilteredSnapshots_CarriesGPUType is a regression for the EDPP
+// disaggregation path missing per-instance GPU type on its routing snapshots.
+// buildRouterState (the non-PD path) has always set snap.GPUType = inst.GPU()
+// (cluster_event.go), but buildPoolFilteredSnapshots — the snapshot source for
+// the EDPP decode-first routing path — did not, so any decider logic keyed on
+// GPUType (e.g. per-GPU coefficient lookup, coeffs_by_gpu) would silently see ""
+// on every disaggregated decision. newTestEDPPDeploymentConfig configures GPU
+// "H100" via ModelHardwareConfig, so every instance's InstanceSimulator.GPU()
+// returns "H100"; the pool-filtered decode snapshots must carry it too.
+func TestBuildPoolFilteredSnapshots_CarriesGPUType(t *testing.T) {
+	config := newTestEDPPDeploymentConfig(4, 2, 2)
+	cs := NewClusterSimulator(config, newTestRequests(1), nil)
+
+	const wantGPU = "H100"
+	for _, inst := range cs.instances {
+		if inst.GPU() != wantGPU {
+			t.Fatalf("precondition: instance %s GPU() = %q, want %q", inst.ID(), inst.GPU(), wantGPU)
+		}
+	}
+
+	snaps := cs.buildPoolFilteredSnapshots(PoolRoleDecode)
+	if len(snaps) == 0 {
+		t.Fatal("expected >=1 decode snapshot")
+	}
+	for _, s := range snaps {
+		if s.GPUType != wantGPU {
+			t.Fatalf("snapshot %s GPUType = %q, want %q", s.ID, s.GPUType, wantGPU)
+		}
+	}
+}

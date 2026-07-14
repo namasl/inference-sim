@@ -1246,6 +1246,7 @@ func (c *ClusterSimulator) buildPoolFilteredSnapshots(role PoolRole) []sim.Routi
 			continue
 		}
 		snap := c.snapshotProvider.Snapshot(inst.ID(), c.clock)
+		snap.GPUType = inst.GPU()
 		snap.InFlightRequests = c.inFlightRequests[string(inst.ID())]
 		// Admission-rate signals feed the EDPP `little` estimator (λ_adm ≈ completion
 		// rate, §3.8). The EDPP disaggregation path sources its snapshots here (decode-pool
