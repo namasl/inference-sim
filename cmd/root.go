@@ -1231,13 +1231,6 @@ func hwConfigByGPUFromBundle(bundle *sim.PolicyBundle) map[string]sim.HardwareCa
 	return out
 }
 
-// edppCoeffsByGPUWiringHook is a test-only structural seam: when non-nil, runCmd
-// invokes it with the resolved EDPPCoeffsByGPU value immediately after the
-// DeploymentConfig literal is built. Always nil in production (zero cost). A
-// child-process test sets it to print the value and os.Exit before the
-// simulation runs, so it never needs to unwind back into runCmd.Run.
-var edppCoeffsByGPUWiringHook func(map[string]sim.EDPPCoeffs)
-
 // edppCoeffsByGPUFromBundle loads each coeffs_by_gpu path into EDPPCoeffs (fail-fast:
 // a missing/unreadable/invalid file is fatal, matching resolveEDPPCoeffs). Returns nil
 // when the bundle omits coeffs_by_gpu (homogeneous).
@@ -2016,13 +2009,6 @@ var runCmd = &cobra.Command{
 			NodePools:                       bundleNodePools,
 			HWConfigByGPU:                   bundleHWConfigByGPU,
 			InstanceLifecycle:               bundleInstanceLifecycle,
-		}
-		// Test-only structural wiring seam (nil in production, zero cost): lets a
-		// cmd_test verify that the EDPPCoeffsByGPU literal field above actually
-		// carries the bundle-derived value, without running the full simulation.
-		// See TestCoeffsByGPU_Wired_RunCmdLiteralWiring_Structural.
-		if edppCoeffsByGPUWiringHook != nil {
-			edppCoeffsByGPUWiringHook(config.EDPPCoeffsByGPU)
 		}
 		// Session callback installation (Constraint 3 fix):
 		// Follow-up collection must be UNCONDITIONAL for saturation analysis correctness.
