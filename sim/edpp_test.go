@@ -1337,3 +1337,92 @@ func TestDecideReduced_HomogeneousByteIdentical(t *testing.T) {
 		t.Fatalf("reduced decision changed under duplicate-θ CoeffsByGPU (byte-identity broken): plain=%+v dup=%+v", got, gotDup)
 	}
 }
+
+// --- least-ttft reduced decision rule (Task 1) ---
+
+// least-ttft disaggregates when local decode is congested (ttftD high) and stays
+// local when the prefill pool is congested (ttftP high) — decided purely on predicted TTFT.
+func TestDecideReduced_LeastTTFT_DecidesOnPredictedTTFT(t *testing.T) {
+	// Prefill pool EMPTY/idle -> ttftP low; decode instance heavily loaded -> ttftD high => disaggregate.
+	cfg := defaultTestEDPPConfig()
+	cfg.Rule = "least-ttft"
+	d := NewEDPPDecider(cfg, newTestAffineModel(), nil, func() []RoutingSnapshot {
+		return []RoutingSnapshot{{ID: "p0", BatchSize: 0, ResidentPrefillTokens: 0}}
+	})
+	reqBusy := makeReq("r1", 600, "") // uncached prompt so a_p > 0
+	stateBusyDecode := &RouterState{SelectedInstance: "d0", Snapshots: []RoutingSnapshot{
+		{ID: "d0", BatchSize: 64, KvTokensInUse: 60000, QueueDepth: 40}, // congested decode
+	}}
+	if !d.Decide(reqBusy, stateBusyDecode).Disaggregate {
+		t.Fatal("least-ttft: expected Disaggregate=true when local decode is congested (ttftD > ttftP)")
+	}
+
+	// Now flip it: idle decode, congested prefill pool -> ttftP high => stay local.
+	d2 := NewEDPPDecider(cfg, newTestAffineModel(), nil, func() []RoutingSnapshot {
+		return []RoutingSnapshot{{ID: "p0", BatchSize: 64, ResidentPrefillTokens: 120000, QueueDepth: 40}}
+	})
+	stateIdleDecode := &RouterState{SelectedInstance: "d0", Snapshots: []RoutingSnapshot{
+		{ID: "d0", BatchSize: 0, KvTokensInUse: 0, QueueDepth: 0},
+	}}
+	if d2.Decide(reqBusy, stateIdleDecode).Disaggregate {
+		t.Fatal("least-ttft: expected Disaggregate=false when prefill pool is congested (ttftP > ttftD)")
+	}
+}
+
+// The KEY guard: least-ttft ignores the SLO virtual queues. Blowing up z must NOT change
+// its decision, whereas under dpp the same z DOES change the decision.
+func TestDecideReduced_LeastTTFT_IgnoresVirtualQueues(t *testing.T) {
+	req := makeReq("r1", 600, "")
+	state := &RouterState{SelectedInstance: "d0", Snapshots: []RoutingSnapshot{
+		{ID: "d0", BatchSize: 8, KvTokensInUse: 4000, QueueDepth: 2},
+	}}
+	prefill := func() []RoutingSnapshot {
+		return []RoutingSnapshot{{ID: "p0", BatchSize: 4, ResidentPrefillTokens: 2000}}
+	}
+
+	cfgLT := defaultTestEDPPConfig()
+	cfgLT.Rule = "least-ttft"
+	base := NewEDPPDecider(cfgLT, newTestAffineModel(), nil, prefill)
+	baseDec := base.Decide(req, state).Disaggregate
+
+	withZ := NewEDPPDecider(cfgLT, newTestAffineModel(), nil, prefill)
+	withZ.zByClass[req.SLOClass] = &edppClassState{zTTFT: 1e12, zITL: 1e12} // huge SLO deficit
+	if withZ.Decide(req, state).Disaggregate != baseDec {
+		t.Fatal("least-ttft decision changed when z virtual queues were inflated (machinery leaked in)")
+	}
+
+	// Contrast: under dpp the same huge z SHOULD move the decision (proves the guard is meaningful).
+	cfgDPP := defaultTestEDPPConfig() // Rule "" == dpp
+	dppNoZ := NewEDPPDecider(cfgDPP, newTestAffineModel(), nil, prefill)
+	dppZ := NewEDPPDecider(cfgDPP, newTestAffineModel(), nil, prefill)
+	dppZ.zByClass[req.SLOClass] = &edppClassState{zTTFT: 1e12, zITL: 1e12}
+	if dppNoZ.Decide(req, state).Disaggregate == dppZ.Decide(req, state).Disaggregate {
+		t.Fatal("dpp decision did NOT change under huge z — the contrast guard is vacuous; retune the state")
+	}
+}
+
+// Unknown rule is rejected at construction (R3 panic style).
+func TestNewEDPPDecider_RejectsUnknownRule(t *testing.T) {
+	cfg := defaultTestEDPPConfig()
+	cfg.Rule = "bogus"
+	defer func() {
+		if recover() == nil {
+			t.Fatal("expected panic for unknown EDPPConfig.Rule")
+		}
+	}()
+	_ = NewEDPPDecider(cfg, newTestAffineModel(), nil, nil)
+}
+
+// Default (Rule "") is byte-identical to explicit "dpp".
+func TestDecideReduced_EmptyRuleEqualsDPP(t *testing.T) {
+	req := makeReq("r1", 600, "")
+	state := &RouterState{SelectedInstance: "d0", Snapshots: []RoutingSnapshot{{ID: "d0", BatchSize: 8, KvTokensInUse: 4000}}}
+	prefill := func() []RoutingSnapshot { return []RoutingSnapshot{{ID: "p0", ResidentPrefillTokens: 2000}} }
+	e := defaultTestEDPPConfig() // Rule ""
+	dfl := defaultTestEDPPConfig()
+	dfl.Rule = "dpp"
+	if NewEDPPDecider(e, newTestAffineModel(), nil, prefill).Decide(req, state) !=
+		NewEDPPDecider(dfl, newTestAffineModel(), nil, prefill).Decide(req, state) {
+		t.Fatal(`Rule "" must behave identically to "dpp"`)
+	}
+}

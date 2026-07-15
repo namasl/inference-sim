@@ -81,6 +81,7 @@ type EDPPConfig struct {
 	TAdmEstimator     string                // admission-delay estimator name ("" ⇒ waiting, the current formula)
 	Joint             bool                  // when true, Decide enumerates all (decode, prefill) candidates and picks the drift-plus-penalty argmin (joint P/D routing, --edpp-joint); false ⇒ the reduced fixed-d local-vs-disagg rule.
 	JointTraceEnabled bool                  // when true (joint mode only), decideJoint attaches an EDPPJointDecisionTrace comparing the scorer's (d,p) pick to the joint argmin. Off ⇒ zero allocation, no shadow prefill scorer run.
+	Rule              string                // reduced-path decision rule: "" / "dpp" (drift-plus-penalty, default) or "least-ttft" (disaggregate iff ttftP < ttftD; bypasses the drift/z/V machinery). Design 2026-07-15.
 }
 
 // EDPPJointDecisionTrace records, for one joint (--edpp-joint) decision, the scorer's
@@ -186,6 +187,11 @@ func (c EDPPConfig) validate() {
 		if v <= 0 {
 			panic(fmt.Sprintf("EDPPConfig: TauITLByClassUs[%q] must be > 0, got %d", cls, v))
 		}
+	}
+	switch c.Rule {
+	case "", "dpp", "least-ttft":
+	default:
+		panic(fmt.Sprintf("EDPPConfig: Rule must be \"\", \"dpp\", or \"least-ttft\", got %q", c.Rule))
 	}
 }
 
@@ -301,6 +307,10 @@ type EDPPDecider struct {
 	// false ⇒ the reduced fixed-d local-vs-disagg rule (byte-identical legacy path).
 	joint bool
 
+	// rule selects the reduced-path decision: "" / "dpp" => lhs > rhs (drift-plus-penalty);
+	// "least-ttft" => ttftP < ttftD. Estimation is identical; only the final comparison differs.
+	rule string
+
 	// Pluggable admission-delay estimator (default "waiting" reproduces QWork/Mu).
 	tadmEstimator AdmissionDelayEstimator
 
@@ -373,6 +383,7 @@ func NewEDPPDecider(cfg EDPPConfig, model LatencyModel, cacheQuery map[string]fu
 		cacheQuery:       cacheQuery,
 		prefillSnapshots: prefillSnapshots,
 		joint:            cfg.Joint,
+		rule:             cfg.Rule,
 		zByClass:         make(map[string]*edppClassState),
 		coeffs:           cfg.Coeffs,
 		coeffsByGPU:      cfg.CoeffsByGPU,
@@ -620,7 +631,11 @@ func (d *EDPPDecider) Decide(req *Request, state *RouterState) DisaggregationDec
 	itlTerm := -zITL * (thetaD.CPf * float64(chunk)) / n.tauITL
 	rhs := transferTerm + ttftTerm + itlTerm
 
-	dec := DisaggregationDecision{Disaggregate: lhs > rhs}
+	disagg := lhs > rhs
+	if d.rule == "least-ttft" {
+		disagg = ttftP < ttftD // bypass drift/z/V; decide purely on predicted TTFT (ttftP already includes c_xfer)
+	}
+	dec := DisaggregationDecision{Disaggregate: disagg}
 	if d.cfg.TraceEnabled {
 		dec.EDPPTrace = &EDPPDecisionTrace{
 			Class: req.SLOClass, Ap: ap, Wp: wp, DeltaPfChunk: deltaPfChunk,
@@ -631,7 +646,7 @@ func (d *EDPPDecider) Decide(req *Request, state *RouterState) DisaggregationDec
 			ZTTFT: zTTFT, ZITL: zITL,
 			BalanceTermD: balanceTermD, BalanceTermP: balanceTermP,
 			TransferTerm: transferTerm, TTFTTerm: ttftTerm, ITLTerm: itlTerm,
-			LHS: lhs, RHS: rhs, Disaggregate: lhs > rhs,
+			LHS: lhs, RHS: rhs, Disaggregate: disagg,
 		}
 	}
 	if d.captureAdmissionCtx {
