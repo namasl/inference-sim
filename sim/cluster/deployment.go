@@ -164,6 +164,9 @@ type DeploymentConfig struct {
 	// (TFlopsPeak, BwPeakTBs) rather than the CLI --gpu calibration.
 	// Zero value (nil) is safe: no override, backward-compatible with all existing callers.
 	HWConfigByGPU map[string]sim.HardwareCalib `yaml:"hw_config_by_gpu,omitempty"`
+
+	// per-GPU-type θ_i for the EDPP decider; nil = homogeneous
+	EDPPCoeffsByGPU map[string]sim.EDPPCoeffs `yaml:"edpp_coeffs_by_gpu,omitempty"`
 }
 
 // ToSimConfig returns the embedded SimConfig for per-instance construction.

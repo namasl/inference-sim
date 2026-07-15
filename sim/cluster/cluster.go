@@ -455,6 +455,7 @@ func NewClusterSimulator(config DeploymentConfig, requests []*sim.Request, onReq
 				ChunkTokens:       int(config.BatchConfig.MaxScheduledTokens),
 				TraceEnabled:      trace.TraceLevel(config.TraceLevel) == trace.TraceLevelDecisions,
 				Coeffs:            config.EDPPCoeffs,
+				CoeffsByGPU:       config.EDPPCoeffsByGPU,
 				TAdmEstimator:     config.EDPPTAdmEstimator,
 				Joint:             config.EDPPJoint,
 				JointTraceEnabled: config.EDPPJoint && config.EDPPJointTrace,

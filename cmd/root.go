@@ -1231,6 +1231,31 @@ func hwConfigByGPUFromBundle(bundle *sim.PolicyBundle) map[string]sim.HardwareCa
 	return out
 }
 
+// edppCoeffsByGPUWiringHook is a test-only structural seam: when non-nil, runCmd
+// invokes it with the resolved EDPPCoeffsByGPU value immediately after the
+// DeploymentConfig literal is built. Always nil in production (zero cost). A
+// child-process test sets it to print the value and os.Exit before the
+// simulation runs, so it never needs to unwind back into runCmd.Run.
+var edppCoeffsByGPUWiringHook func(map[string]sim.EDPPCoeffs)
+
+// edppCoeffsByGPUFromBundle loads each coeffs_by_gpu path into EDPPCoeffs (fail-fast:
+// a missing/unreadable/invalid file is fatal, matching resolveEDPPCoeffs). Returns nil
+// when the bundle omits coeffs_by_gpu (homogeneous).
+func edppCoeffsByGPUFromBundle(bundle *sim.PolicyBundle) map[string]sim.EDPPCoeffs {
+	if bundle == nil || len(bundle.CoeffsByGPU) == 0 {
+		return nil
+	}
+	out := make(map[string]sim.EDPPCoeffs, len(bundle.CoeffsByGPU))
+	for gpu, path := range bundle.CoeffsByGPU {
+		c, err := sim.LoadEDPPCoeffs(path)
+		if err != nil {
+			logrus.Fatalf("coeffs_by_gpu[%q]: %v", gpu, err)
+		}
+		out[gpu] = c
+	}
+	return out
+}
+
 // registerSimConfigFlags registers all simulation-engine configuration flags
 // on the given command. Called by both runCmd and replayCmd to avoid
 // duplicating ~50 flag registrations.
@@ -1728,6 +1753,7 @@ var runCmd = &cobra.Command{
 			bundleNodePools                      []cluster.NodePoolConfig
 			bundleInstanceLifecycle              cluster.InstanceLifecycleConfig
 			bundleHWConfigByGPU                  map[string]sim.HardwareCalib
+			bundleEDPPCoeffsByGPU                map[string]sim.EDPPCoeffs
 		)
 		if bundle != nil {
 			if bundle.Autoscaler.IntervalUs > 0 {
@@ -1770,6 +1796,10 @@ var runCmd = &cobra.Command{
 			// pool's hw_config_by_gpu entry (TFlopsPeak, BwPeakTBs, MFU, ...) instead
 			// of the CLI --gpu calibration (consumed at sim/cluster/cluster.go).
 			bundleHWConfigByGPU = hwConfigByGPUFromBundle(bundle)
+			// Per-GPU EDPP θ_i coefficients: node-pool-placed instances feed the
+			// decider a GPUType (Task 2) that coeffsFor uses to select the matching
+			// override instead of the global --edpp-coeffs value (sim/edpp.go).
+			bundleEDPPCoeffsByGPU = edppCoeffsByGPUFromBundle(bundle)
 		}
 		// CLI flag overrides bundle value when explicitly set.
 		if cmd.Flags().Changed("model-autoscaler-interval-us") {
@@ -1947,6 +1977,7 @@ var runCmd = &cobra.Command{
 			EDPPNomPrefillTokens:            edppNomPrefillTokens,
 			EDPPNomDecodeCtx:                edppNomDecodeCtx,
 			EDPPCoeffs:                      resolveEDPPCoeffs(pdDecider, edppCoeffsPath),
+			EDPPCoeffsByGPU:                 bundleEDPPCoeffsByGPU,
 			EDPPTAdmEstimator:               edppTAdmEstimator,
 			EDPPJoint:                       edppJoint,
 			EDPPJointTrace:                  edppJointTracePath != "",
@@ -1985,6 +2016,13 @@ var runCmd = &cobra.Command{
 			NodePools:                       bundleNodePools,
 			HWConfigByGPU:                   bundleHWConfigByGPU,
 			InstanceLifecycle:               bundleInstanceLifecycle,
+		}
+		// Test-only structural wiring seam (nil in production, zero cost): lets a
+		// cmd_test verify that the EDPPCoeffsByGPU literal field above actually
+		// carries the bundle-derived value, without running the full simulation.
+		// See TestCoeffsByGPU_Wired_RunCmdLiteralWiring_Structural.
+		if edppCoeffsByGPUWiringHook != nil {
+			edppCoeffsByGPUWiringHook(config.EDPPCoeffsByGPU)
 		}
 		// Session callback installation (Constraint 3 fix):
 		// Follow-up collection must be UNCONDITIONAL for saturation analysis correctness.
