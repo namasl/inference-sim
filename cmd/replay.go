@@ -256,6 +256,9 @@ Example:
 		if pdDecider != "" && pdDecider != "never" && prefillInstances == 0 {
 			logrus.Fatalf("--pd-decider=%q has no effect because --prefill-instances=0 (disaggregation is disabled); set --prefill-instances > 0 and --decode-instances > 0, or omit --pd-decider", pdDecider)
 		}
+		if edppRule == "least-ttft" && edppJoint {
+			logrus.Fatalf("--edpp-rule least-ttft is a reduced-path baseline and cannot be combined with --edpp-joint")
+		}
 
 		// ModelConfig resolution for PD KV transfer sizing (same as runCmd).
 		// When PD is active and an analytical backend is in use, the ModelConfig may need to
