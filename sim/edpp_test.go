@@ -1309,3 +1309,31 @@ func TestEDPPDecider_CoeffsFor(t *testing.T) {
 		t.Fatalf("coeffsFor(\"\") = %+v, want base %+v", got, base)
 	}
 }
+
+// --- Reduced path decode-side θ (Task 5) ---
+
+// TestDecideReduced_HomogeneousByteIdentical is the byte-identity guard (INV-6) for
+// wiring the selected decode instance's θ into the reduced-path decode-side terms: a
+// CoeffsByGPU entry that merely duplicates the global coeffs under the selected
+// snapshot's GPUType must produce the exact same Decide() result as no CoeffsByGPU at
+// all (coeffsFor falls back to d.coeffs either way). This test passes before AND after
+// the θ wiring lands — it is what proves the wiring didn't change homogeneous behavior.
+func TestDecideReduced_HomogeneousByteIdentical(t *testing.T) {
+	cfg := defaultTestEDPPConfig() // joint=false ⇒ reduced path
+	dPlain := NewEDPPDecider(cfg, newTestAffineModel(), nil, nil)
+
+	cfgDup := cfg
+	cfgDup.CoeffsByGPU = map[string]EDPPCoeffs{"H100": cfg.Coeffs}
+	dDup := NewEDPPDecider(cfgDup, newTestAffineModel(), nil, nil)
+
+	req := makeReq("r1", 256, "batch")
+	state := &RouterState{SelectedInstance: "d0", Snapshots: []RoutingSnapshot{{
+		ID: "d0", GPUType: "H100", BatchSize: 2, MaxBatchSize: 4, KvTokensInUse: 1024,
+	}}}
+
+	got := dPlain.Decide(req, state)
+	gotDup := dDup.Decide(req, state)
+	if got != gotDup {
+		t.Fatalf("reduced decision changed under duplicate-θ CoeffsByGPU (byte-identity broken): plain=%+v dup=%+v", got, gotDup)
+	}
+}

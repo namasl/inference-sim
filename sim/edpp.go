@@ -504,14 +504,21 @@ func (d *EDPPDecider) Decide(req *Request, state *RouterState) DisaggregationDec
 		return keepD // fully cached: no prefill work to disaggregate
 	}
 
-	// W_p = full prefill demand of this request (E6), from frozen coeffs.
-	wp := d.coeffs.Wp(ap, len(req.InputTokens))
+	// Selected decode instance's θ_i (design 2026-07-14): the decode-side terms below are
+	// charged against the physics of the decode node this request would land on, so they use
+	// thetaD, not the pool-aggregate d.coeffs. Homogeneous clusters (no CoeffsByGPU) fall back
+	// to d.coeffs, so this is byte-identical to the pre-existing behavior (INV-6).
+	decSnap, _ := d.selectedDecodeSnapshot(state)
+	thetaD := d.coeffsFor(decSnap.GPUType)
+
+	// W_p = full prefill demand of this request (E6), charged against the decode node's balance.
+	wp := thetaD.Wp(ap, len(req.InputTokens))
 
 	// Live decode-server state from the pre-selected decode snapshot (the pod this
 	// request would land on); fall back to the first snapshot, else nominal.
 	bDec, kv, sPf := d.selectedDecodeState(state)
-	muDec := d.coeffs.muDecode(bDec, kv, sPf)
-	tBminus1 := d.coeffs.tIterDecode(bDec, kv, sPf)
+	muDec := thetaD.muDecode(bDec, kv, sPf)
+	tBminus1 := thetaD.tIterDecode(bDec, kv, sPf)
 
 	// Prefill-server live state: S_pf summed over prefill snapshots.
 	var sPfPrefill int64
@@ -522,6 +529,7 @@ func (d *EDPPDecider) Decide(req *Request, state *RouterState) DisaggregationDec
 			sPfPrefill += s.ResidentPrefillTokens
 		}
 	}
+	// prefill side is pool-aggregate (no single p chosen in the reduced rule) → global coeffs
 	muPf := d.coeffs.muPrefill(sPfPrefill)
 
 	n := d.normFor(req.SLOClass)
@@ -539,10 +547,12 @@ func (d *EDPPDecider) Decide(req *Request, state *RouterState) DisaggregationDec
 		chunk = d.cfg.ChunkTokens
 	}
 	nChunks := math.Ceil(float64(ap) / float64(chunk))
+	// deltaPfChunkLocal: prefill co-resident on the decode node (ttftD, local path) → thetaD.
+	// deltaPfChunk: prefill on the pool (ttftP, disagg path) → pool-aggregate d.coeffs.
+	deltaPfChunkLocal := thetaD.CPf * float64(chunk)
 	deltaPfChunk := d.coeffs.CPf * float64(chunk)
 	// Occupancy inputs for the admission-delay estimators (fluid/rollforward, Tasks 4/5).
 	// Decode side reads the selected decode snapshot; prefill side reads the first prefill snapshot.
-	decSnap, _ := d.selectedDecodeSnapshot(state)
 	// ReqKVNeed: KV blocks this request needs ≈ ⌈a_r / blockSize⌉ (a_r = full input length; oracle-safe).
 	reqKVNeed := int64(0)
 	if d.cfg.BlockSize > 0 {
@@ -590,7 +600,7 @@ func (d *EDPPDecider) Decide(req *Request, state *RouterState) DisaggregationDec
 	tAdmP := d.tadmEstimator.EstimateTAdm(prefillCtx)
 	tAdmD := d.tadmEstimator.EstimateTAdm(decodeCtx)
 	ttftP := tAdmP + nChunks*(d.coeffs.tIterPrefill(sPfPrefill)+deltaPfChunk) + float64(d.cfg.CXferUs)
-	ttftD := tAdmD + nChunks*(tBminus1+deltaPfChunk)
+	ttftD := tAdmD + nChunks*(tBminus1+deltaPfChunkLocal)
 
 	// Per-class virtual queues.
 	var zTTFT, zITL float64
@@ -607,7 +617,7 @@ func (d *EDPPDecider) Decide(req *Request, state *RouterState) DisaggregationDec
 
 	transferTerm := d.transferPenalty(n)
 	ttftTerm := zTTFT * (ttftP - ttftD) / n.tauTTFT
-	itlTerm := -zITL * (d.coeffs.CPf * float64(chunk)) / n.tauITL
+	itlTerm := -zITL * (thetaD.CPf * float64(chunk)) / n.tauITL
 	rhs := transferTerm + ttftTerm + itlTerm
 
 	dec := DisaggregationDecision{Disaggregate: lhs > rhs}
