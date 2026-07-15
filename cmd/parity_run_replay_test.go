@@ -8,12 +8,14 @@ package cmd
 //  1. BC-3 (trace byte-identity): `blis run --trace-output` produces
 //     byte-identical TraceV2 files (header YAML + data CSV) whether run in
 //     eager or lazy mode, across a coverage matrix of workload shapes
-//     (single-turn chatbot, multi-turn accumulate cohort — the #1438
-//     reproducer shape, and single-session reasoning). Because the exported
-//     trace captures every fresh arrival at the cluster boundary (#1440),
-//     byte-identity here proves the two generation modes drive the cluster
-//     identically — including closed-loop follow-up rounds produced at runtime
-//     by the SessionManager.
+//     (single-turn chatbot; multi-turn accumulate cohort — the #1438
+//     reproducer shape; single-session reasoning; multi-session reasoning,
+//     #1458; and concurrency clients, #1459 — see paritySpecShapes for the
+//     authoritative, up-to-date list). Because the exported trace captures
+//     every fresh arrival at the cluster boundary (#1440), byte-identity here
+//     proves the two generation modes drive the cluster identically —
+//     including closed-loop follow-up rounds produced at runtime by the
+//     SessionManager.
 //
 //  2. BC-4 (INV-13 run/replay parity): a trace exported from a `blis run`
 //     replays (via `blis replay --session-mode fixed`) to identical per-request
@@ -58,16 +60,27 @@ type parityShape struct {
 	horizon int64
 }
 
-// paritySpecShapes returns the coverage matrix from issue #1442:
+// paritySpecShapes returns the coverage matrix from issue #1442 (+ #1458):
 //   - chatbot: single-turn, Poisson arrivals (the common case)
 //   - codegen-cohort: multi-turn accumulate, cohort-based, large shared prefix
 //     (the #1438 reproducer shape — where lazy's memory win matters most)
 //   - reasoning: single-session multi-turn (the trickiest generator path —
 //     round-0 emitted, follow-ups via the SessionManager at runtime)
+//   - reasoning-multi-session: multi-turn with single_session=false (#1458),
+//     where a client spawns many overlapping sessions merged per-client in the
+//     lazy path — CLI-layer regression protection for the multi-session merge
+//   - concurrency: two closed-loop virtual-user pools with distinct
+//     concurrency/think_time (#1459), where each seed is streamed as its own
+//     heap entry — CLI-layer regression protection for the seed interleave
+//   - time-varying: single client, two windows with distinct per-window
+//     trace_rate (#1460), routed through the lazy per-window state machine
+//     (live-window merge + suffix-min emit gate)
 //
-// All three are lazy-SUPPORTED (no per-window params, no concurrency, reasoning
-// is SingleSession). num_requests is small so runs are fast. seed is set via
-// the CLI --seed flag, not the YAML, so the matrix controls determinism.
+// All are lazy-SUPPORTED as of #1460 (multi-session reasoning via the per-client
+// live-session merge (#1458); concurrency via the individual-seed-heap-entry
+// merge (#1459); time-varying via the per-window live-window merge (#1460)).
+// num_requests is small so runs are fast. seed is set via the CLI --seed flag,
+// not the YAML, so the matrix controls determinism.
 func paritySpecShapes() []parityShape {
 	return []parityShape{
 		{
@@ -167,6 +180,105 @@ clients:
         context_growth: accumulate
         think_time_us: 60000
         single_session: true
+`,
+		},
+		{
+			name:    "reasoning-multi-session",
+			horizon: 60_000_000,
+			yaml: `version: "2"
+category: language
+aggregate_rate: 4.0
+num_requests: 24
+clients:
+  - id: ms1
+    tenant_id: mst1
+    slo_class: batch
+    rate_fraction: 1.0
+    prefix_group: sys
+    prefix_length: 64
+    arrival:
+      process: poisson
+    input_distribution:
+      type: gaussian
+      params: { mean: 80, std_dev: 16, min: 16, max: 300 }
+    output_distribution:
+      type: exponential
+      params: { mean: 48 }
+    reasoning:
+      multi_turn:
+        max_rounds: 3
+        context_growth: accumulate
+        think_time_us: 60000
+        single_session: false
+`,
+		},
+		{
+			// Two closed-loop concurrency pools with distinct pool size + think
+			// time, so their staggered seed arrivals interleave (#1459). Exercises
+			// the individual-seed-heap-entry merge at the CLI/trace seam. All
+			// clients are concurrency (no aggregate_rate needed).
+			name:    "concurrency",
+			horizon: 60_000_000,
+			yaml: `version: "2"
+category: language
+num_requests: 24
+clients:
+  - id: poolA
+    tenant_id: ta
+    slo_class: batch
+    concurrency: 5
+    think_time_us: 300000
+    input_distribution:
+      type: gaussian
+      params: { mean: 90, std_dev: 20, min: 16, max: 400 }
+    output_distribution:
+      type: exponential
+      params: { mean: 64 }
+  - id: poolB
+    tenant_id: tb
+    slo_class: batch
+    concurrency: 3
+    think_time_us: 100000
+    input_distribution:
+      type: gaussian
+      params: { mean: 90, std_dev: 20, min: 16, max: 400 }
+    output_distribution:
+      type: exponential
+      params: { mean: 64 }
+`,
+		},
+		{
+			// Time-varying single client with two windows carrying distinct
+			// per-window trace_rate (absolute-rate mode, aggregate_rate omitted)
+			// — trips hasPerWindowParameters, routing through the lazy
+			// per-window state machine (#1460). CLI-layer regression protection
+			// for the live-window merge + suffix-min emit gate.
+			name:    "time-varying",
+			horizon: 60_000_000,
+			yaml: `version: "2"
+category: language
+num_requests: 24
+clients:
+  - id: tv
+    tenant_id: ttv
+    slo_class: batch
+    rate_fraction: 1.0
+    arrival:
+      process: poisson
+    input_distribution:
+      type: gaussian
+      params: { mean: 96, std_dev: 20, min: 16, max: 400 }
+    output_distribution:
+      type: exponential
+      params: { mean: 48 }
+    lifecycle:
+      windows:
+        - start_us: 0
+          end_us: 30000000
+          trace_rate: 8.0
+        - start_us: 30000000
+          end_us: 60000000
+          trace_rate: 2.0
 `,
 		},
 	}
@@ -606,56 +718,7 @@ func TestParity_RunReplay_INV13_BothModes(t *testing.T) {
 	}
 }
 
-// TestParity_LazyTimeVaryingFallback_MatchesEager pins BC-6: when
-// --lazy-generation is combined with a time-varying (per-window) spec — a shape
-// the lazy source cannot handle — cmd/root.go logs a warning and falls back to
-// the eager generator. This test proves the fallback is TRANSPARENT: the lazy
-// invocation produces a trace byte-identical to a plain eager run of the same
-// spec (not merely that it doesn't fatal — that weaker property is covered by
-// TestRunCmd_LazyGeneration_ConcurrencyFallback_DoesNotFatal).
-//
-// NOTE: Do NOT use t.Parallel() — mutates package-level vars.
-func TestParity_LazyTimeVaryingFallback_MatchesEager(t *testing.T) {
-	const seed int64 = 4242
-	// A per-window trace_rate makes hasPerWindowParameters true → lazy falls
-	// back to eager (ErrLazyUnsupportedTimeVarying).
-	specYAML := `version: "2"
-category: language
-aggregate_rate: 8.0
-num_requests: 20
-clients:
-  - id: tv
-    tenant_id: t1
-    slo_class: batch
-    rate_fraction: 1.0
-    arrival:
-      process: poisson
-    input_distribution:
-      type: gaussian
-      params: { mean: 96, std_dev: 20, min: 16, max: 400 }
-    output_distribution:
-      type: exponential
-      params: { mean: 48 }
-    lifecycle:
-      windows:
-        - start_us: 0
-          end_us: 30000000
-          trace_rate: 8.0
-        - start_us: 30000000
-          end_us: 60000000
-          trace_rate: 2.0
-`
-	const horizon int64 = 60_000_000
-	hdrEager, dataEager := runSpecAndCaptureTrace(t, specYAML, seed, horizon, false)
-	hdrLazy, dataLazy := runSpecAndCaptureTrace(t, specYAML, seed, horizon, true)
-
-	if !bytes.Equal(hdrEager, hdrLazy) {
-		t.Fatalf("time-varying fallback: header diverged\nEAGER:\n%s\nLAZY:\n%s", hdrEager, hdrLazy)
-	}
-	if !bytes.Equal(dataEager, dataLazy) {
-		t.Fatalf("time-varying fallback: data diverged (lazy fallback is not transparent)\nEAGER:\n%s\nLAZY:\n%s", hdrEager, dataLazy)
-	}
-	if lineCount(dataEager) < 2 {
-		t.Fatalf("time-varying fallback: trace CSV has < 2 lines — test is vacuous")
-	}
-}
+// Time-varying trace parity is now covered positively by the "time-varying" row
+// of paritySpecShapes() flowing through TestParity_RunReplay_TraceByteIdentity_Matrix
+// (eager≡lazy trace + lazy determinism) — no separate fallback test is needed, as
+// there is no fallback anymore (#1460).

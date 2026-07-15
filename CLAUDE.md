@@ -116,23 +116,33 @@ go build -o blis main.go
 
 # Run with lazy request generation (alpha, #1441). Streams requests from the
 # workload generator into the cluster instead of pre-generating the full
-# slice — reduces peak generator memory from O(total_requests) to
-# O(num_clients + max_session_rounds): the heap holds one entry per client,
-# and per-client reasoning state holds at most one session's pending rounds.
-# (Cluster-side memory still scales with in-flight cluster requests, which
-# this PR does not change.)
-# Falls back to the eager generator with a one-line warning for:
-#   - workloads with per-window parameters (time-varying)
-#   - concurrency clients (Concurrency > 0)
-#   - reasoning clients with SingleSession=false (multi-session)
-# Supported: single-shot, single-session reasoning, prefix-group sharing,
-# multi-client / cohort workloads. Behavior with the flag off is unchanged.
+# slice — reduces peak generator memory from O(total_requests) to the
+# concurrent working set: the global heap holds one entry per client;
+# single-session reasoning holds at most one session's pending rounds, while
+# multi-session reasoning (#1458) holds its live (overlapping) sessions,
+# bounded by ~ arrival_rate x session_duration (Little's law) — independent
+# of horizon. (Cluster-side memory still scales with in-flight cluster
+# requests, which this PR does not change.)
+# Supports EVERY workload class — there is NO eager fallback (#1460):
+# single-shot; single-session AND multi-session reasoning (SingleSession=false,
+# #1458 — per-client live-session merge); concurrency clients (Concurrency > 0,
+# #1459 — seeds merged as individual heap entries; the win is modest for
+# pure-concurrency specs since the seed set is O(N virtual users)); time-varying
+# / per-window workloads (trace_rate/arrival/input_distribution/output_distribution
+# overrides, #1460 — per-window batches merged via a live-window heap, so resident
+# memory is the concurrent-window working set rather than all windows at once, a
+# real win for the many-small-windows layout typical of spike/servegen/diurnal
+# schedules; note a single huge window materializes one full batch, so it yields
+# no memory win over eager); prefix-group sharing; multi-client / cohort workloads.
+# Behavior with the flag off is unchanged.
 ./blis run --model qwen/qwen3-14b --lazy-generation
 
 # Observe with lazy request generation (alpha, #1443). Same flag, default, and
 # semantics as `blis run` — streams requests from the generator into the observe
-# dispatch loop instead of pre-generating the full slice, with the same eager
-# fallback (time-varying / concurrency / multi-session). Observe already paces
+# dispatch loop instead of pre-generating the full slice. As of #1460 there is no
+# eager fallback: every class blis run supports (multi-session reasoning #1458,
+# concurrency clients #1459, time-varying / per-window workloads #1460) is
+# streamed. Observe already paces
 # itself against the real server, so the memory win is smaller than run's; the
 # flag mainly makes run and observe share one generation pipeline (#1438). Default
 # (flag off) dispatch behavior is unchanged.
