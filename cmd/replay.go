@@ -489,6 +489,7 @@ Example:
 			EDPPCoeffs:                      resolveEDPPCoeffs(pdDecider, edppCoeffsPath),
 			EDPPTAdmEstimator:               edppTAdmEstimator,
 			EDPPJoint:                       edppJoint,
+			EDPPRule:                        edppRule,
 			EDPPJointTrace:                  edppJointTracePath != "",
 			PDTransferBandwidthGBps:         pdTransferBandwidth,
 			PDTransferBaseLatencyMs:         pdTransferBaseLatency,
