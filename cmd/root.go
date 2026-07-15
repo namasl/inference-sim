@@ -164,6 +164,7 @@ var (
 	edppCoeffsPath         string        // path to frozen EDPP E3 coefficients JSON
 	edppTAdmEstimator      string        // EDPP admission-delay estimator that drives routing ("" ⇒ waiting)
 	edppJoint              bool          // EDPP joint (decode, prefill) argmin routing (--edpp-joint)
+	edppRule               string        // EDPP reduced-path decision rule (--edpp-rule): dpp (default) | least-ttft
 	prefillRoutingScorers  string        // Scorer weights for prefill pool routing
 	decodeRoutingScorers   string        // Scorer weights for decode pool routing
 
@@ -1346,6 +1347,7 @@ func registerSimConfigFlags(cmd *cobra.Command) {
 	cmd.Flags().StringVar(&edppCoeffsPath, "edpp-coeffs", "", "Path to frozen EDPP E3 coefficients JSON (required with --pd-decider edpp). See scripts/calibration/.")
 	cmd.Flags().StringVar(&edppTAdmEstimator, "edpp-tadm-estimator", "", "EDPP admission-delay estimator that DRIVES routing: waiting|little|fluid|rollforward (default waiting). Oracle variants are logging-only and rejected here.")
 	cmd.Flags().BoolVar(&edppJoint, "edpp-joint", false, "EDPP joint P/D routing: enumerate all (decode, prefill) candidates and pick the drift-plus-penalty argmin, instead of the reduced fixed-decode local-vs-disagg rule (only used with --pd-decider edpp).")
+	cmd.Flags().StringVar(&edppRule, "edpp-rule", "dpp", "EDPP reduced-path decision rule: dpp (drift-plus-penalty, default) | least-ttft (disaggregate iff predicted-TTFT-disagg < predicted-TTFT-local; bypasses the drift/z/V machinery). Only used with --pd-decider edpp; incompatible with --edpp-joint.")
 	cmd.Flags().StringVar(&prefillRoutingScorers, "prefill-routing-scorers", "", "Scorer weights for prefill pool routing (e.g., queue-depth:2,kv-utilization:2)")
 	cmd.Flags().StringVar(&decodeRoutingScorers, "decode-routing-scorers", "", "Scorer weights for decode pool routing (e.g., queue-depth:2,kv-utilization:2)")
 
@@ -1833,6 +1835,9 @@ var runCmd = &cobra.Command{
 		if pdDecider != "" && pdDecider != "never" && prefillInstances == 0 {
 			logrus.Warnf("--pd-decider=%q has no effect because --prefill-instances=0 (disaggregation is disabled); set --prefill-instances and --decode-instances to enable", pdDecider)
 		}
+		if edppRule == "least-ttft" && edppJoint {
+			logrus.Fatalf("--edpp-rule least-ttft is a reduced-path baseline and cannot be combined with --edpp-joint")
+		}
 
 		// E/P/D disaggregation validation (GAP-4, issue #1264).
 		if encodeInstances < 0 {
@@ -1973,6 +1978,7 @@ var runCmd = &cobra.Command{
 			EDPPCoeffsByGPU:                 bundleEDPPCoeffsByGPU,
 			EDPPTAdmEstimator:               edppTAdmEstimator,
 			EDPPJoint:                       edppJoint,
+			EDPPRule:                        edppRule,
 			EDPPJointTrace:                  edppJointTracePath != "",
 			PDTransferBandwidthGBps:         pdTransferBandwidth,
 			PDTransferBaseLatencyMs:         pdTransferBaseLatency,

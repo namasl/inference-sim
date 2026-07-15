@@ -458,6 +458,7 @@ func NewClusterSimulator(config DeploymentConfig, requests []*sim.Request, onReq
 				CoeffsByGPU:       config.EDPPCoeffsByGPU,
 				TAdmEstimator:     config.EDPPTAdmEstimator,
 				Joint:             config.EDPPJoint,
+				Rule:              config.EDPPRule,
 				JointTraceEnabled: config.EDPPJoint && config.EDPPJointTrace,
 			}, lm, cs.cacheQueryFn, prefillSnapshots)
 			// Inject the shadow prefill scorer used ONLY to populate the joint divergence
