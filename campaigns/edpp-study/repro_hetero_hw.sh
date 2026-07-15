@@ -35,6 +35,29 @@ hw_config_by_gpu:
   A100: {tflops_peak: 400.0,  bw_peak_tbs: 0.7,  mfu_prefill: 0.5, mfu_decode: 0.5}
 YAML
 
+# --- THETA=1: emit a SECOND bundle that additionally carries per-instance θ_i (T-B).
+# Same node_pools + hw_config_by_gpu as bundle_1p2d.yaml, PLUS coeffs_by_gpu keyed by
+# gpu_type: the fast H100 file and the slow-A100 file fit (from the SAME 400 TFLOPS /
+# 0.7 TB/s HWConfig used by the slow pool above) so the decider's θ_i matches execution.
+# The joint decider (--edpp-joint) uses this to score each decode candidate with its own
+# hardware work model, proactively over-weighting the fast node toward the optimal split.
+THETA_H100="${THETA_H100:-scripts/calibration/coeffs-llama70b-h100-tp4.json}"
+THETA_A100="${THETA_A100:-scripts/calibration/coeffs-llama70b-a100crippled-tp4.json}"
+if [[ "${THETA:-0}" == "1" ]]; then
+  cat > "$SPECDIR/bundle_1p2d_theta.yaml" <<YAML
+node_pools:
+  - {name: fast, gpu_type: H100, gpus_per_node: 8, gpu_memory_gib: 80.0, initial_nodes: 1, min_nodes: 1, max_nodes: 1, cost_per_hour: 0.0, provisioning_delay: {mean: 0.0, stddev: 0.0}}
+  - {name: slow, gpu_type: A100, gpus_per_node: 4, gpu_memory_gib: 80.0, initial_nodes: 1, min_nodes: 1, max_nodes: 1, cost_per_hour: 0.0, provisioning_delay: {mean: 0.0, stddev: 0.0}}
+hw_config_by_gpu:
+  H100: {tflops_peak: 1979.0, bw_peak_tbs: 3.35, mfu_prefill: 0.5, mfu_decode: 0.5}
+  A100: {tflops_peak: 400.0,  bw_peak_tbs: 0.7,  mfu_prefill: 0.5, mfu_decode: 0.5}
+coeffs_by_gpu:
+  H100: $THETA_H100
+  A100: $THETA_A100
+YAML
+fi
+TBUNDLE="$SPECDIR/bundle_1p2d_theta.yaml"
+
 # --- emit the homogeneous decode-bound workload (only lever = which decode instance) ---
 cat > "$SPECDIR/synth_hw.yaml" <<'YAML'
 version: "2"
@@ -60,6 +83,22 @@ SLO=(--slo-ttft "batch=10s" --slo-itl "batch=50ms")   # fast~17ms MEETS, slow~74
 TOPO=(--num-instances 3 --prefill-instances 1 --decode-instances 2 --policy-config "$BUNDLE")
 EC=(--edpp-coeffs "$COEFFS" --edpp-tau-ttft 10s --edpp-tau-itl 50ms --edpp-tadm-estimator rollforward)
 gp(){ python3 -c "import json;print('%.3f'%json.load(open('$1'))['per_class']['batch']['slo_attainment'])" 2>/dev/null || echo NA; }
+# split(): parse the per-instance stdout blocks captured for an arm and report the
+# realized fast/slow DECODE split. instance_1 = fast H100 decode, instance_2 = slow
+# A100 decode (instance_0 = prefill). Every completed request decodes exactly once, so
+# instance_1.completed / instance_2.completed IS the realized decode allocation.
+# Prints "fast/slow (NN% fast)"; "NA" if the capture has no per-instance blocks.
+split(){ python3 -c "
+import re,sys
+try: txt=open('$1').read()
+except OSError: print('NA'); sys.exit()
+m={iid:int(c) for iid,c in re.findall(r'\"instance_id\":\s*\"(instance_\d+)\".*?\"completed_requests\":\s*(\d+)', txt, re.S)}
+f=m.get('instance_1',0); s=m.get('instance_2',0); t=f+s
+print('%d/%d (%.0f%% fast)'%(f,s,100.0*f/t) if t else 'NA')
+" 2>/dev/null || echo NA; }
+# arm(): run one blis arm, capturing stdout (per-instance blocks) to <base>.out and the
+# aggregate metrics to <base>.json, then echo "goodput  fast/slow (NN% fast)".
+arm(){ local base="$1"; shift; ./blis run "$@" --metrics-path "$base.json" >"$base.out" 2>/dev/null; printf '%s  %s' "$(gp "$base.json")" "$(split "$base.out")"; }
 
 # all-fast fixed plan = the optimum at this SLO (goodput = fast-fraction is linear)
 python3 -c "
@@ -69,13 +108,24 @@ with open('$OUT/plan_allfast.csv','w',newline='') as f:
     for i in range(60): w.writerow({'request_id':f'request_{i}','decode_instance':'instance_1','prefill_instance':'instance_0'})
 "
 
-echo "seed | reduced(dflt) | joint(dflt) | best-blind(loadbal) | optimum(all-fast)" >&2
+# THETA=1 adds a θ_i-joint column here to confirm the under-capacity regime (where
+# reactive joint already wins ~0.97) is NOT regressed by per-instance θ_i (design §7).
+if [[ "${THETA:-0}" == "1" ]]; then
+  echo "seed | reduced(dflt) | joint(dflt) | theta-joint | best-blind(loadbal) | optimum(all-fast)" >&2
+else
+  echo "seed | reduced(dflt) | joint(dflt) | best-blind(loadbal) | optimum(all-fast)" >&2
+fi
 for s in $SEEDS; do
   ./blis run --model "$MODEL" --workload-spec "$SPEC" --seed "$s" "${TOPO[@]}" --pd-decider edpp "${EC[@]}" "${SLO[@]}" --metrics-path "$OUT/r_$s.json" >/dev/null 2>&1; R=$(gp "$OUT/r_$s.json")
   ./blis run --model "$MODEL" --workload-spec "$SPEC" --seed "$s" "${TOPO[@]}" --pd-decider edpp "${EC[@]}" --edpp-joint "${SLO[@]}" --metrics-path "$OUT/j_$s.json" >/dev/null 2>&1; J=$(gp "$OUT/j_$s.json")
   ./blis run --model "$MODEL" --workload-spec "$SPEC" --seed "$s" "${TOPO[@]}" --pd-decider always --decode-routing-scorers "load-balance:1" "${SLO[@]}" --metrics-path "$OUT/lb_$s.json" >/dev/null 2>&1; L=$(gp "$OUT/lb_$s.json")
   ./blis run --model "$MODEL" --workload-spec "$SPEC" --seed "$s" "${TOPO[@]}" --pd-plan "$OUT/plan_allfast.csv" "${SLO[@]}" --metrics-path "$OUT/o_$s.json" >/dev/null 2>&1; O=$(gp "$OUT/o_$s.json")
-  printf "%-5s| %-13s| %-11s| %-19s| %s\n" "$s" "$R" "$J" "$L" "$O" >&2
+  if [[ "${THETA:-0}" == "1" ]]; then
+    ./blis run --model "$MODEL" --workload-spec "$SPEC" --seed "$s" "${TOPO[@]}" --pd-decider edpp "${EC[@]}" --edpp-joint --policy-config "$TBUNDLE" "${SLO[@]}" --metrics-path "$OUT/tj_$s.json" >/dev/null 2>&1; TJ=$(gp "$OUT/tj_$s.json")
+    printf "%-5s| %-13s| %-11s| %-11s| %-19s| %s\n" "$s" "$R" "$J" "$TJ" "$L" "$O" >&2
+  else
+    printf "%-5s| %-13s| %-11s| %-19s| %s\n" "$s" "$R" "$J" "$L" "$O" >&2
+  fi
 done
 echo "done (under-capacity) -> $OUT" >&2
 
@@ -105,12 +155,29 @@ python3 -c "
 import csv
 w=csv.DictWriter(open('$OUT/opt.csv','w',newline=''),fieldnames=['request_id','decode_instance','prefill_instance']);w.writeheader()
 for i in range(400): w.writerow({'request_id':f'request_{i}','decode_instance':('instance_1' if i%100<$OPT else 'instance_2'),'prefill_instance':'instance_0'})"
-echo "SATURATING rate=$RATE cap=$CAPN. seed | joint | blind-loadbal | reduced-loadbal | optimum($OPT% fast)" >&2
+# Each arm now reports "goodput  fast/slow (NN% fast)" (goodput from the aggregate
+# metrics file; the realized decode split from the per-instance stdout blocks).
+# THETA=1 adds the θ_i-joint arm: the SAME joint decider but with a coeffs_by_gpu bundle
+# (per-instance θ_i) — the T-B acceptance experiment (design §7). PASS = it shifts the
+# realized fast-share ~77%→~86% and goodput ~0.82→~0.96, beating reduced and blind.
+SCOMMON=(--model "$MODEL" --workload-spec "$SSPEC" "${TOPO[@]}" "${SCAP[@]}" "${SSLO[@]}")
+if [[ "${THETA:-0}" == "1" ]]; then
+  echo "SATURATING rate=$RATE cap=$CAPN. arm = goodput  fast/slow (NN% fast)" >&2
+  echo "seed | theta-joint (T-B) | joint(homog) | blind-loadbal | reduced-loadbal | optimum($OPT% fast)" >&2
+else
+  echo "SATURATING rate=$RATE cap=$CAPN. arm = goodput  fast/slow (NN% fast)" >&2
+  echo "seed | joint(homog) | blind-loadbal | reduced-loadbal | optimum($OPT% fast)" >&2
+fi
 for s in $SEEDS; do
-  J=$(./blis run --model "$MODEL" --workload-spec "$SSPEC" --seed "$s" "${TOPO[@]}" "${SCAP[@]}" --pd-decider edpp "${EC[@]}" --edpp-joint "${SSLO[@]}" --metrics-path "$OUT/sj_$s.json" >/dev/null 2>&1; gp "$OUT/sj_$s.json")
-  B=$(./blis run --model "$MODEL" --workload-spec "$SSPEC" --seed "$s" "${TOPO[@]}" "${SCAP[@]}" --pd-decider always --decode-routing-scorers "load-balance:1" "${SSLO[@]}" --metrics-path "$OUT/sb_$s.json" >/dev/null 2>&1; gp "$OUT/sb_$s.json")
-  R=$(./blis run --model "$MODEL" --workload-spec "$SSPEC" --seed "$s" "${TOPO[@]}" "${SCAP[@]}" --pd-decider edpp "${EC[@]}" --decode-routing-scorers "load-balance:1" "${SSLO[@]}" --metrics-path "$OUT/sr_$s.json" >/dev/null 2>&1; gp "$OUT/sr_$s.json")
-  O=$(./blis run --model "$MODEL" --workload-spec "$SSPEC" --seed "$s" "${TOPO[@]}" "${SCAP[@]}" --pd-plan "$OUT/opt.csv" "${SSLO[@]}" --metrics-path "$OUT/so_$s.json" >/dev/null 2>&1; gp "$OUT/so_$s.json")
-  printf "%-5s| %-6s| %-14s| %-16s| %s\n" "$s" "$J" "$B" "$R" "$O" >&2
+  J=$(arm "$OUT/sj_$s" "${SCOMMON[@]}" --seed "$s" --pd-decider edpp "${EC[@]}" --edpp-joint)
+  B=$(arm "$OUT/sb_$s" "${SCOMMON[@]}" --seed "$s" --pd-decider always --decode-routing-scorers "load-balance:1")
+  R=$(arm "$OUT/sr_$s" "${SCOMMON[@]}" --seed "$s" --pd-decider edpp "${EC[@]}" --decode-routing-scorers "load-balance:1")
+  O=$(arm "$OUT/so_$s" "${SCOMMON[@]}" --seed "$s" --pd-plan "$OUT/opt.csv")
+  if [[ "${THETA:-0}" == "1" ]]; then
+    T=$(arm "$OUT/st_$s" "${SCOMMON[@]}" --seed "$s" --pd-decider edpp "${EC[@]}" --edpp-joint --policy-config "$TBUNDLE")
+    printf "%-5s| %-18s| %-19s| %-19s| %-19s| %s\n" "$s" "$T" "$J" "$B" "$R" "$O" >&2
+  else
+    printf "%-5s| %-19s| %-19s| %-19s| %s\n" "$s" "$J" "$B" "$R" "$O" >&2
+  fi
 done
 echo "done (saturating) -> $OUT" >&2

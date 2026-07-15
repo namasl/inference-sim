@@ -959,3 +959,75 @@ i.e. per-instance `θ_i` in the decider (T-B) — which reactive signals provabl
   load-balance (~0.82), both undershoot the optimum (~0.96); per-instance `θ_i` is REQUIRED to hit the split.
 So hardware heterogeneity creates real headroom in BOTH regimes; joint captures the easy one reactively, and
 the hard one is the concrete, quantified case for T-B. Repro: `repro_hetero_hw.sh` (SAT=1 mode).
+
+## Per-instance θ_i (T-B) result — the acceptance experiment (2026-07-14)
+
+**What.** The T-B change (per-instance `θ_i` in the joint decider, keyed by GPU type via a `coeffs_by_gpu`
+bundle; design `docs/superpowers/specs/2026-07-14-edpp-per-instance-theta-design.md`) is now merged. This is
+the acceptance run against the **saturating-regime bar** set by the "Saturating-regime follow-up" above.
+The joint arm additionally carries `coeffs_by_gpu: {H100: coeffs-llama70b-h100-tp4.json, A100:
+coeffs-llama70b-a100crippled-tp4.json}` — the fast H100 file and the slow-A100 file fit from the SAME 400
+TFLOPS / 0.7 TB/s HWConfig the slow pool executes on (decode c0 8.87 vs 5.35, c1 0.228 vs 0.048 — ~4.8×
+costlier decode), so the decider's θ_i matches execution. Same 1P2D fast-H100 / slow-A100 bundle, rate 10,
+`--max-num-running-reqs 8`, seeds 42/7/123. Deterministic (INV-6): byte-identical across re-runs.
+Reproduce: `SAT=1 THETA=1 SEEDS="42 7 123" bash campaigns/edpp-study/repro_hetero_hw.sh`.
+
+**Acceptance bar (design §7).** PASS = θ_i-joint shifts the realized fast-share from ~77% toward ~86% AND
+goodput from ~0.82 toward ~0.96, **beating reduced-EDPP and blind load-balance across the 3 seeds.**
+
+**Saturating regime — result (goodput; realized fast/slow decode split from per-instance completions):**
+
+| seed | **θ_i-joint (T-B)** | joint (homog θ) | blind load-balance | reduced+load-balance | fixed-plan optimum (86% fast) |
+|------|---------------------|-----------------|--------------------|----------------------|-------------------------------|
+| 42   | **0.877  318/82 (80% fast)** | 0.823  309/91 (77%) | 0.840  311/89 (78%) | 0.835  310/90 (78%) | 0.960  344/56 (86%) |
+| 7    | **0.685  380/20 (95% fast)** | 0.820  308/92 (77%) | 0.835  307/93 (77%) | 0.823  308/92 (77%) | 0.902  344/56 (86%) |
+| 123  | **0.750  389/11 (97% fast)** | 0.943  314/86 (78%) | 0.953  316/84 (79%) | 0.938  316/84 (79%) | 0.975  344/56 (86%) |
+
+**VERDICT: the acceptance bar is NOT met — θ_i-joint OVER-corrects (an honest, publishable finding, design §9).**
+θ_i moves the split in the RIGHT direction on every seed (fast-share always ≥ homogeneous joint's ~77%), so it
+DOES unstick the queue-equalizing split the reactive signals were pinned at — the design's core mechanism claim
+("θ_i makes the split speed-sensitive") holds. But per-instance `θ_i`, plugged into the work terms alone,
+**over-weights the fast node and shoots PAST the 86% optimum on 2 of 3 seeds** (95%, 97% fast), where the fast
+node's fixed concurrency cap (8) then bottlenecks and goodput COLLAPSES **below every reactive baseline** (0.685
+and 0.750, vs blind ~0.84/0.95, reduced ~0.82/0.94, homogeneous joint ~0.82/0.94). Only seed 42 shows the
+intended partial improvement (0.877, 80% fast — beating blind 0.840, reduced 0.835, homogeneous joint 0.823).
+So θ_i-joint neither reaches ~86%/~0.96 nor reliably beats reduced/blind: it wins one seed and regresses two.
+
+**Mechanism (why it overshoots).** The homogeneous joint sat at ~77% fast because its per-instance congestion
+term (`Q_i`) + occupancy-aware `T̂` EQUALIZE queues — a stable, capacity-respecting split that merely undershoots
+the speed-weighted optimum. Adding per-instance `θ_i` makes the slow-A100 decode candidate's work term ~4.8×
+larger, and that proactive work-cost gap OVERWHELMS the reactive `Q_i` congestion signal that had regulated the
+split: argmin J now prefers the fast node so strongly that congestion no longer pulls load back once the fast
+node's queue builds. The result is an UN-regulated over-allocation to fast, past the goodput-optimal interior
+point, into the fast node's cap-8 saturation. The design's §2 non-goal — deferring per-instance `Z^I_i` and any
+capacity/congestion coupling of the θ term — is exactly what makes this overshoot: **naive work-model θ_i
+supplies the speed signal but removes the capacity governor, and the two are needed together to land on ~86%.**
+
+**Under-capacity regime — NO regression (design §7 requirement, PASS).** With the same `coeffs_by_gpu` bundle at
+rate 1.0 (the regime joint already wins reactively), θ_i-joint is **byte-identical to homogeneous joint** every
+seed — it does not perturb the regime where reactive congestion alone suffices:
+
+| seed | reduced (dflt) | joint (homog) | **θ_i-joint** | best blind (load-balance) | optimum (all-fast) |
+|------|----------------|---------------|---------------|---------------------------|--------------------|
+| 42   | 0.000          | 0.967         | **0.967**     | 0.767                     | 1.000              |
+| 7    | 0.000          | 0.967         | **0.967**     | 0.717                     | 1.000              |
+| 123  | 0.000          | 1.000         | **1.000**     | 0.733                     | 1.000              |
+
+(θ_i ≡ homogeneous joint here because the fast node has spare room, so the argmin's speed-vs-congestion tradeoff
+never binds — no candidate is ever pushed into saturation. ~0.967 ≈ the design's ~0.97 no-regression floor.)
+
+**The honest headline (a bound on per-instance work-model knowledge).** Per-instance `θ_i` in the joint work
+model is **necessary but not sufficient** to hit the saturating-regime optimum. It unsticks the reactive
+queue-equalization (which provably could not exceed ~77%) and makes the split genuinely speed-aware, but on its
+own it over-corrects — it lacks the capacity/congestion coupling that would stop over-loading the fast node at
+its interior optimum. Reaching ~86%/~0.96 therefore requires `θ_i` **combined with** a per-instance capacity
+governor (the deferred `Z^I_i` / occupancy-coupled work term, design §2 non-goal), not the work-model θ alone.
+This is the bound design §9 anticipated: it quantifies what per-instance work-model knowledge achieves (a
+speed-aware but un-regulated split) versus the residual that needs congestion/ITL coupling. For the paper, the
+positive T-A story stands (reactive joint captures the under-capacity headroom, ~0.97 vs blind ~0.77); the
+saturating regime is now a characterized limitation with a concrete next step, not an unexplained gap.
+
+**Durable wiring guard.** The `coeffs_by_gpu` → decider path is guarded end-to-end by
+`cmd/edppcoeffs_bundle_wiring_test.go::TestCoeffsByGPU_RunCmdLiteralWiring_DecodeSplitObservable` (child-process
+`blis run` on a heterogeneous 1P2D joint scenario, asserting the realized decode split shifts toward the fast
+node WITH `coeffs_by_gpu` vs WITHOUT; RED when the `EDPPCoeffsByGPU:` literal in `cmd/root.go` is severed).

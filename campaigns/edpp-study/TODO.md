@@ -43,12 +43,24 @@ queues rather than over-weighting the faster node. Per-instance `θ_i` in the de
 hit the optimal speed-weighted split. (In the under-capacity regime joint already wins reactively — θ_i is
 the refinement there.) See FINDINGS "Saturating-regime follow-up".
 
-**T-B. Sub-project 2 — heterogeneous `θ_i` (the value case).** Requires a
-SIMULATOR-side change: `resolveConfigForRole` (`sim/cluster/cluster.go`) serves hardware POOL-WIDE, so two
-same-role decode instances can't run at different speeds today. Build: per-instance/per-profile hardware
-serving + per-instance `θ_i` loading/indexing in EDPP + per-instance `Z^I_i` (deferred from sub-project 1).
-Then re-run the 5-policy comparison + regret on a heterogeneous decode pool where `always`/`never` CANNOT be
-optimal. This is where joint should finally win — or not.
+**T-B. Sub-project 2 — heterogeneous `θ_i` (the value case) — BUILT + ACCEPTANCE RUN DONE (2026-07-14);
+BAR NOT MET (θ_i over-corrects), a characterized limitation, not an unexplained gap.** Shipped: `coeffs_by_gpu`
+bundle field + validation, `RoutingSnapshot.GPUType` on pool-filtered snapshots, decider `coeffsByGPU` +
+`coeffsFor` selector, per-candidate `θ_D`/`θ_P` in `jointCandidateCost`, reduced-path decode-side θ, cmd wiring,
+offline slow-device θ_i extraction (`repro_theta_by_gpu.sh` + `coeffs-llama70b-a100crippled-tp4.json`), and the
+`THETA=1` acceptance mode in `repro_hetero_hw.sh`. **Result (FINDINGS "Per-instance θ_i (T-B) result", seeds
+42/7/123):** in the SATURATING regime θ_i-joint moves the split the RIGHT direction (fast-share always ≥ the
+homogeneous joint's ~77%, unsticking the queue-equalization the reactive signal was pinned at) but **OVER-corrects
+— it overshoots the 86% optimum to 95–97% fast on 2 of 3 seeds and goodput COLLAPSES below every reactive
+baseline** (0.685 / 0.750 vs blind ~0.84–0.95); only seed 42 shows the intended partial win (0.877, 80% fast).
+Under-capacity: NO regression (θ_i ≡ homogeneous joint, ~0.967). MECHANISM: the ~4.8×-costlier slow-A100 work
+term overwhelms the reactive `Q_i` congestion signal that had regulated the split, so the fast node is
+over-loaded past its cap-8 interior optimum. So per-instance work-model `θ_i` is NECESSARY but NOT SUFFICIENT —
+it needs the deferred per-instance capacity governor (`Z^I_i` / occupancy-coupled work term, §2 non-goal) to land
+on ~86%. NEXT if pursued: couple θ_i with per-instance occupancy/capacity (the deferred `Z^I_i`), then re-run
+the SAT acceptance; also the broader 5-policy comparison + regret on the heterogeneous pool. The end-to-end
+`coeffs_by_gpu`→decider wiring is guarded by
+`cmd/edppcoeffs_bundle_wiring_test.go::TestCoeffsByGPU_RunCmdLiteralWiring_DecodeSplitObservable`.
 
 **T-C. MILP global-optimum yardstick (formulation doc §6).** The scalable offline optimum → the absolute
 "how far from optimal" for every policy (the counterfactual-regret harness only gives LOCAL one-step
