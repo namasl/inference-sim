@@ -29,9 +29,9 @@ mkdir -p "$LOGDIR"
 echo "Launching $N parallel blis runs. Logs: $LOGDIR"
 
 for i in $(seq 1 "$N"); do
-  ../blis run \
+  ./blis run \
+    --model meta-llama/llama-3.3-70b-instruct \
     --lazy-generation \
-    --model ../meta-llama/llama-3.3-70b-instruct \
     --workload-spec crash_demo.yaml \
     --num-instances 4 --tp 4 --hardware H100 \
     --seed "$i" \
