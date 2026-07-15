@@ -1,0 +1,33 @@
+{
+  "units": {
+    "time": "microseconds",
+    "tokens": "tokens",
+    "requests": "count"
+  },
+  "source_csvs": [
+    "/tmp/theta_a100crippled/D1.csv",
+    "/tmp/theta_a100crippled/D2.csv",
+    "/tmp/theta_a100crippled/D3.csv",
+    "/tmp/theta_a100crippled/D4.csv",
+    "/tmp/theta_a100crippled/P1.csv",
+    "/tmp/theta_a100crippled/P2.csv",
+    "/tmp/theta_a100crippled/P3.csv"
+  ],
+  "total_rows": 10352,
+  "decode": {
+    "n_rows": 8878,
+    "alpha_us": 69312.11905759455,
+    "c0_us_per_req": 8.869196699789164,
+    "c1_us_per_token": 0.22786721457144313,
+    "r2": 0.9999999999280019,
+    "cond_b_dec_kv": 2.2144231270810804
+  },
+  "prefill": {
+    "n_rows": 940,
+    "alpha_p_us": 69316.45125197829,
+    "c_pf_us_per_token": 17.24120180313299,
+    "c_attn_us_per_unit": 0.00024926405346785245,
+    "r2": 0.9999999984812312,
+    "cond_s_pf_pf_ctx": 6.616946146950292
+  }
+}
