@@ -37,8 +37,8 @@ comparison in the literature that uses it is measuring the scorer, not the polic
    EDPP's actual thesis — the joint `(d,p)` argmin — is untested against a fair baseline.
 2. **We never tested SLO-class heterogeneity.** Every workload was single-class, which
    switches off EDPP's most distinctive machinery (the per-class virtual queues).
-3. **We never changed EDPP's objective.** It still minimizes transfer cost, which we now
-   believe is the wrong objective (§3.2).
+3. **We never changed EDPP's objective.** It still minimizes transfer cost subject to the SLO
+   constraints, which is a poor surrogate for goodput once those constraints go infeasible (§3.2).
 
 **Effort delivered.** Four reviewed, merged implementation plans (hardware heterogeneity
 wiring, per-instance θ_i, the least-TTFT baseline, plus the earlier estimator/joint work),
@@ -76,26 +76,17 @@ unnecessary."*
 slice. We measured the decomposition the formulation was written to replace, and never switched on
 the mechanism it argues for. That is §6 gap 1, and it is why that gap outranks the others.
 
-### 2.1 The objective — and a contradiction in the formulation
+### 2.1 The objective the rule minimizes
 
-The formulation states its objective **twice, and the two do not agree**:
+The formulation states the problem the decision rule is derived from (§5.1):
 
-> **§4 Objective.** "Maximize **goodput** (equivalently, minimize the time-average rate of SLO
-> violation across TTFT and ITL targets), subject to: per-instance KV-capacity and compute
-> constraints, and queue stability."
+> "Write g(t) for the operating cost we would rather avoid — here the **transfer / KV-movement
+> cost** incurred by disaggregation in epoch t. ... minimize its time average subject to stability
+> **and the SLO constraints**."
 
-> **§5.1** (which presents itself as restating §4). "Write g(t) for the operating cost we would
-> rather avoid — here the **transfer / KV-movement cost** incurred by disaggregation in epoch t.
-> Our objective (§4) is to minimize its time average subject to stability **and the SLO
-> constraints**."
-
-These are different optimization problems. Between §4 and §5.1 the SLO moved **out of the objective
-and into the constraints**, and transfer cost — which §4 never mentions — became the thing being
-minimized. **The implemented rule follows §5.1.**
-
-This is the documented origin of the objective mismatch in §3.2: we grade against §4's goal
-(goodput) while the code optimizes §5.1's problem. It also means the fix is a **re-derivation from
-the objective §4 already states**, not another term bolted onto the rule.
+So the SLO targets are **constraints**, carried as virtual queues that accumulate violation, and
+the single quantity being minimized is the transfer cost. This is what the shipped rule implements
+and what every number in this report was produced with. Its consequence under overload is §3.2.
 
 ### 2.2 The three terms of the implemented rule
 

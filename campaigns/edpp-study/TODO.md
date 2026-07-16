@@ -62,18 +62,18 @@ the SAT acceptance; also the broader 5-policy comparison + regret on the heterog
 `coeffs_by_gpu`→decider wiring is guarded by
 `cmd/edppcoeffs_bundle_wiring_test.go::TestCoeffsByGPU_RunCmdLiteralWiring_DecodeSplitObservable`.
 
-**T-G. FORMULATION FIX — §4 and §5.1 state DIFFERENT objectives (found 2026-07-15).**
-`docs/design/2026-06-30-pd-joint-routing-problem-formulation.md` §4 says the objective is "Maximize
-goodput (equivalently, minimize the time-average rate of SLO violation ...), subject to per-instance
-KV-capacity and compute constraints, and queue stability". §5.1, presenting itself as restating §4,
-instead minimizes the TRANSFER/KV-movement cost subject to stability AND the SLO constraints — the
-SLO silently moved from the objective into the constraints, and transfer cost (absent from §4)
-became the objective. **The implemented rule follows §5.1.** This is the documented root cause of
-the objective mismatch: we grade goodput, the code minimizes transfers, and under overload §5.1's
-constraints are infeasible so its objective is vacuous (see FINDINGS / STUDY_REPORT §3.2, and the
-rate-16 collapse where full EDPP scores 0.054-0.071 vs least-ttft 0.375-0.433). FIX = re-derive the
-rule from §4's stated objective (a saturating goodput/utility penalty), not another bolted-on term.
-Decide first which of §4 / §5.1 is the intended problem.
+**T-G. OBJECTIVE — is transfer cost the right penalty when we grade goodput? (raised 2026-07-15).**
+The implemented rule minimizes the time-average TRANSFER/KV-movement cost subject to stability and
+the time-average SLO constraints (formulation §5.1); the SLOs are constraints carried as virtual
+queues, not the objective. We measure goodput. The two coincide only while the SLO constraints are
+feasible. Under overload they are not: the virtual queues grow without bound, the drift-plus-penalty
+guarantee is void, and "minimize transfers" is moot because the deadline is missed either way. The
+queues also accumulate LATENESS (z += realized − τ), so the rule keeps spending capacity on requests
+that already missed and can never count toward goodput — goodput saturates, this surrogate does not,
+so it cannot triage. Evidence: the rate-16 collapse (full EDPP 0.054–0.071 vs least-ttft 0.375–0.433;
+STUDY_REPORT E4/F5). CANDIDATE FIX = re-derive the rule against a saturating goodput/utility penalty
+(flat-high before the deadline, stops decaying after) rather than bolting another term on. NOT DONE —
+every result to date uses the implemented transfer-cost objective.
 
 **T-C. MILP global-optimum yardstick (formulation doc §6).** The scalable offline optimum → the absolute
 "how far from optimal" for every policy (the counterfactual-regret harness only gives LOCAL one-step
