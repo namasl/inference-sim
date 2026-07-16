@@ -48,9 +48,59 @@ a reproducible experiment harness, and the findings above.
 
 ## 2. What EDPP is, precisely
 
-EDPP is a Lyapunov drift-plus-penalty policy. For each request it evaluates an objective and
-picks the minimizing action. The objective has three kinds of terms, and it matters enormously
-which is which:
+### 2.0 Why a joint rule at all (formulation §1, §3.4, §5.5)
+
+The design starts from one claim: **routing and deciding are the same problem, and the system
+currently splits them.** Two mechanisms run in sequence — a scorer picks the decode instance, then
+a separate decider chooses local-vs-disaggregate. The formulation folds both into one action:
+
+    a_r = (d_r, p_r),   p_r ∈ prefill-nodes ∪ {local}
+
+"local" is just another prefill location, so *"disaggregate?"* becomes a coordinate of *"which
+instance?"*. The split is lossy because the two decisions are **coupled in both directions** (§1):
+
+- the **value of disaggregating depends on which decode instance** was picked — offloading prefill
+  helps a congested decode instance far more than an idle one;
+- the **best decode instance depends on whether the request will be disaggregated** — if it will,
+  pick on decode capacity alone (that instance never prefills); if it won't, pick on combined
+  prefill+decode capacity. These can be different instances.
+
+A decomposed pipeline picks the instance blind to the split, then the split blind to the instances
+it could have chosen. Because the joint rule minimizes the same objective over a *superset* of the
+reduced action set, it is **provably no worse**; what it costs is compute and llm-d scorer parity.
+§5.5 is explicit that the reduction is *"a deployment choice…, not a mathematical necessity"* and
+that *"the pairwise rule cannot see that a different decode node would have made disaggregation
+unnecessary."*
+
+**Consequence for this study:** every experiment here used the **reduced** rule — the scorer-chosen
+slice. We measured the decomposition the formulation was written to replace, and never switched on
+the mechanism it argues for. That is §6 gap 1, and it is why that gap outranks the others.
+
+### 2.1 The objective — and a contradiction in the formulation
+
+The formulation states its objective **twice, and the two do not agree**:
+
+> **§4 Objective.** "Maximize **goodput** (equivalently, minimize the time-average rate of SLO
+> violation across TTFT and ITL targets), subject to: per-instance KV-capacity and compute
+> constraints, and queue stability."
+
+> **§5.1** (which presents itself as restating §4). "Write g(t) for the operating cost we would
+> rather avoid — here the **transfer / KV-movement cost** incurred by disaggregation in epoch t.
+> Our objective (§4) is to minimize its time average subject to stability **and the SLO
+> constraints**."
+
+These are different optimization problems. Between §4 and §5.1 the SLO moved **out of the objective
+and into the constraints**, and transfer cost — which §4 never mentions — became the thing being
+minimized. **The implemented rule follows §5.1.**
+
+This is the documented origin of the objective mismatch in §3.2: we grade against §4's goal
+(goodput) while the code optimizes §5.1's problem. It also means the fix is a **re-derivation from
+the objective §4 already states**, not another term bolted onto the rule.
+
+### 2.2 The three terms of the implemented rule
+
+For each request EDPP evaluates an objective and picks the minimizing action. The objective has
+three kinds of terms, and it matters enormously which is which:
 
 | term | what it is | kind |
 |---|---|---|

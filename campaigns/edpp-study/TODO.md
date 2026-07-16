@@ -62,6 +62,19 @@ the SAT acceptance; also the broader 5-policy comparison + regret on the heterog
 `coeffs_by_gpu`→decider wiring is guarded by
 `cmd/edppcoeffs_bundle_wiring_test.go::TestCoeffsByGPU_RunCmdLiteralWiring_DecodeSplitObservable`.
 
+**T-G. FORMULATION FIX — §4 and §5.1 state DIFFERENT objectives (found 2026-07-15).**
+`docs/design/2026-06-30-pd-joint-routing-problem-formulation.md` §4 says the objective is "Maximize
+goodput (equivalently, minimize the time-average rate of SLO violation ...), subject to per-instance
+KV-capacity and compute constraints, and queue stability". §5.1, presenting itself as restating §4,
+instead minimizes the TRANSFER/KV-movement cost subject to stability AND the SLO constraints — the
+SLO silently moved from the objective into the constraints, and transfer cost (absent from §4)
+became the objective. **The implemented rule follows §5.1.** This is the documented root cause of
+the objective mismatch: we grade goodput, the code minimizes transfers, and under overload §5.1's
+constraints are infeasible so its objective is vacuous (see FINDINGS / STUDY_REPORT §3.2, and the
+rate-16 collapse where full EDPP scores 0.054-0.071 vs least-ttft 0.375-0.433). FIX = re-derive the
+rule from §4's stated objective (a saturating goodput/utility penalty), not another bolted-on term.
+Decide first which of §4 / §5.1 is the intended problem.
+
 **T-C. MILP global-optimum yardstick (formulation doc §6).** The scalable offline optimum → the absolute
 "how far from optimal" for every policy (the counterfactual-regret harness only gives LOCAL one-step
 deviations). Independent of T-A/T-B; strengthens all results incl. the homogeneous ones already collected.
