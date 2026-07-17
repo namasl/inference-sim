@@ -1170,3 +1170,62 @@ the transfer penalty (noise); `z` appears subsumed by a correct drift term.
 **Caveats.** Rate-10 ablation is 3 seeds; the load-range row is seed 42 only. One archetype
 (prefill-bound), reduced path only (joint still never exercised). `z_itl` was inert throughout
 (ITL never approached its target), so this ablates z_ttft specifically.
+
+### Widened term ablation (2026-07-17) — full rule wins 0/12 cells; z's sign FLIPS by archetype
+
+Widened the ablation to all 4 archetypes x rates {8,12,16} x seeds {42,7,123} (repro:
+`MODE=ablate RATES="8 12 16" SEEDS="42 7 123" bash campaigns/edpp-study/repro_spectrum.sh`).
+Means over 3 seeds; four cells sit at the 1.000 ceiling and carry no signal.
+
+| archetype | rate | least-ttft | drift-only | drift+z | full | winner |
+|-----------|------|-----------|-----------|---------|------|--------|
+| decode        | 8  | 0.133 | **0.267** | 0.135 | 0.133 | drift-only |
+| decode        | 12 | 0.133 | **0.237** | 0.135 | 0.133 | drift-only |
+| decode        | 16 | 0.133 | **0.233** | 0.137 | 0.133 | drift-only |
+| mixed         | 16 | 0.750 | **0.803** | 0.747 | 0.708 | drift-only |
+| prefill_lean  | 16 | 0.754 | 0.696 | **0.793** | 0.771 | drift+z |
+| prefill_bound | 8  | 0.904 | **0.971** | 0.921 | 0.925 | drift-only |
+| prefill_bound | 12 | **0.492** | 0.264 | 0.408 | 0.414 | least-ttft |
+| prefill_bound | 16 | **0.397** | 0.061 | 0.062 | 0.064 | least-ttft |
+
+**HEADLINE: the shipped full rule is the best arm in 0 of 12 cells.** It is dominated everywhere by
+one of its own ablations.
+
+**CONFIRMED — drift is the load-bearing term.** Best in 5 of the 8 informative cells.
+
+**REFINED — the collapse is NOT universal.** drift-only collapses only on prefill_bound at rate>=12
+(the most extreme archetype at extreme load), where `least-ttft` wins. Note high seed variance there
+(drift-only @ r12: 0.100 / 0.529 / 0.163) — the collapse is bimodal, i.e. a tipping point, not a
+smooth degradation.
+
+**REFUTED (an earlier claim in the previous section) — `z` is NOT inert; its SIGN FLIPS:**
+
+| archetype | drift+z − drift-only | |
+|-----------|---------------------|---|
+| decode        | **−0.110** | z badly HURTS |
+| mixed         | −0.018 | ~inert |
+| prefill_lean  | +0.030 | z helps |
+| prefill_bound | +0.032 | z helps |
+
+The earlier "z is inert" was drawn from ONE cell (prefill_bound rate 10) where it happened to be
+neutral. Across the spectrum z is the difference between 0.24 and 0.135 in decode-bound.
+
+**MECHANISM — this explains the long-standing "EDPP under-disaggregates on decode-bound" anomaly.**
+`z_ttft` prices the TTFT *cost* of disaggregating (the KV transfer) but is BLIND to the decode
+capacity that disaggregating BUYS. In decode-bound the prompt is tiny, so disagg's TTFT cost is
+essentially just the transfer — small but positive — so `ttftTerm > 0` raises `rhs` and vetoes
+disaggregation. But disagg is exactly right there (`always` 0.271 >> `never` 0.133). **So z drives
+EDPP to behave like `never` on decode-bound** — the anomaly first seen in the spectrum sweep
+(edpp = never = 0.133 vs always = 0.271) and unexplained until now. Drift wants to disaggregate; z
+overrules it; z is wrong.
+
+**THE UNIFYING STATEMENT.** `z_ttft` prices the deciding request's OWN TTFT. `V*c_xfer` prices the
+deciding request's OWN transfer. Only the drift term prices the effect on EVERYONE ELSE — and it
+does so in WORK, not VALUE. *Every term prices the deciding request's own experience; the one term
+that prices the externality uses the wrong currency.* That single sentence accounts for all four
+failures on record: the decode-bound veto, the prefill-bound collapse, the Type-A/B workload failure,
+and the SLO-class backfire.
+
+**Caveats.** Reduced path only (joint still never exercised). One topology (1P2D), cap 16, single
+`--edpp-tau-itl 100ms` throughout (z_itl was inert in every run — measured ITL never approached the
+target, so this ablates z_ttft specifically). Four cells are at the ceiling and carry no information.

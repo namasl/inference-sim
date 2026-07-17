@@ -44,6 +44,7 @@
 #   SCORER=llmd bash campaigns/edpp-study/repro_spectrum.sh           # spectrum, llm-d default
 #   MODE=scorer bash campaigns/edpp-study/repro_spectrum.sh           # scorer comparison
 #   MODE=oracle ARCH=prefill_bound RATE=8 bash campaigns/edpp-study/repro_spectrum.sh
+#   MODE=ablate bash campaigns/edpp-study/repro_spectrum.sh              # term ablation
 set -euo pipefail
 REPO="$(git rev-parse --show-toplevel)"; cd "$REPO"
 
@@ -183,7 +184,39 @@ for i in range(240):
   echo "   ---- dynamic policies on the same cell ----" >&2
   printf "   %-12s goodput=%s\n" "least-ttft" "$(run_policy o_l --pd-decider edpp "${EC[@]}" --edpp-rule least-ttft)" >&2
   printf "   %-12s goodput=%s\n" "edpp"       "$(run_policy o_e --pd-decider edpp "${EC[@]}")" >&2
+elif [[ "$MODE" == "ablate" ]]; then
+  # TERM ABLATION of the reduced rule:  disagg iff  lhs > rhs
+  #   lhs = balanceTermD - balanceTermP        (congestion drift, the Q_i work backlogs)
+  #   rhs = transferTerm + ttftTerm + itlTerm  (V*c_xfer  +  the z SLO virtual queues)
+  # Reachable from config alone — no code change:
+  #   --edpp-v 0            => transferTerm = 0
+  #   --edpp-tau-ttft 999s  => TTFT unviolatable => z_ttft == 0 => ttftTerm = 0
+  # tau_itl is HELD at its real value in every arm, for two reasons: the normalizer
+  # mu_D = 1 - alpha_D/tau_itl must not move between arms, and z_itl is inert anyway
+  # (measured ITL never approaches 100ms). With rhs=0 the surviving test `lhs > 0` is
+  # invariant to the tau_ttft scaling of W*, so the ablation removes z without rescaling drift.
+  # ARMS:  least-ttft = no drift, no z, no V   |  drift only = lhs > 0
+  #        drift + z  = no V                   |  full       = everything
+  echo "TERM ABLATION  topology=1P2D cap=$CAP scorer=$SCORER seeds=[${SEEDS:-42 7 123}]" >&2
+  echo "(goodput; which TERM is load-bearing?  z_itl is inert throughout — this ablates z_ttft)" >&2
+  for name in $ARCH_ORDER; do
+    set -- $(arch_dims "$name"); IN=$1; O=$2
+    auto_slo "$IN" "$O"
+    echo "== $name (in=$IN out=$O)  SLO e2e=${SLO_E2E}ms ttft=${SLO_TTFT}ms ==" >&2
+    printf "   %-5s %-5s| %-11s %-11s %-11s %-11s\n" "rate" "seed" "least-ttft" "drift-only" "drift+z" "full" >&2
+    for r in $RATES; do
+      for s in ${SEEDS:-42 7 123}; do
+        spec "$IN" "$O" "$r" "$s"
+        BB=(--edpp-coeffs "$COEFFS" --edpp-tadm-estimator rollforward --edpp-tau-itl 100ms)
+        L=$(run_policy ab_l --pd-decider edpp "${BB[@]}" --edpp-tau-ttft "${SLO_TTFT}ms" --edpp-rule least-ttft); L=${L%% *}
+        D=$(run_policy ab_d --pd-decider edpp "${BB[@]}" --edpp-tau-ttft 999s --edpp-v 0);                       D=${D%% *}
+        Z=$(run_policy ab_z --pd-decider edpp "${BB[@]}" --edpp-tau-ttft "${SLO_TTFT}ms" --edpp-v 0);            Z=${Z%% *}
+        F=$(run_policy ab_f --pd-decider edpp "${BB[@]}" --edpp-tau-ttft "${SLO_TTFT}ms");                       F=${F%% *}
+        printf "   %-5s %-5s| %-11s %-11s %-11s %-11s\n" "$r" "$s" "$L" "$D" "$Z" "$F" >&2
+      done
+    done
+  done
 else
-  echo "MODE must be spectrum|scorer|oracle" >&2; exit 1
+  echo "MODE must be spectrum|scorer|oracle|ablate" >&2; exit 1
 fi
 echo "done -> $OUT" >&2
