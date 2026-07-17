@@ -1031,3 +1031,68 @@ saturating regime is now a characterized limitation with a concrete next step, n
 `cmd/edppcoeffs_bundle_wiring_test.go::TestCoeffsByGPU_RunCmdLiteralWiring_DecodeSplitObservable` (child-process
 `blis run` on a heterogeneous 1P2D joint scenario, asserting the realized decode split shifts toward the fast
 node WITH `coeffs_by_gpu` vs WITHOUT; RED when the `EDPPCoeffsByGPU:` literal in `cmd/root.go` is severed).
+
+---
+
+## SLO-class heterogeneity (2026-07-17) — per-class machinery is COUNTERPRODUCTIVE; externality-blindness confirmed
+
+**Setup.** The third heterogeneity axis, never tested before. Prefill-bound 16000/16, 1P2D, cap 16,
+decode scorer pinned `queue-depth:1`, rate 10. Rate chosen from a probe as the point where goodput is
+well below 1 (≈40% of requests miss, so routing decides WHO survives) but EDPP has not yet collapsed
+(rate 8 = nothing to allocate; rate 12+ = EDPP already broken). **Both classes have IDENTICAL sizes**
+(16000/16, 50/50) so the ONLY difference is the SLO — a win cannot be attributed to workload het.
+critical: ttft 1794ms / itl 100ms / e2e 1600ms. batch: 60s / 500ms / 60s (loose; it does not care).
+EDPP gets per-class targets via `--edpp-tau-ttft-classes` / `--edpp-tau-itl-classes`.
+
+**Hypothesis (stated before running):** `least-ttft` is class-blind by construction and CANNOT
+prioritise; EDPP's per-class `z` queues can. Critical is 50% of load and ~60% of requests are savable,
+so a class-aware policy could save nearly all critical (~1.0) while a class-blind one saves ~60% of
+each class (~0.6). Predicted edpp ≈ 0.9–1.0, least-ttft ≈ 0.6.
+
+**Result — critical-class goodput (batch = 1.000 everywhere by construction):**
+
+| seed | never | always | least-ttft | **edpp single-τ (class-blind)** | edpp per-class τ |
+|------|-------|--------|-----------|-------------------------------|------------------|
+| 42   | 0.163 | 0.039  | 0.581     | **0.884**                     | 0.752            |
+| 7    | —     | —      | 0.636     | **0.836**                     | 0.891            |
+| 123  | —     | —      | 0.456     | **0.856**                     | 0.800            |
+| mean | —     | —      | 0.558     | **0.859**                     | 0.814            |
+
+**HYPOTHESIS REFUTED.** Per-class targets did NOT help — they HURT (mean 0.859 → 0.814, worse on 2/3
+seeds). The one axis predicted to be EDPP's structural home does not deliver.
+
+**MECHANISM — confirmed from EDPP's own decision trace (`--edpp-decision-trace`), seed 42:**
+
+| | batch disagg | batch peak z_ttft | critical disagg | critical gp | batch e2e_p99 |
+|---|---|---|---|---|---|
+| edpp single-τ   | 55.0% | 239.3 | 27.1% | **0.884** | 3424ms |
+| edpp per-class τ| 28.8% | **0** | 43.4% | 0.752 | **1879ms** |
+
+The machinery did EXACTLY what it was designed to do: batch's `z_ttft` is exactly 0 (its TTFT term is
+fully off), prefill-server access shifted away from batch (55%→29%) and toward critical (27%→43%).
+**And critical still got worse.** Because batch did not disappear — with its TTFT term gone, nothing
+pushed it to disaggregate (the transfer penalty went unopposed), so batch ran its 16000-token prefill
+LOCALLY, on the decode servers critical needs. The deprioritised class ended up FASTER (e2e 3424→1879ms)
+while the priority class paid.
+
+**THE FINDING: routing cannot sacrifice a class.** Lowering a class's SLO target does not make it yield
+capacity — it makes it *selfish*: it stops optimising its own latency and takes the cheapest resource,
+which is the contended one. Batch's decision is computed from batch's own SLO; the harm it does to
+critical is invisible to the rule. **This is the SAME externality-blindness that killed the Type-A/B
+workload experiment** (FINDINGS "Q2": "EDPP judges each request by its OWN class SLO + shared backlog;
+B-harms-A is an EXTERNALITY the rule can't express"), now reproduced in a cleaner setting AND shown to
+be made WORSE by the per-class machinery. One structural flaw, two of the three heterogeneity axes.
+Sacrificing a class requires admission/scheduling (shed or defer), which EDPP does not control.
+
+**COROLLARY — a correction to the spectrum framing.** EDPP single-τ (0.859) beats `least-ttft` (0.558)
+here by a wide margin, and at single-class rate 10 it also leads (0.646 vs 0.537). The earlier
+"the drift/z/V machinery is not what wins" read came from rate 8 (both at ceiling: 0.917 vs 0.854) and
+rate 16 (EDPP collapsed: 0.071 vs 0.375). There is a **moderate-contention band where the machinery
+genuinely wins**, bounded above by the overload collapse. Corrected characterisation:
+- light contention → least-ttft ≈ edpp (both near ceiling)
+- **moderate contention → edpp > least-ttft (machinery earns its keep)**
+- extreme overload → edpp collapses, least-ttft robust
+
+**Caveats.** One archetype, one rate, 3 seeds, reduced path only (joint routing still never exercised).
+Repro: probe + the four arms are single `blis run` commands; see STUDY_REPORT §8 for the pattern
+(`--edpp-tau-ttft-classes` toggles the machinery; `--edpp-decision-trace` gives per-class disagg + z).
