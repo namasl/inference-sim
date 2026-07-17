@@ -1096,3 +1096,77 @@ genuinely wins**, bounded above by the overload collapse. Corrected characterisa
 **Caveats.** One archetype, one rate, 3 seeds, reduced path only (joint routing still never exercised).
 Repro: probe + the four arms are single `blis run` commands; see STUDY_REPORT §8 for the pattern
 (`--edpp-tau-ttft-classes` toggles the machinery; `--edpp-decision-trace` gives per-class disagg + z).
+
+---
+
+## Term ablation (2026-07-17) — the drift term is BOTH the win and the collapse; z ~inert; V·c_xfer negligible
+
+**Question.** EDPP beats `least-ttft` at moderate contention (rate 10) but collapses under overload.
+WHICH TERM is responsible? Ablate the reduced rule term-by-term using existing flags only.
+
+**Method (no code change).** The reduced rule is `disagg iff lhs > rhs`, with
+`lhs = balanceTermD - balanceTermP` (congestion drift, Q_i) and
+`rhs = transferTerm + ttftTerm + itlTerm`.
+- `--edpp-v 0` zeroes `transferTerm`.
+- `--edpp-tau-ttft 999s` makes TTFT unviolatable ⇒ `z_ttft ≡ 0` ⇒ `ttftTerm = 0`.
+  (`z_itl` is ALREADY 0 here: measured ITL ≈34ms vs τ_itl=100ms. τ_itl is held at 100ms so the
+  normalizer μ_D = 1 − α_D/τ_itl is UNCHANGED — the ablation removes z without rescaling drift.
+  With rhs=0 the surviving comparison `lhs > 0` is invariant to the τ_ttft scaling of W*.)
+- Both off ⇒ `lhs > 0` = PURE congestion drift ("disagg iff the decode queue is more backed up
+  than the prefill pool"). `least-ttft` = neither drift nor z nor V.
+
+**Integrity check (decision trace, seed 42, rate 10) — the ablation is real:**
+
+| arm | peak z_ttft | max abs ttft_term | max abs transfer | disagg% |
+|-----|------------|-------------------|------------------|---------|
+| drift only | **0** | **0** | **0** | 37% |
+| full edpp  | 435.6 | 25.74 | **0.00078** | 41% |
+
+Note `max|transfer_term| = 0.0008` vs `ttft_term = 25.7` — **the transfer penalty, i.e. the
+formulation's stated objective, is FOUR ORDERS OF MAGNITUDE below the constraint terms.** It barely
+moves the rule.
+
+**Result — prefill-bound 16000/16, goodput.** Rate 10, 3 seeds:
+
+| seed | least-ttft | drift only | drift + z | full edpp |
+|------|-----------|-----------|-----------|-----------|
+| 42   | 0.537     | **0.713** | 0.667     | 0.646     |
+| 7    | 0.713     | **0.821** | 0.787     | 0.787     |
+| 123  | 0.558     | 0.762     | **0.838** | 0.817     |
+| mean | 0.603     | **0.765** | 0.764     | 0.750     |
+
+Across load (seed 42):
+
+| rate | least-ttft | drift only | full edpp |
+|------|-----------|-----------|-----------|
+| 8    | 0.854     | **0.929** | 0.917     |
+| 10   | 0.537     | **0.713** | 0.646     |
+| 12   | **0.500** | 0.100     | 0.275     |
+| 16   | **0.375** | 0.071     | 0.071     |
+
+**FINDINGS.**
+1. **The congestion-drift term delivers the ENTIRE win** over `least-ttft` at moderate contention
+   (+0.16 mean at rate 10). The earlier "drift is a crude externality proxy" hypothesis is SUPPORTED.
+2. **The drift term is ALSO the cause of the overload collapse.** drift-only is the WORST arm at
+   rate 12 (0.100 vs least-ttft 0.500) — removing drift entirely (least-ttft) is what survives overload.
+   One term, both the win and the failure.
+3. **The `z` virtual queues are ~inert at moderate load** (0.765 → 0.764) and only ever act as
+   DAMAGE CONTROL for drift under overload (drift-only 0.100 → full 0.275, still << least-ttft 0.500).
+   The time-average-constraint machinery has no demonstrated standalone value in this cell.
+4. **`V·c_xfer` is negligible (4 orders down) and slightly harmful** (0.764 → 0.750).
+
+**INTERPRETATION — this independently confirms the work-vs-value diagnosis.** `q_i·ΔW_i` is
+WORK-weighted. At moderate load work ≈ value-at-risk (a loaded queue really does hold savable
+requests), so "don't dump there" is correct and the term wins. Under overload every queue is huge, so
+the term balances work between two hopelessly-backed-up queues — whereas a VALUE-weighted version
+would price those queues at ~0 (they hold doomed requests; dumping there is free) and steer the
+savable requests to wherever they can still make the deadline. **The drift term is doing the right
+job in the wrong currency.**
+
+**Consequence for the design.** This is NOT a reason to leave Neely — a virtual queue can measure
+anything. Keep the drift structure; change what the queue measures (value-at-risk, not work); drop
+the transfer penalty (noise); `z` appears subsumed by a correct drift term.
+
+**Caveats.** Rate-10 ablation is 3 seeds; the load-range row is seed 42 only. One archetype
+(prefill-bound), reduced path only (joint still never exercised). `z_itl` was inert throughout
+(ITL never approached its target), so this ablates z_ttft specifically.
