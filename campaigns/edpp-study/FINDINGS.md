@@ -1229,3 +1229,53 @@ and the SLO-class backfire.
 **Caveats.** Reduced path only (joint still never exercised). One topology (1P2D), cap 16, single
 `--edpp-tau-itl 100ms` throughout (z_itl was inert in every run — measured ITL never approached the
 target, so this ablates z_ttft specifically). Four cells are at the ceiling and carry no information.
+
+### JOINT ablation (2026-07-17) — gap 01 CLOSED: joint routing does NOT rescue EDPP
+
+**The gap this closes.** Every experiment before this used the REDUCED rule (a scorer picks the
+decode instance; EDPP only chooses local-vs-disagg). EDPP's actual thesis — the joint (d,p) argmin,
+motivated by formulation §1's coupling argument — had never been exercised in any spectrum, class,
+or ablation cell. `JOINT=1` added to the tracked harness; the same term ablations apply to the joint
+path (`--edpp-v 0` zeroes its transfer term, `--edpp-tau-ttft 999s` zeroes its z). In joint mode EDPP
+enumerates all (d,p) and picks the argmin ITSELF, overriding the decode scorer entirely.
+Repro: `JOINT=1 MODE=ablate RATES="8 12 16" SEEDS="42 7 123" bash campaigns/edpp-study/repro_spectrum.sh`
+
+**Result — reduced vs JOINT, mean of 3 seeds (^ joint better by >0.02, v joint worse):**
+
+| archetype | rate | drift-only red→joint | drift+z red→joint | full red→joint |
+|-----------|------|---------------------|-------------------|----------------|
+| decode        | 8  | 0.267 → 0.286 | 0.135 → 0.139 | 0.133 → 0.136 |
+| decode        | 12 | 0.237 → **0.296 ^** | 0.135 → 0.136 | 0.133 → 0.133 |
+| decode        | 16 | 0.233 → 0.221 | 0.137 → 0.139 | 0.133 → 0.133 |
+| mixed         | 12 | 0.999 → **0.843 v** | 1.000 → 1.000 | 1.000 → 0.978 v |
+| mixed         | 16 | 0.803 → **0.681 v** | 0.747 → 0.724 v | 0.708 → **0.626 v** |
+| prefill_lean  | 16 | 0.696 → 0.679 | 0.793 → **0.728 v** | 0.771 → **0.711 v** |
+| prefill_bound | 8  | 0.971 → **0.992 ^** | 0.921 → **0.954 ^** | 0.925 → **0.953 ^** |
+| prefill_bound | 12 | 0.264 → 0.238 v | 0.408 → 0.403 | 0.414 → 0.396 |
+| prefill_bound | 16 | 0.061 → 0.062 | 0.062 → **0.161 ^** | 0.064 → **0.161 ^** |
+
+**JOINT IS A WASH.** Helps on prefill_bound 8/16 and decode 12; HURTS on mixed 12/16, prefill_lean 16,
+prefill_bound 12. It fixes NONE of the three diagnosed failures:
+1. **The decode-bound veto survives** — joint full = 0.133–0.136, still exactly `never` (vs `always`
+   0.271). Giving EDPP the decode choice does not stop z from vetoing disaggregation.
+2. **The overload collapse survives** — joint prefill_bound@16 = 0.161 vs `least-ttft` 0.397.
+3. **The full rule still wins in NO cell**, joint or reduced.
+
+**THE FINDING — the lossy decomposition is NOT the binding problem.** Formulation §1's coupling
+argument (the value of disaggregating depends on which decode node; the best decode node depends on
+whether you disaggregate) motivates the ENTIRE joint construction and is the project's central
+hypothesis. It is real but SECOND-ORDER: enumerating (d,p) jointly with the same terms does not help,
+because **choosing jointly in the wrong currency is still choosing in the wrong currency.** The term
+currency (work, and own-experience pricing) dominates the decomposition loss.
+
+**Sharpest evidence.** On `mixed`, joint's only gift is that EDPP picks the decode instance instead
+of the queue-depth scorer — and handed that control, the work-currency drift term picks WORSE than
+plain load balancing (0.803 → 0.681). §5.5's "provably no worse" holds for the *objective as
+formulated*; it does not protect goodput when the objective itself is mis-specified.
+
+**Consequence.** Do NOT build the joint `least-ttft` baseline — joint does not move the needle, so a
+joint baseline would measure nothing. The redesign target is unchanged and now better isolated: fix
+what the terms MEASURE (value-at-risk, externality), not which action set they are minimised over.
+
+**Caveats.** 1P2D only (|A| = 2 decode x 2 prefill-choices = 4 candidates — a wider pool might give
+joint more to work with). Cap 16. 3 seeds. z_itl inert throughout.

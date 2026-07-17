@@ -197,7 +197,15 @@ elif [[ "$MODE" == "ablate" ]]; then
   # invariant to the tau_ttft scaling of W*, so the ablation removes z without rescaling drift.
   # ARMS:  least-ttft = no drift, no z, no V   |  drift only = lhs > 0
   #        drift + z  = no V                   |  full       = everything
-  echo "TERM ABLATION  topology=1P2D cap=$CAP scorer=$SCORER seeds=[${SEEDS:-42 7 123}]" >&2
+  # JOINT=1 adds --edpp-joint to every arm. That is a DIFFERENT experiment, not a variant:
+  # in joint mode EDPP enumerates all (decode, prefill) candidates and picks the argmin ITSELF,
+  # overriding the decode scorer entirely. Reduced mode = the scorer picks the decode instance and
+  # EDPP only chooses local-vs-disagg. This is the decomposed-pipeline-vs-joint-action comparison
+  # the formulation (§1, §5.5) is built on, and which every experiment before this one skipped.
+  # `least-ttft` is reduced-only (rejected with --edpp-joint), so that column is absent under JOINT=1.
+  JF=(); JLBL="reduced"
+  if [[ "${JOINT:-0}" == "1" ]]; then JF=(--edpp-joint); JLBL="JOINT"; fi
+  echo "TERM ABLATION [$JLBL]  topology=1P2D cap=$CAP scorer=$SCORER seeds=[${SEEDS:-42 7 123}]" >&2
   echo "(goodput; which TERM is load-bearing?  z_itl is inert throughout — this ablates z_ttft)" >&2
   for name in $ARCH_ORDER; do
     set -- $(arch_dims "$name"); IN=$1; O=$2
@@ -208,10 +216,12 @@ elif [[ "$MODE" == "ablate" ]]; then
       for s in ${SEEDS:-42 7 123}; do
         spec "$IN" "$O" "$r" "$s"
         BB=(--edpp-coeffs "$COEFFS" --edpp-tadm-estimator rollforward --edpp-tau-itl 100ms)
-        L=$(run_policy ab_l --pd-decider edpp "${BB[@]}" --edpp-tau-ttft "${SLO_TTFT}ms" --edpp-rule least-ttft); L=${L%% *}
-        D=$(run_policy ab_d --pd-decider edpp "${BB[@]}" --edpp-tau-ttft 999s --edpp-v 0);                       D=${D%% *}
-        Z=$(run_policy ab_z --pd-decider edpp "${BB[@]}" --edpp-tau-ttft "${SLO_TTFT}ms" --edpp-v 0);            Z=${Z%% *}
-        F=$(run_policy ab_f --pd-decider edpp "${BB[@]}" --edpp-tau-ttft "${SLO_TTFT}ms");                       F=${F%% *}
+        if [[ "${JOINT:-0}" == "1" ]]; then L="n/a"; else
+          L=$(run_policy ab_l --pd-decider edpp "${BB[@]}" --edpp-tau-ttft "${SLO_TTFT}ms" --edpp-rule least-ttft); L=${L%% *}
+        fi
+        D=$(run_policy ab_d --pd-decider edpp "${BB[@]}" ${JF[@]+"${JF[@]}"} --edpp-tau-ttft 999s --edpp-v 0);            D=${D%% *}
+        Z=$(run_policy ab_z --pd-decider edpp "${BB[@]}" ${JF[@]+"${JF[@]}"} --edpp-tau-ttft "${SLO_TTFT}ms" --edpp-v 0); Z=${Z%% *}
+        F=$(run_policy ab_f --pd-decider edpp "${BB[@]}" ${JF[@]+"${JF[@]}"} --edpp-tau-ttft "${SLO_TTFT}ms");            F=${F%% *}
         printf "   %-5s %-5s| %-11s %-11s %-11s %-11s\n" "$r" "$s" "$L" "$D" "$Z" "$F" >&2
       done
     done
