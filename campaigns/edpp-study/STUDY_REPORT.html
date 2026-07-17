@@ -1,0 +1,977 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>EDPP policy study — status, findings, and what is still open</title>
+<style>
+  :root {
+    color-scheme: light;
+    --ground:   #f6f7f9;
+    --surface:  #ffffff;
+    --viz:      #fcfcfb;
+    --ink:      #10141b;
+    --ink-2:    #4d5766;
+    --muted:    #8a93a1;
+    --hair:     #e2e6ec;
+    --accent:   #2a78d6;
+    --good-bg:  #eef5ec;
+    --warn-bg:  #fdf4e6;
+    --s1: #2a78d6;  /* never */
+    --s2: #008300;  /* always */
+    --s3: #e87ba4;  /* least-ttft */
+    --s4: #eda100;  /* edpp */
+    --grid: #e7eaef;
+    --serif: ui-serif, Georgia, "Times New Roman", serif;
+    --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:where(:not([data-theme="light"])) {
+      color-scheme: dark;
+      --ground:  #0d1016;
+      --surface: #161a21;
+      --viz:     #1a1a19;
+      --ink:     #eceff4;
+      --ink-2:   #a3adbb;
+      --muted:   #6d7684;
+      --hair:    #252b35;
+      --accent:  #3987e5;
+      --good-bg: #16241a;
+      --warn-bg: #2a2113;
+      --s1: #3987e5;
+      --s2: #008300;
+      --s3: #d55181;
+      --s4: #c98500;
+      --grid: #2b2f36;
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --ground:  #0d1016;
+    --surface: #161a21;
+    --viz:     #1a1a19;
+    --ink:     #eceff4;
+    --ink-2:   #a3adbb;
+    --muted:   #6d7684;
+    --hair:    #252b35;
+    --accent:  #3987e5;
+    --good-bg: #16241a;
+    --warn-bg: #2a2113;
+    --s1: #3987e5;
+    --s2: #008300;
+    --s3: #d55181;
+    --s4: #c98500;
+    --grid: #2b2f36;
+  }
+
+  body {
+    background: var(--ground);
+    color: var(--ink);
+    font-family: var(--sans);
+    line-height: 1.6;
+    margin: 0;
+    padding: 0 1.25rem 6rem;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 60rem; margin: 0 auto; }
+  .prose { max-width: 40rem; }
+  h1, h2, h3 { font-family: var(--serif); font-weight: 600; text-wrap: balance; line-height: 1.2; }
+  h1 { font-size: clamp(1.9rem, 4vw, 2.6rem); margin: 0 0 .4rem; letter-spacing: -.01em; }
+  h2 {
+    font-size: 1.45rem; margin: 3.5rem 0 .75rem;
+    padding-top: 1.1rem; border-top: 1px solid var(--hair);
+  }
+  h3 { font-size: 1.05rem; margin: 2rem 0 .4rem; }
+  p { margin: 0 0 1rem; }
+  a { color: var(--accent); }
+  strong { font-weight: 650; }
+  .eyebrow {
+    font-family: var(--mono); font-size: .72rem; letter-spacing: .09em;
+    text-transform: uppercase; color: var(--muted); margin: 0 0 .5rem;
+  }
+  header { padding: 3.5rem 0 0; }
+  .meta {
+    font-family: var(--mono); font-size: .78rem; color: var(--ink-2);
+    display: flex; flex-wrap: wrap; gap: .4rem 1.25rem; margin-top: 1rem;
+    padding-top: 1rem; border-top: 1px solid var(--hair);
+  }
+  .lede { font-size: 1.1rem; color: var(--ink-2); max-width: 42rem; }
+
+  /* stat tiles */
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr)); gap: 1rem; margin: 1.75rem 0; }
+  .tile { background: var(--surface); border: 1px solid var(--hair); border-radius: 3px; padding: 1.1rem 1.2rem; }
+  .tile .k { font-family: var(--mono); font-size: .7rem; letter-spacing: .07em; text-transform: uppercase; color: var(--muted); }
+  .tile .v {
+    font-family: var(--mono); font-variant-numeric: tabular-nums;
+    font-size: 1.85rem; font-weight: 600; margin: .3rem 0 .15rem; letter-spacing: -.02em;
+  }
+  .tile .d { font-size: .85rem; color: var(--ink-2); line-height: 1.45; }
+
+  /* figures */
+  figure { margin: 1.75rem 0 2.25rem; }
+  .card { background: var(--viz); border: 1px solid var(--hair); border-radius: 3px; padding: 1.25rem 1.25rem .9rem; }
+  .fig-title { font-family: var(--sans); font-size: .95rem; font-weight: 650; margin: 0 0 .15rem; }
+  .fig-sub { font-size: .82rem; color: var(--ink-2); margin: 0 0 1rem; }
+  figcaption { font-size: .85rem; color: var(--ink-2); margin-top: .85rem; }
+  .scroll { overflow-x: auto; }
+  svg { display: block; width: 100%; height: auto; }
+  .legend { display: flex; flex-wrap: wrap; gap: .35rem 1.1rem; margin: 0 0 .85rem; font-size: .8rem; color: var(--ink-2); }
+  .legend span { display: inline-flex; align-items: center; gap: .4rem; }
+  .swatch { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
+  .axis { font-family: var(--mono); font-size: 10px; fill: var(--muted); font-variant-numeric: tabular-nums; }
+  .vlabel { font-family: var(--mono); font-size: 9.5px; fill: var(--ink-2); font-variant-numeric: tabular-nums; }
+  .glabel { font-family: var(--sans); font-size: 11px; fill: var(--ink); font-weight: 600; }
+  .gridline { stroke: var(--grid); stroke-width: 1; }
+  .bar { rx: 2; }
+  .bar:hover, .dot:hover { stroke: var(--ink); stroke-width: 1.5; }
+
+  /* command block — the trust device */
+  .cmd {
+    font-family: var(--mono); font-size: .76rem; line-height: 1.65;
+    background: var(--surface); border: 1px solid var(--hair);
+    border-left: 2px solid var(--accent); border-radius: 0 3px 3px 0;
+    padding: .7rem .85rem; margin: .85rem 0 0; overflow-x: auto; white-space: pre;
+    color: var(--ink-2);
+  }
+  .cmd b { color: var(--ink); font-weight: 600; }
+
+  table { border-collapse: collapse; width: 100%; font-size: .85rem; }
+  th, td { text-align: right; padding: .45rem .6rem; border-bottom: 1px solid var(--hair); }
+  th:first-child, td:first-child { text-align: left; }
+  th { font-family: var(--mono); font-size: .7rem; letter-spacing: .05em; text-transform: uppercase; color: var(--muted); font-weight: 500; }
+  td { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+  td.name { font-family: var(--sans); }
+  td.win { font-weight: 700; color: var(--ink); }
+  caption { caption-side: bottom; font-size: .8rem; color: var(--muted); text-align: left; padding-top: .6rem; }
+
+  /* narrative arc — written to be read aloud */
+  .arc { max-width: 44rem; margin: 1.5rem 0 0; }
+  .beat { display: grid; grid-template-columns: 2.4rem 1fr; gap: 0 1rem; margin-bottom: 1.9rem; }
+  .beat .num {
+    font-family: var(--mono); font-size: .78rem; font-weight: 600; color: var(--accent);
+    text-align: right; padding-top: .28rem; font-variant-numeric: tabular-nums;
+  }
+  .beat h3 { margin: 0 0 .35rem; font-size: 1.02rem; }
+  .beat p { margin: 0; font-size: 1.02rem; line-height: 1.65; }
+  .beat .pt {
+    margin-top: .5rem; font-size: .85rem; color: var(--ink-2);
+    border-left: 2px solid var(--hair); padding-left: .7rem;
+  }
+  .beat .pt b { color: var(--ink); font-weight: 600; }
+  .speak-note {
+    font-family: var(--mono); font-size: .74rem; color: var(--muted);
+    border: 1px dashed var(--hair); border-radius: 3px; padding: .5rem .7rem;
+    max-width: 44rem; margin-bottom: 1.5rem;
+  }
+  /* excerpt from the formulation doc */
+  blockquote.doc {
+    margin: 0; padding: .75rem 1rem; background: var(--surface);
+    border: 1px solid var(--hair); border-radius: 3px;
+    font-family: var(--serif); font-size: .96rem; color: var(--ink);
+  }
+  blockquote.doc .src {
+    display: block; font-family: var(--mono); font-size: .68rem; letter-spacing: .06em;
+    text-transform: uppercase; color: var(--muted); margin-bottom: .35rem;
+  }
+  .versus { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin: 1.25rem 0; max-width: 48rem; }
+  @media (max-width: 44rem) { .versus { grid-template-columns: 1fr; } }
+  .action {
+    font-family: var(--mono); font-size: .95rem; text-align: center;
+    background: var(--surface); border: 1px solid var(--hair); border-radius: 3px;
+    padding: .9rem; margin: 1.25rem 0; max-width: 44rem; color: var(--ink);
+  }
+  .action em { color: var(--muted); font-style: normal; font-size: .78rem; display: block; margin-top: .35rem; }
+  ol.findings { list-style: none; counter-reset: f; padding: 0; max-width: 42rem; }
+  ol.findings li { counter-increment: f; margin: 0 0 1.1rem; padding-left: 2.6rem; position: relative; }
+  ol.findings li::before {
+    content: "F" counter(f); position: absolute; left: 0; top: .1rem;
+    font-family: var(--mono); font-size: .72rem; font-weight: 600; color: var(--accent);
+    border: 1px solid var(--hair); border-radius: 2px; padding: .05rem .3rem; background: var(--surface);
+  }
+  ul.plain { max-width: 42rem; padding-left: 1.1rem; }
+  ul.plain li { margin-bottom: .5rem; }
+  .callout {
+    border: 1px solid var(--hair); border-left: 2px solid var(--accent);
+    background: var(--surface); border-radius: 0 3px 3px 0;
+    padding: 1rem 1.15rem; margin: 1.5rem 0; max-width: 44rem;
+  }
+  .callout p:last-child { margin-bottom: 0; }
+  .gap { display: flex; gap: .75rem; align-items: baseline; margin-bottom: .8rem; max-width: 42rem; }
+  .gap .n { font-family: var(--mono); font-size: .75rem; color: var(--muted); flex: none; padding-top: .1rem; }
+  #tip {
+    position: fixed; pointer-events: none; opacity: 0; transition: opacity .1s;
+    background: var(--ink); color: var(--ground); font-family: var(--mono);
+    font-size: .72rem; padding: .3rem .5rem; border-radius: 3px; z-index: 9;
+    font-variant-numeric: tabular-nums; white-space: nowrap;
+  }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+
+<div id="tip"></div>
+<div class="wrap">
+
+<header>
+  <p class="eyebrow">Research status · BLIS simulator</p>
+  <h1>Does EDPP actually beat trivial heuristics?</h1>
+  <p class="lede">A policy study of joint prefill/decode routing on a fixed disaggregated
+  topology. This page reports what we ran, what we found, and — explicitly — what we have
+  not yet established.</p>
+  <div class="meta">
+    <span>2026-07-17</span>
+    <span>branch feat/edpp-estimator-validation</span>
+    <span>4 merged plans · all reviewed</span>
+    <span>every number reproducible</span>
+  </div>
+</header>
+
+<h2>The bottom line</h2>
+<div class="prose">
+<p>The <strong>shipped full rule is the best arm in 0 of 12 tested cells</strong>. Everywhere it is
+dominated by one of its <em>own</em> ablated subsets — strip a term out and the rule gets better.
+We now know term-by-term <em>why</em>, and every failure we found has a single cause.</p>
+</div>
+
+<blockquote class="doc" style="max-width:44rem; border-left:2px solid var(--accent)">
+  <span class="src">The unifying finding — measured, not argued</span>
+  Every term in the rule prices the <strong>deciding request's own experience</strong>. The one term
+  that prices the effect on <em>others</em> — the congestion drift — does it in the wrong currency:
+  <strong>work, not value-at-risk</strong>.
+</blockquote>
+
+<div class="prose">
+<p>Four independent experiments converge on that sentence — the decode-bound veto, the prefill-bound
+collapse, the Type-A/B workload failure, and the SLO-class backfire. There <em>is</em> a genuine
+positive: in the <strong>prefill-bound</strong> regime the optimum is an <em>interior</em> split and
+EDPP finds it dynamically (0.917 vs 0.604 for the best static plan). Ablation shows that win is
+delivered <strong>entirely by the congestion-drift term</strong> — the drift structure is the part
+worth keeping. The full apparatus around it is not.</p>
+</div>
+
+<div class="tiles">
+  <div class="tile">
+    <div class="k">EDPP's best result</div>
+    <div class="v" style="color:var(--s4)">0.917</div>
+    <div class="d">goodput on prefill-bound overload, vs <b>0.604</b> for the best static split and
+    <b>0.108 / 0.033</b> for the two corners. Robust across 3 seeds.</div>
+  </div>
+  <div class="tile">
+    <div class="k">Shipped rule's win rate</div>
+    <div class="v" style="color:var(--s3)">0 / 12</div>
+    <div class="d">the full rule is the best arm in <b>zero of twelve</b> tested cells — dominated
+    everywhere by one of its own ablated subsets, on both the reduced and joint paths.</div>
+  </div>
+  <div class="tile">
+    <div class="k">llm-d shipped scorer</div>
+    <div class="v" style="color:var(--s1)">6.6×</div>
+    <div class="d">goodput lost to a production default that pins <b>all</b> decode traffic onto
+    one instance. A finding about a shipped config, not our bug.</div>
+  </div>
+</div>
+
+<h2>How we got here</h2>
+<p class="speak-note">Ten beats, in order. Each one is the reason the next one happened.
+Written to be read aloud.</p>
+
+<div class="arc">
+
+  <div class="beat">
+    <div class="num">01</div>
+    <div>
+      <h3>The policy wasn't beating the simple alternatives</h3>
+      <p>We built EDPP and tested it on identical hardware. It didn't beat “always disaggregate.”
+      Our read was that a smart policy should earn its keep when the hardware is <em>unequal</em>,
+      because knowing one server is faster is exactly the thing a naive rule cannot know.</p>
+      <p class="pt"><b>So:</b> go build hardware heterogeneity and test there.</p>
+    </div>
+  </div>
+
+  <div class="beat">
+    <div class="num">02</div>
+    <div>
+      <h3>We couldn't test that, so we built it first</h3>
+      <p>The simulator could <em>describe</em> per-GPU hardware but never actually applied it. The
+      setting was documented and never wired up. We wired it, and confirmed two decode servers now
+      run at genuinely different speeds — a 4.3× latency gap between them.</p>
+      <p class="pt"><b>Delivered:</b> the first of four merged, reviewed code changes.</p>
+    </div>
+  </div>
+
+  <div class="beat">
+    <div class="num">03</div>
+    <div>
+      <h3>First real test: there was headroom, and EDPP took it</h3>
+      <p>With one fast and one slow server, the best possible routing scored 1.0. The best
+      hardware-blind policy managed 0.77. EDPP got 0.97. But the test was too easy. The fast server
+      could serve everything, so “use the fast one” was the whole answer.</p>
+      <p class="pt"><b>So:</b> make it harder, where the answer isn't trivial.</p>
+    </div>
+  </div>
+
+  <div class="beat">
+    <div class="num">04</div>
+    <div>
+      <h3>We made it harder, and EDPP fell behind</h3>
+      <p>We saturated the fast server, so the best split was about 86 percent to the fast one and
+      14 to the slow. Every policy, EDPP included, settled at 77 percent and left goodput on the
+      table. They all balance queues. The optimum deliberately <em>overloads</em> the fast server,
+      because it drains quicker.</p>
+      <p class="pt"><b>So:</b> give EDPP the hardware model itself, so it can weigh the fast server properly.</p>
+    </div>
+  </div>
+
+  <div class="beat">
+    <div class="num">05</div>
+    <div>
+      <h3>That made it worse</h3>
+      <p>With per-instance hardware coefficients, EDPP over-corrected. It shoved 95 to 97 percent
+      onto the fast server and goodput collapsed below the policies it was supposed to beat. We had
+      added fidelity and lost performance.</p>
+      <p class="pt"><b>So:</b> stop adding machinery. Something upstream is wrong.</p>
+    </div>
+  </div>
+
+  <div class="beat">
+    <div class="num">06</div>
+    <div>
+      <h3>We stopped and asked what EDPP is actually optimizing</h3>
+      <p>The answer was uncomfortable. Its SLO targets are constraints, not goals. The only thing it
+      minimizes is the cost of moving the KV cache. Under overload those constraints can't be met, so
+      that objective is meaningless — you're missing deadlines either way. Worse, its internal queues
+      accumulate lateness, so it keeps spending capacity on requests that already missed and can never
+      count. Goodput doesn't work like that. Once a request misses, more effort on it is worth zero.</p>
+      <p class="pt"><b>So:</b> the question isn't “which term do we add.” It's whether routing is the lever at all.</p>
+    </div>
+  </div>
+
+  <div class="beat">
+    <div class="num">07</div>
+    <div>
+      <h3>We mapped where routing even matters</h3>
+      <p>On identical hardware with identical requests, it doesn't. The naive corner is already
+      optimal and no policy can beat it. Along the way we found something separate and useful —
+      llm-d's shipped router pins every decode request onto a single server, costing 6.6× goodput.
+      That's a finding about a production default, not about our policy.</p>
+      <p class="pt"><b>So:</b> sweep the whole workload spectrum and find the regime where routing is real.</p>
+    </div>
+  </div>
+
+  <div class="beat">
+    <div class="num">08</div>
+    <div>
+      <h3>We found where EDPP genuinely wins — then found it wasn't the machinery</h3>
+      <p>Across the spectrum, the winning naive rule <em>flips</em>. On prefill-heavy overload the
+      best split is an interior one, and EDPP finds it dynamically — 0.917 against 0.604 for the best
+      fixed plan. That's real and it holds across seeds. Then we built a one-line baseline —
+      disaggregate if the predicted latency is lower, with none of EDPP's machinery — and it captures
+      most of the win, and under extreme overload it <em>appears</em> to beat EDPP six to one — though
+      we later trace most of that gap to a transfer-cost artifact, not real robustness (see “Two
+      confounds we ruled out”).</p>
+      <p class="pt"><b>So:</b> don't ask “is EDPP better” — ask <em>which term is doing the work</em>.
+      Turn them off one at a time.</p>
+    </div>
+  </div>
+
+  <div class="beat">
+    <div class="num">09</div>
+    <div>
+      <h3>We ablated the rule term by term — and found the currency error</h3>
+      <p>The full rule wins in <strong>none</strong> of twelve cells. The congestion-drift term alone
+      delivers the whole prefill-bound win — and also causes the overload collapse. The SLO virtual
+      queues (<em>z</em>) help a little on prefill-heavy work but <em>hurt</em> decode-bound badly:
+      they price disaggregation's cost while blind to the decode capacity it buys, so they veto the
+      right answer. And the transfer cost — the one thing the rule officially minimizes — is four
+      orders of magnitude too small to move any decision.</p>
+      <p class="pt"><b>The pattern:</b> every term prices the deciding request's <em>own</em>
+      experience. The one externality term prices it in work, not value. So under overload it balances
+      two hopeless queues instead of protecting the requests still in reach.</p>
+    </div>
+  </div>
+
+  <div class="beat">
+    <div class="num">10</div>
+    <div>
+      <h3>We turned on the two things we'd never tested — both failed the same way</h3>
+      <p>SLO classes were supposed to be EDPP's home turf, the one axis a class-blind rule can't
+      touch. Giving EDPP per-class targets made critical goodput <em>worse</em>: deprioritising a
+      class doesn't make it yield capacity, it makes it selfish. And joint routing — the project's
+      central thesis, EDPP choosing the decode instance itself instead of the scorer — was a wash. It
+      fixed none of the failures. Handed control of the decode choice on the mixed workload, the
+      work-currency drift routed <em>worse</em> than plain load balancing.</p>
+      <p class="pt"><b>Where that leaves us:</b> three heterogeneity axes tested, all three failed for
+      the same reason. The formulation's coupling argument is real but second-order. One idea remains
+      untested — change what the drift term measures — and one honest experiment can settle it.</p>
+    </div>
+  </div>
+
+</div>
+
+<h2>Why we built a joint rule at all</h2>
+<div class="prose">
+<p>The design starts from one claim: <strong>routing and deciding are the same problem, and the
+system currently splits them.</strong> Today two mechanisms run in sequence — a scorer picks the
+decode instance, then a separate decider chooses whether to prefill locally or disaggregate. The
+formulation folds them into a single action.</p>
+</div>
+
+<div class="action">
+  a<sub>r</sub> = ( d<sub>r</sub> , p<sub>r</sub> ) &nbsp;&nbsp; where &nbsp; p<sub>r</sub> ∈ prefill-nodes ∪ { local }
+  <em>“local” is just another prefill location — so “disaggregate?” becomes a coordinate of “which instance?”</em>
+</div>
+
+<div class="prose">
+<p>The split is lossy because the two decisions are <strong>coupled</strong>, in both directions:</p>
+</div>
+<ul class="plain">
+  <li>The <strong>value of disaggregating depends on which decode instance</strong> you picked.
+  Offloading prefill helps a congested decode instance far more than an idle one.</li>
+  <li>The <strong>best decode instance depends on whether you will disaggregate</strong>. If you
+  will, pick on decode capacity alone — that instance never prefills. If you won't, pick on combined
+  prefill <em>and</em> decode capacity. Those can be different instances.</li>
+</ul>
+<div class="prose">
+<p>So a decomposed pipeline picks the instance blind to the split, then picks the split blind to the
+instances it could have chosen. The joint rule evaluates every <em>(instance, split)</em> pair
+together. Because it optimizes over a superset of the same objective, it is <strong>provably no
+worse</strong> than the reduced form; what it costs is compute and llm-d scorer parity.</p>
+</div>
+
+<blockquote class="doc" style="max-width:44rem">
+  <span class="src">Formulation §5.5 — on the reduced rule we actually shipped</span>
+  “Fixing <em>d</em> externally is exactly the loss the joint formulation removes… the pairwise rule
+  cannot see that a <em>different</em> decode node would have made disaggregation unnecessary.”
+  The reduction is “a deployment choice…, not a mathematical necessity.”
+</blockquote>
+
+<div class="callout">
+  <p><strong>The uncomfortable consequence — and how it resolved.</strong> For most of this study
+  every experiment used the <em>reduced</em> rule — the scorer-chosen slice — measuring the very
+  decomposition the formulation was written to replace. That was the study's biggest gap, so we
+  finally switched the joint mechanism on and re-ran the ablation. The result is below: joint routing
+  is <strong>a wash</strong>. The coupling this section argues for is real, but second-order — it is
+  not what is holding EDPP back.</p>
+</div>
+
+<h2>What EDPP optimizes</h2>
+<div class="prose">
+<p>EDPP is a Lyapunov drift-plus-penalty policy. In that framework the <strong>penalty</strong> is
+the objective you minimize, and constraints are enforced by virtual queues that accumulate
+violation. Which is which matters enormously, and it is easy to get backwards. The formulation
+states the problem the rule is derived from:</p>
+</div>
+
+<blockquote class="doc" style="max-width:44rem">
+  <span class="src">Formulation §5.1 — the problem the decision rule minimizes</span>
+  “Write g(t) for the operating cost we would rather avoid — here the <strong>transfer /
+  KV-movement cost</strong> incurred by disaggregation… minimize its time average subject to
+  stability <strong>and the SLO constraints</strong>.”
+</blockquote>
+
+<div class="prose" style="margin-top:1rem">
+<p>So the SLO targets are <strong>constraints</strong>, carried as virtual queues. The single thing
+being minimized is the transfer cost. Its three terms:</p>
+</div>
+
+<div class="scroll">
+<table>
+  <thead><tr><th>Term</th><th style="text-align:left">What it is</th><th style="text-align:left">Kind</th></tr></thead>
+  <tbody>
+    <tr><td class="name">q<sub>i</sub> · Δwork<sub>i</sub></td><td class="name" style="text-align:left">per-instance backlog</td><td class="name" style="text-align:left"><b>drift</b> — enforces throughput stability</td></tr>
+    <tr><td class="name">z<sub>ttft</sub> · T̂/τ , z<sub>itl</sub> · (…)/τ</td><td class="name" style="text-align:left">virtual queues for the TTFT / ITL SLOs</td><td class="name" style="text-align:left"><b>drift</b> — enforces the SLO <em>constraints</em></td></tr>
+    <tr><td class="name">V · c<sub>xfer</sub></td><td class="name" style="text-align:left">the KV-transfer cost</td><td class="name" style="text-align:left"><b>penalty</b> — the only thing minimized</td></tr>
+  </tbody>
+</table>
+</div>
+
+<div class="callout">
+  <p><strong>Read plainly, the implemented rule's posture is:</strong> <em>“disaggregate as little
+  as possible, subject to holding the SLOs and keeping the queues stable.”</em></p>
+  <p style="margin-top:.6rem">That is coherent when the SLOs are feasible. Under overload the
+  constraints are <strong>infeasible</strong> — no policy can hold them, the virtual queues grow
+  without bound, the theoretical guarantee is void, and “minimize transfers” is beside the point
+  because you are missing the deadline either way. Worse, the queues accumulate <em>lateness</em>,
+  so the policy keeps spending capacity on requests that already missed and can never count toward
+  goodput. Goodput saturates; this surrogate does not, so it cannot triage — it keeps rewarding
+  progress on hopeless requests instead of protecting the ones still in reach.</p>
+  <p style="margin-top:.6rem">This is our leading explanation for the collapse in Figure 3. The
+  candidate correction is a <strong>saturating, goodput-faithful objective</strong> — a value that
+  is flat-high before the deadline and stops decaying after — rather than another term bolted onto
+  the rule. <strong>We have not done this.</strong> Every number on this page uses the implemented
+  transfer-cost objective.</p>
+</div>
+
+<h2>How we measure a policy</h2>
+<div class="prose">
+<p><strong>Goodput</strong> — the fraction of completed requests meeting all their SLO dimensions
+— because it is what an operator is graded on. We compare five policies on a <strong>fixed 1P2D
+topology</strong> (one prefill server, two decode servers). The operator picks the topology; the
+policy only routes. Comparing across topologies would answer a provisioning question instead.</p>
+<p>The SLO is set per workload from an idle probe, so goodput is comparable across archetypes with
+very different intrinsic latency. Concurrency is capped to force saturation at reachable rates —
+with the default cap nothing queues and every policy scores a meaningless 1.000.</p>
+</div>
+
+<div class="scroll">
+<table>
+  <thead><tr><th>Policy</th><th style="text-align:left">Rule</th></tr></thead>
+  <tbody>
+    <tr><td class="name"><span class="swatch" style="background:var(--s1)"></span> never</td><td class="name" style="text-align:left">never disaggregate — prefill runs on the decode instance, leaving the prefill server idle</td></tr>
+    <tr><td class="name"><span class="swatch" style="background:var(--s2)"></span> always</td><td class="name" style="text-align:left">always disaggregate — uses all servers. <em>llm-d's shipped prefix-threshold degenerates to this on these workloads</em></td></tr>
+    <tr><td class="name"><span class="swatch" style="background:var(--s3)"></span> least-ttft</td><td class="name" style="text-align:left">disaggregate iff predicted TTFT is lower — <strong>EDPP's estimator with the drift, virtual queues and V removed</strong></td></tr>
+    <tr><td class="name"><span class="swatch" style="background:var(--s4)"></span> edpp</td><td class="name" style="text-align:left">the full drift-plus-penalty rule</td></tr>
+  </tbody>
+</table>
+</div>
+
+<h2>Figure 1 — the corner flips across the workload spectrum</h2>
+<figure>
+  <div class="card">
+    <p class="fig-title">Goodput by workload archetype, at each archetype's saturating rate</p>
+    <p class="fig-sub">Fixed 1P2D · decode load-balanced · seed 42 · higher is better</p>
+    <div class="legend" id="lg1"></div>
+    <div class="scroll"><svg id="fig1" viewBox="0 0 760 300" role="img" aria-label="Grouped bar chart of goodput by archetype and policy"></svg></div>
+  </div>
+  <figcaption><strong>always</strong> (green) wins the decode-bound and mixed archetypes;
+  <strong>never</strong> (blue) beats it on both prefill-heavy ones — the corner flips. On
+  prefill-bound, <strong>edpp</strong> and <strong>least-ttft</strong> leave every corner far behind.
+  <div class="cmd"><b>bash campaigns/edpp-study/repro_spectrum.sh</b></div>
+  </figcaption>
+</figure>
+
+<h2>Figure 2 — the optimum is interior, and dynamic routing beats it</h2>
+<figure>
+  <div class="card">
+    <p class="fig-title">Goodput vs the fraction of requests disaggregated</p>
+    <p class="fig-sub">prefill-bound (16000 in / 16 out) · rate 8 · seed 42 · f=0 is “never”, f=100 is “always”</p>
+    <div class="scroll"><svg id="fig2" viewBox="0 0 760 330" role="img" aria-label="Line chart of goodput versus disaggregation fraction with an interior maximum"></svg></div>
+  </div>
+  <figcaption>Forcing a fixed plan and sweeping the disaggregated fraction shows a peak at
+  <strong>f=35 → 0.604</strong>, well above both corners (0.108, 0.033). So neither corner is
+  optimal and routing genuinely matters here. Both dynamic policies clear the best <em>static</em>
+  split — <strong>edpp 0.917</strong>, least-ttft 0.854 — by spreading the bottleneck prefill work
+  across all three servers using live congestion, which no static plan can do.
+  <div class="cmd"><b>MODE=oracle ARCH=prefill_bound RATE=8 bash campaigns/edpp-study/repro_spectrum.sh</b></div>
+  </figcaption>
+</figure>
+
+<h2>Figure 3 — but the machinery is not what wins</h2>
+<figure>
+  <div class="card">
+    <p class="fig-title">least-ttft vs edpp, moderate overload and extreme overload</p>
+    <p class="fig-sub">prefill-bound · bars are the mean of 3 seeds · dots are individual seeds (42, 7, 123)</p>
+    <div class="legend" id="lg3"></div>
+    <div class="scroll"><svg id="fig3" viewBox="0 0 760 290" role="img" aria-label="Grouped bar chart comparing least-ttft and edpp at two load levels"></svg></div>
+  </div>
+  <figcaption>At rate 8 the two are close (edpp edges ahead on 2 of 3 seeds). At rate 16
+  <strong>edpp collapses to 0.06 while least-ttft holds 0.40</strong> — every seed.
+  <strong style="color:var(--s1)">Correction:</strong> that 0.40 is an artifact of the flat 5&nbsp;ms
+  transfer cost. With the real size-based transfer (~53&nbsp;ms here), least-ttft collapses too
+  (0.40&nbsp;→&nbsp;0.10) — it was under-charging transfers and over-disaggregating by luck. See “Two
+  confounds we ruled out.” The <em>drift-only</em> arm is unaffected (it never uses the transfer cost).
+  <div class="cmd">for r in 8 16; do for s in 42 7 123; do
+  <b>SEED=$s MODE=oracle ARCH=prefill_bound RATE=$r FRACS=35 bash campaigns/edpp-study/repro_spectrum.sh</b>
+done; done</div>
+  </figcaption>
+</figure>
+
+<h2>The ablation — which term earns its keep</h2>
+<div class="prose">
+<p>We turned the rule's terms off one at a time, reachable from config alone: <span
+style="font-family:var(--mono);font-size:.85em">--edpp-v 0</span> zeroes the transfer penalty,
+<span style="font-family:var(--mono);font-size:.85em">--edpp-tau-ttft 999s</span> makes the TTFT
+constraint unviolatable so its virtual queue stays flat at zero. <strong>drift-only</strong> is pure
+congestion drift; <strong>drift+z</strong> adds the SLO queues; <strong>full</strong> adds the
+transfer penalty. The integrity of each arm is confirmed from the decision trace.</p>
+</div>
+<div class="scroll">
+<table>
+  <caption>Goodput, mean of 3 seeds (42, 7, 123). Bold = best arm in the row. Four ceiling cells omitted.</caption>
+  <thead><tr><th>Archetype</th><th>rate</th><th>least-ttft</th><th>drift-only</th><th>drift+z</th><th>full</th></tr></thead>
+  <tbody>
+    <tr><td class="name">decode</td><td>8</td><td>0.133</td><td class="win">0.267</td><td>0.135</td><td>0.133</td></tr>
+    <tr><td class="name">decode</td><td>12</td><td>0.133</td><td class="win">0.237</td><td>0.135</td><td>0.133</td></tr>
+    <tr><td class="name">decode</td><td>16</td><td>0.133</td><td class="win">0.233</td><td>0.137</td><td>0.133</td></tr>
+    <tr><td class="name">mixed</td><td>16</td><td>0.750</td><td class="win">0.803</td><td>0.747</td><td>0.708</td></tr>
+    <tr><td class="name">prefill-lean</td><td>16</td><td>0.754</td><td>0.696</td><td class="win">0.793</td><td>0.771</td></tr>
+    <tr><td class="name">prefill-bound</td><td>8</td><td>0.904</td><td class="win">0.971</td><td>0.921</td><td>0.925</td></tr>
+    <tr><td class="name">prefill-bound</td><td>12</td><td class="win">0.492</td><td>0.264</td><td>0.408</td><td>0.414</td></tr>
+    <tr><td class="name">prefill-bound</td><td>16</td><td class="win">0.397</td><td>0.061</td><td>0.062</td><td>0.064</td></tr>
+  </tbody>
+</table>
+</div>
+<div class="cmd" style="max-width:44rem"><b>MODE=ablate RATES="8 12 16" SEEDS="42 7 123" bash campaigns/edpp-study/repro_spectrum.sh</b></div>
+<div class="callout">
+  <p><strong>Read the columns.</strong> The <strong>full</strong> rule never wins a row.
+  <strong>drift-only</strong> is both the win (decode-bound, prefill-bound rate 8) and the collapse
+  (prefill-bound rate ≥12: 0.264 vs least-ttft's 0.492). <strong>z</strong> flips sign by archetype —
+  it hurts decode-bound by −0.110 and helps prefill-heavy by ~+0.03. And the transfer penalty is
+  numerically invisible: <span style="font-family:var(--mono)">max|transfer| = 0.0008</span> against
+  a TTFT term of <span style="font-family:var(--mono)">25.7</span>. Removing it slightly <em>helps</em>.</p>
+</div>
+
+<h2>The two axes we had never tested</h2>
+<div class="prose">
+<p>SLO classes and joint routing were the study's two biggest open gaps — and the two most likely to
+rescue EDPP. Both are now measured. Both failed the same way.</p>
+</div>
+
+<h3>SLO classes — EDPP's supposed home turf</h3>
+<div class="prose">
+<p>50% critical + 50% batch, <em>identical</em> request sizes so any win is attributable to the class
+machinery alone. We compare EDPP with a single shared target against EDPP with per-class targets.
+Critical-class goodput (batch = 1.000 throughout):</p>
+</div>
+<div class="scroll">
+<table>
+  <caption>prefill-bound 16000/16, rate 10. Higher is better for the critical class.</caption>
+  <thead><tr><th>Seed</th><th>never</th><th>always</th><th>least-ttft</th><th>edpp single-τ</th><th>edpp per-class τ</th></tr></thead>
+  <tbody>
+    <tr><td class="name">42</td><td>0.163</td><td>0.039</td><td>0.581</td><td class="win">0.884</td><td>0.752</td></tr>
+    <tr><td class="name">7</td><td>—</td><td>—</td><td>0.636</td><td class="win">0.836</td><td>0.891</td></tr>
+    <tr><td class="name">123</td><td>—</td><td>—</td><td>0.456</td><td class="win">0.856</td><td>0.800</td></tr>
+    <tr><td class="name">mean</td><td>—</td><td>—</td><td>0.558</td><td class="win">0.859</td><td>0.814</td></tr>
+  </tbody>
+</table>
+</div>
+<div class="prose" style="margin-top:1rem">
+<p>Per-class targets made critical goodput <strong>worse</strong> (0.859 → 0.814). The machinery did
+exactly what it was designed to do — batch's SLO queue went to exactly zero, prefill-server access
+shifted from batch (55%→29%) to critical (27%→43%) — and critical still lost, while the deprioritised
+class got <em>faster</em> (e2e 3424→1879 ms). <strong>Routing cannot sacrifice a class:</strong>
+lowering a class's target doesn't make it yield capacity, it makes it grab the cheapest contended
+resource.</p>
+</div>
+
+<h3>Joint routing — the project's central thesis</h3>
+<div class="prose">
+<p>In joint mode EDPP enumerates every <em>(decode, prefill)</em> pair and picks the argmin itself,
+overriding the scorer. This is the mechanism the whole formulation was built around, and it had never
+been exercised. We re-ran the ablation with joint on. Reduced → JOINT, mean of 3 seeds:</p>
+</div>
+<div class="scroll">
+<table>
+  <caption>Goodput, reduced → joint. ↑ helped, ↓ hurt. It helps three cells, hurts four. A wash.</caption>
+  <thead><tr><th>Archetype</th><th>rate</th><th>drift-only</th><th>drift+z</th><th>full</th></tr></thead>
+  <tbody>
+    <tr><td class="name">decode</td><td>12</td><td class="win">0.237 → 0.296 ↑</td><td>0.135 → 0.136</td><td>0.133 → 0.133</td></tr>
+    <tr><td class="name">mixed</td><td>16</td><td>0.803 → 0.681 ↓</td><td>0.747 → 0.724 ↓</td><td>0.708 → 0.626 ↓</td></tr>
+    <tr><td class="name">prefill-lean</td><td>16</td><td>0.696 → 0.679</td><td>0.793 → 0.728 ↓</td><td>0.771 → 0.711 ↓</td></tr>
+    <tr><td class="name">prefill-bound</td><td>8</td><td class="win">0.971 → 0.992 ↑</td><td class="win">0.921 → 0.954 ↑</td><td class="win">0.925 → 0.953 ↑</td></tr>
+    <tr><td class="name">prefill-bound</td><td>16</td><td>0.061 → 0.062</td><td class="win">0.062 → 0.161 ↑</td><td class="win">0.064 → 0.161 ↑</td></tr>
+  </tbody>
+</table>
+</div>
+<div class="cmd" style="max-width:44rem"><b>JOINT=1 MODE=ablate RATES="8 12 16" SEEDS="42 7 123" bash campaigns/edpp-study/repro_spectrum.sh</b></div>
+<div class="callout">
+  <p><strong>Joint fixes none of the three diagnosed failures.</strong> The decode-bound veto survives
+  (joint full = 0.133 = <em>never</em>). The overload collapse survives (0.161 vs least-ttft's 0.397).
+  The full rule still wins nowhere. The sharpest evidence: on <em>mixed</em>, joint's only gift is that
+  EDPP picks the decode instance instead of the scorer — and handed that control, the work-currency
+  drift routes <strong>worse than plain load balancing</strong> (0.803 → 0.681). Choosing (d, p)
+  jointly in the wrong currency is still choosing in the wrong currency.</p>
+</div>
+
+<h2>Two confounds we ruled out</h2>
+<div class="prose">
+<p>Before trusting the diagnosis, we checked two things a skeptic could blame instead of the currency:
+bad output-length estimates, and a mispriced transfer cost. Neither rescues EDPP — and the second
+retires an earlier claim of our own.</p>
+</div>
+
+<h3>Output-length oracle — not the cause</h3>
+<div class="prose">
+<p>We fed the rule each request's <em>true</em> output length instead of the running estimate
+(<span style="font-family:var(--mono);font-size:.85em">--edpp-oracle-output-len</span>, a diagnostic
+upper bound). It's a near-no-op: the prefill-bound collapse is byte-identical and the decode-bound veto
+doesn't move. The reason is that every archetype here has a <em>constant</em> output length, so the
+estimate already converges to the truth — there's little error to remove. So output-length estimation
+is not what breaks EDPP (a variable-output workload would be needed to stress that dimension at all).</p>
+</div>
+
+<h3>Transfer cost — a real bug in our own baseline</h3>
+<div class="prose">
+<p>The decider assumed a <strong>flat 5&nbsp;ms</strong> transfer cost, but the simulator actually
+executes a <strong>size-based</strong> KV transfer (∝ prefill tokens) and charges it to the request's
+TTFT. Measured, the flat constant is only coincidentally right for one archetype:</p>
+</div>
+<div class="scroll">
+<table>
+  <caption>Real KV-transfer duration (measured from the DES) vs the flat decision-time c_xfer.</caption>
+  <thead><tr><th>archetype</th><th>prefill tokens</th><th>real transfer</th><th>flat c_xfer</th><th>error</th></tr></thead>
+  <tbody>
+    <tr><td class="name">decode</td><td>256</td><td>1.1 ms</td><td>5 ms</td><td>4.5× too big</td></tr>
+    <tr><td class="name">mixed</td><td>2048</td><td>7.0 ms</td><td>5 ms</td><td class="name">~right</td></tr>
+    <tr><td class="name">prefill-lean</td><td>8192</td><td>27.1 ms</td><td>5 ms</td><td>5.4× too small</td></tr>
+    <tr><td class="name">prefill-bound</td><td>16000</td><td class="win">52.7 ms</td><td>5 ms</td><td class="win">10.5× too small</td></tr>
+  </tbody>
+</table>
+</div>
+<div class="cmd" style="max-width:44rem"><b>CXSIZE=1 MODE=ablate bash campaigns/edpp-study/repro_spectrum.sh</b>  <span style="color:var(--muted)"># --edpp-c-xfer-size-aware</span></div>
+<div class="callout">
+  <p><strong>Correcting it retires our own “5–6×” claim.</strong> With the true transfer cost,
+  <strong>least-ttft</strong>'s apparent robustness under prefill-bound overload collapses
+  (<span style="font-family:var(--mono)">0.397 → 0.101</span>) — it was under-charging transfers and
+  over-disaggregating by luck. But the core diagnosis is untouched: <strong>drift-only is invariant</strong>
+  (it never reads c_xfer), the full rule still wins <strong>0 of 12</strong>, and the decode veto survives
+  the correct <em>smaller</em> cost. The twist that reinforces the currency finding: giving least-ttft the
+  true cost makes it <em>more</em> accurate about its own TTFT and therefore <em>more globally wrong</em> —
+  it declines the disaggregation that would have helped the system.</p>
+</div>
+
+<h2>The llm-d scorer finding</h2>
+<div class="prose">
+<p>Which decode instance a request lands on is chosen by the routing scorer. llm-d's shipped
+profile weights prefix-cache affinity twice as heavily as queue depth. With requests sharing a
+prefix group, that pins <strong>all 240 requests onto a single decode instance</strong> and leaves
+the other idle.</p>
+</div>
+<div class="scroll">
+<table>
+  <caption>Archetype “mixed” (2048 in / 128 out), rate 16. Realized decode allocation across the two decode instances.</caption>
+  <thead><tr><th>Decode scorer</th><th>never</th><th>always</th><th style="text-align:left">Realized split</th></tr></thead>
+  <tbody>
+    <tr><td class="name">llm-d shipped <span style="color:var(--muted)">(precise-prefix-cache:2, queue-depth:1)</span></td><td>0.067</td><td>0.133</td><td class="name" style="text-align:left; color:var(--muted)">i1 = 0 · i2 = 240 &nbsp;← all pinned</td></tr>
+    <tr><td class="name">load-balanced <span style="color:var(--muted)">(queue-depth:1)</span></td><td>0.246</td><td class="win">0.879</td><td class="name" style="text-align:left; color:var(--muted)">i1 = 119 · i2 = 121</td></tr>
+  </tbody>
+</table>
+</div>
+<div class="cmd" style="max-width:44rem"><b>MODE=scorer bash campaigns/edpp-study/repro_spectrum.sh</b></div>
+<div class="prose" style="margin-top:1rem">
+<p>This is not a bug we introduced. It is a property of a shipped production configuration — and it
+means any policy comparison run on the default profile is partly measuring the scorer rather than
+the policy. We hold it fixed for the spectrum and report both setups.</p>
+</div>
+
+<h2>Findings</h2>
+<ol class="findings">
+  <li>llm-d's shipped decode scorer pins all decode traffic onto one instance under a shared prefix group, costing <strong>6.6× goodput</strong>.</li>
+  <li>The optimal naive corner <strong>flips</strong> across the spectrum — <em>always</em> for decode-bound, <em>never</em> for prefill-bound. No fixed heuristic is universally right.</li>
+  <li>On prefill-bound overload the optimum is an <strong>interior</strong> split (f=35 → 0.604), beating both corners. Routing genuinely matters here.</li>
+  <li><strong>EDPP wins big in that regime and it is robust</strong> — 0.917 / 0.917 / 0.942 across seeds, beating both corners and the best static split by ~0.32. A genuine positive result.</li>
+  <li><strong>The shipped full rule is the best arm in 0 of 12 cells</strong> — dominated everywhere by one of its own ablated subsets, on both the reduced and joint paths.</li>
+  <li><strong>The congestion-drift term delivers the entire win — and causes the collapse.</strong> Best in 5 of 8 informative cells, yet the worst arm at prefill-bound rate ≥12 (0.264 vs least-ttft 0.492). One term, both faces.</li>
+  <li><strong>The SLO virtual queue (z) flips sign by archetype</strong> — hurts decode-bound by −0.110, helps prefill-heavy by ~+0.03. It prices disaggregation's TTFT cost while blind to the decode capacity it buys, so on decode-bound it vetoes the right answer and EDPP degenerates to <em>never</em>.</li>
+  <li><strong>The transfer penalty — the stated objective — is numerically invisible</strong> (max 0.0008 vs a TTFT term of 25.7). Removing it slightly helps.</li>
+  <li><strong>Per-class SLO machinery is counterproductive</strong> (critical goodput 0.859 → 0.814). Deprioritising a class doesn't make it yield capacity — it makes it selfish.</li>
+  <li><strong>Joint routing does not rescue EDPP</strong> — a wash that fixes none of the failures. The formulation's coupling argument is real but second-order.</li>
+  <li><strong>The unifying finding:</strong> every term prices the deciding request's own experience; the one externality term prices it in <em>work</em>, not <em>value-at-risk</em>. At moderate load work ≈ value, so drift wins; under overload it balances two hopeless queues instead of protecting the savable. One sentence accounts for F6, F7, F9, F10 and the Type-A/B failure.</li>
+  <li><strong>Output-length estimation is not the cause.</strong> An oracle that feeds the rule the true output length is a near-no-op — the collapse and veto survive. (These constant-output workloads can't stress the estimate; that dimension is still untested on variable output.)</li>
+  <li><strong>least-ttft's overload robustness was a transfer-cost artifact.</strong> The decider under-charged transfers (flat 5&nbsp;ms vs the real ~53&nbsp;ms); priced correctly, least-ttft collapses too (0.397&nbsp;→&nbsp;0.101). drift-only is invariant, the full rule still wins 0/12, and the decode veto is <em>not</em> a transfer-cost artifact.</li>
+</ol>
+<div class="prose" style="margin-top:.5rem">
+<p style="font-size:.9rem; color:var(--ink-2)">(Separately, giving EDPP the hardware model itself — per-instance coefficients — made it <em>worse</em>: it over-corrects, overloading the fast node past the optimum. See beat 05.)</p>
+</div>
+
+<h2>What we have not established</h2>
+<div class="prose"><p>Two of the gaps from the earlier version of this page are now <strong>closed by
+measurement</strong>, not argument: joint routing was exercised (a wash) and SLO-class heterogeneity
+was tested (counterproductive). What still bounds every claim above:</p></div>
+<div class="gap"><span class="n">01</span><span><strong>The value-currency fix is untested.</strong> Every finding points at it — price value-at-risk instead of work — but nothing has measured it. This is the one live idea left, and the honest next experiment.</span></div>
+<div class="gap"><span class="n">02</span><span><strong>The objective was never changed.</strong> The rule still minimizes transfer cost subject to the SLO constraints — a poor surrogate for goodput once those constraints go infeasible. Every number on this page uses the shipped objective.</span></div>
+<div class="gap"><span class="n">03</span><span><strong>The ITL virtual queue never fired.</strong> Measured inter-token latency never approached its target, so half the SLO machinery has been dead throughout — the ablation is of the TTFT queue specifically.</span></div>
+<div class="gap"><span class="n">04</span><span><strong>One topology (1P2D), cap 16.</strong> The concurrency cap is an artificial stressor; without it nothing saturates and every policy scores 1.000. Joint's action set here is only four candidates — a wider pool might give it more to work with.</span></div>
+<div class="gap"><span class="n">05</span><span><strong>The yardstick is a <em>static</em> fraction sweep</strong>, not the true joint hindsight optimum (a MILP, still unbuilt). Most cells are 3 seeds; the prefill-bound rate-12 collapse is bimodal across seeds.</span></div>
+
+<h2>What we recommend next</h2>
+<div class="prose">
+<p>There is exactly <strong>one idea left that could rescue the design</strong>: change what the drift
+term measures. Keep the drift structure — a virtual queue can measure anything — but price
+<strong>value-at-risk</strong> (the marginal goodput destroyed by adding work at an instance) instead
+of raw work. It is computable, and it addresses the collapse, the class backfire, and the Type-A/B
+failure at once, because all three are the same missing externality.</p>
+</div>
+<ul class="plain">
+  <li><strong>Test the ceiling before paying for the machinery — an oracle upper bound.</strong> Read the true output length rather than estimating it (an explicitly oracle-marked, diagnostic-only mode; every number reported as an <em>upper bound</em>, never an achievable policy). If it fails <em>with a perfect oracle</em>, the idea is dead and we've saved the estimator work.</li>
+  <li><strong>Value-at-risk drift plus a saturating utility</strong>, measured against the fixed-plan yardstick across the same archetypes.</li>
+</ul>
+<div class="callout">
+  <p><strong>The trap to watch for.</strong> A saturating utility gives ≈ 0 for doomed requests — which
+  is <em>no signal</em>, so their placement falls to the remaining terms and they grab the cheapest
+  contended resource, reproducing the class failure exactly. Saturation alone gives <strong>neglect,
+  not triage</strong>. Triage needs the doomed to <em>yield</em> capacity — an admission/scheduling
+  lever EDPP does not hold. That is a real boundary on the whole approach, and it should be stated up
+  front, not discovered late.</p>
+</div>
+<div class="prose" style="margin-top:1.25rem">
+<p>The work supports a <strong>characterization</strong> paper today, and a stronger one than “our
+policy wins by X%”: <em>which heterogeneity axes justify adaptive P/D routing, why a principled
+drift-plus-penalty policy is dominated by its own ablated subsets, and the single currency error that
+explains all four failures</em> — plus the llm-d scorer finding, which is independently useful.
+Whether it also becomes a <em>method</em> paper depends entirely on the oracle experiment above.</p>
+</div>
+
+<h2>Verify any of this</h2>
+<div class="cmd" style="max-width:48rem">cd inference-sim &amp;&amp; go build -o blis main.go
+
+<span style="color:var(--muted)"># the scorer finding, the spectrum, the interior optimum</span>
+<b>MODE=scorer bash campaigns/edpp-study/repro_spectrum.sh</b>
+<b>bash campaigns/edpp-study/repro_spectrum.sh</b>
+<b>SCORER=llmd bash campaigns/edpp-study/repro_spectrum.sh</b>
+<b>MODE=oracle ARCH=prefill_bound RATE=8 bash campaigns/edpp-study/repro_spectrum.sh</b>
+
+<span style="color:var(--muted)"># the term ablation — reduced, then the joint path</span>
+<b>MODE=ablate RATES="8 12 16" SEEDS="42 7 123" bash campaigns/edpp-study/repro_spectrum.sh</b>
+<b>JOINT=1 MODE=ablate RATES="8 12 16" SEEDS="42 7 123" bash campaigns/edpp-study/repro_spectrum.sh</b>
+
+<span style="color:var(--muted)"># hardware heterogeneity (also uses joint routing)</span>
+<b>bash campaigns/edpp-study/repro_hetero_hw.sh</b>
+<b>SAT=1 THETA=1 bash campaigns/edpp-study/repro_hetero_hw.sh</b>
+
+<span style="color:var(--muted)"># see WHY a decision was made — per-decision z_ttft, z_itl, every term, lhs/rhs</span>
+<b>./blis run … --trace-level decisions --edpp-decision-trace /tmp/decisions.csv</b></div>
+<div class="prose" style="margin-top:1rem">
+<p>The full write-up, including the methodology rationale for every design choice and the raw tables,
+lives at <span style="font-family:var(--mono);font-size:.85em">campaigns/edpp-study/STUDY_REPORT.md</span>.
+The harness emits its own workload specs, so the commands are self-contained.</p>
+</div>
+
+</div>
+
+<script>
+const F = (id) => document.getElementById(id);
+const tip = F('tip');
+function wireTip(el, text) {
+  el.addEventListener('mousemove', (e) => {
+    tip.textContent = text; tip.style.opacity = 1;
+    tip.style.left = Math.min(e.clientX + 12, innerWidth - tip.offsetWidth - 8) + 'px';
+    tip.style.top = (e.clientY - 30) + 'px';
+  });
+  el.addEventListener('mouseleave', () => { tip.style.opacity = 0; });
+}
+const SVGNS = 'http://www.w3.org/2000/svg';
+const mk = (n, a = {}) => { const e = document.createElementNS(SVGNS, n); for (const k in a) e.setAttribute(k, a[k]); return e; };
+
+const SERIES = [
+  { key: 'never', label: 'never', c: 'var(--s1)' },
+  { key: 'always', label: 'always', c: 'var(--s2)' },
+  { key: 'lt', label: 'least-ttft', c: 'var(--s3)' },
+  { key: 'edpp', label: 'edpp', c: 'var(--s4)' },
+];
+function legend(el, series) {
+  series.forEach(s => {
+    const w = document.createElement('span');
+    w.innerHTML = `<i class="swatch" style="background:${s.c}"></i>${s.label}`;
+    el.appendChild(w);
+  });
+}
+legend(F('lg1'), SERIES);
+legend(F('lg3'), [SERIES[2], SERIES[3]]);
+
+/* ---------- Figure 1: grouped bars ---------- */
+(() => {
+  const data = [
+    { g: 'decode-bound', sub: '256/512 · rate 8', v: { never: .133, always: .271, lt: .133, edpp: .133 } },
+    { g: 'mixed', sub: '2048/128 · rate 16', v: { never: .246, always: .879, lt: .671, edpp: .550 } },
+    { g: 'prefill-lean', sub: '8192/64 · rate 16', v: { never: .467, always: .046, lt: .762, edpp: .771 } },
+    { g: 'prefill-bound', sub: '16000/16 · rate 8', v: { never: .100, always: .033, lt: .854, edpp: .917 } },
+  ];
+  const svg = F('fig1'), W = 760, H = 300, m = { t: 14, r: 12, b: 54, l: 34 };
+  const pw = W - m.l - m.r, ph = H - m.t - m.b;
+  const y = v => m.t + ph - v * ph;
+  [0, .25, .5, .75, 1].forEach(t => {
+    svg.appendChild(mk('line', { x1: m.l, x2: W - m.r, y1: y(t), y2: y(t), class: 'gridline' }));
+    const lb = mk('text', { x: m.l - 7, y: y(t) + 3.5, class: 'axis', 'text-anchor': 'end' });
+    lb.textContent = t.toFixed(2); svg.appendChild(lb);
+  });
+  const gw = pw / data.length, bw = Math.min(26, (gw - 26) / 4);
+  data.forEach((d, i) => {
+    const gx = m.l + i * gw;
+    SERIES.forEach((s, j) => {
+      const v = d.v[s.key];
+      const x = gx + (gw - bw * 4 - 6) / 2 + j * (bw + 2);
+      const h = Math.max(v * ph, 1.5);
+      const r = mk('rect', { x, y: y(v), width: bw, height: h, fill: s.c, class: 'bar', rx: 2 });
+      wireTip(r, `${d.g} · ${s.label} · goodput ${v.toFixed(3)}`);
+      svg.appendChild(r);
+      const t = mk('text', { x: x + bw / 2, y: y(v) - 4, class: 'vlabel', 'text-anchor': 'middle' });
+      t.textContent = v.toFixed(2); svg.appendChild(t);
+    });
+    const gl = mk('text', { x: gx + gw / 2, y: H - 30, class: 'glabel', 'text-anchor': 'middle' });
+    gl.textContent = d.g; svg.appendChild(gl);
+    const sl = mk('text', { x: gx + gw / 2, y: H - 16, class: 'axis', 'text-anchor': 'middle' });
+    sl.textContent = d.sub; svg.appendChild(sl);
+  });
+  svg.appendChild(mk('line', { x1: m.l, x2: W - m.r, y1: y(0), y2: y(0), stroke: 'var(--muted)', 'stroke-width': 1 }));
+})();
+
+/* ---------- Figure 2: fraction sweep ---------- */
+(() => {
+  const pts = [[0,.108],[20,.500],[25,.571],[30,.600],[35,.604],[40,.562],[45,.517],[50,.408],[60,.329],[80,.179],[100,.033]];
+  const svg = F('fig2'), W = 760, H = 330, m = { t: 16, r: 118, b: 46, l: 40 };
+  const pw = W - m.l - m.r, ph = H - m.t - m.b;
+  const x = f => m.l + (f / 100) * pw, y = v => m.t + ph - v * ph;
+  [0, .25, .5, .75, 1].forEach(t => {
+    svg.appendChild(mk('line', { x1: m.l, x2: m.l + pw, y1: y(t), y2: y(t), class: 'gridline' }));
+    const lb = mk('text', { x: m.l - 7, y: y(t) + 3.5, class: 'axis', 'text-anchor': 'end' });
+    lb.textContent = t.toFixed(2); svg.appendChild(lb);
+  });
+  [0, 25, 50, 75, 100].forEach(f => {
+    const lb = mk('text', { x: x(f), y: H - 26, class: 'axis', 'text-anchor': 'middle' });
+    lb.textContent = f + '%'; svg.appendChild(lb);
+  });
+  const ax = mk('text', { x: m.l + pw / 2, y: H - 8, class: 'axis', 'text-anchor': 'middle' });
+  ax.textContent = 'share of requests disaggregated'; svg.appendChild(ax);
+
+  // reference lines for the dynamic policies
+  [{ v: .917, c: 'var(--s4)', t: 'edpp 0.917' }, { v: .854, c: 'var(--s3)', t: 'least-ttft 0.854' }].forEach(r => {
+    svg.appendChild(mk('line', { x1: m.l, x2: m.l + pw, y1: y(r.v), y2: y(r.v), stroke: r.c, 'stroke-width': 2, 'stroke-dasharray': '5 4' }));
+    const lb = mk('text', { x: m.l + pw + 8, y: y(r.v) + 3.5, class: 'vlabel', fill: r.c });
+    lb.textContent = r.t; svg.appendChild(lb);
+  });
+
+  const d = pts.map((p, i) => `${i ? 'L' : 'M'}${x(p[0])},${y(p[1])}`).join(' ');
+  svg.appendChild(mk('path', { d, fill: 'none', stroke: 'var(--s1)', 'stroke-width': 2, 'stroke-linejoin': 'round' }));
+  pts.forEach(p => {
+    const peak = p[0] === 35;
+    const c = mk('circle', { cx: x(p[0]), cy: y(p[1]), r: peak ? 6 : 4, fill: peak ? 'var(--s1)' : 'var(--viz)', stroke: 'var(--s1)', 'stroke-width': 2, class: 'dot' });
+    wireTip(c, `f=${p[0]}% disaggregated · goodput ${p[1].toFixed(3)}`);
+    svg.appendChild(c);
+  });
+  // annotate the interior peak and the two corners
+  const ann = (px, py, txt, anchor, dy) => {
+    const t = mk('text', { x: px, y: py + dy, class: 'vlabel', 'text-anchor': anchor, fill: 'var(--ink)' });
+    t.textContent = txt; svg.appendChild(t);
+  };
+  ann(x(35), y(.604), 'interior optimum 0.604', 'middle', -14);
+  ann(x(0) + 6, y(.108), 'never 0.108', 'start', -10);
+  ann(x(100) - 4, y(.033), 'always 0.033', 'end', -10);
+  const lbl = mk('text', { x: m.l, y: m.t + 4, class: 'vlabel', fill: 'var(--muted)' });
+  lbl.textContent = 'static plans (line) vs dynamic policies (dashed)'; svg.appendChild(lbl);
+})();
+
+/* ---------- Figure 3: overload collapse ---------- */
+(() => {
+  const data = [
+    { g: 'rate 8 — moderate overload', lt: [.854, .883, .975], edpp: [.917, .917, .942] },
+    { g: 'rate 16 — extreme overload', lt: [.375, .433, .383], edpp: [.071, .067, .054] },
+  ];
+  const mean = a => a.reduce((x, y) => x + y, 0) / a.length;
+  const svg = F('fig3'), W = 760, H = 290, m = { t: 14, r: 12, b: 46, l: 34 };
+  const pw = W - m.l - m.r, ph = H - m.t - m.b;
+  const y = v => m.t + ph - v * ph;
+  [0, .25, .5, .75, 1].forEach(t => {
+    svg.appendChild(mk('line', { x1: m.l, x2: W - m.r, y1: y(t), y2: y(t), class: 'gridline' }));
+    const lb = mk('text', { x: m.l - 7, y: y(t) + 3.5, class: 'axis', 'text-anchor': 'end' });
+    lb.textContent = t.toFixed(2); svg.appendChild(lb);
+  });
+  const gw = pw / data.length, bw = 74;
+  data.forEach((d, i) => {
+    const gx = m.l + i * gw + gw / 2;
+    [['lt', SERIES[2], -1], ['edpp', SERIES[3], 1]].forEach(([k, s, side]) => {
+      const mv = mean(d[k]);
+      const x = gx + side * (bw / 2 + 6) - bw / 2;
+      const r = mk('rect', { x, y: y(mv), width: bw, height: Math.max(mv * ph, 1.5), fill: s.c, class: 'bar', rx: 2, opacity: .85 });
+      wireTip(r, `${s.label} · mean ${mv.toFixed(3)} · seeds ${d[k].map(v => v.toFixed(3)).join(', ')}`);
+      svg.appendChild(r);
+      const t = mk('text', { x: x + bw / 2, y: y(mv) - 16, class: 'vlabel', 'text-anchor': 'middle', fill: 'var(--ink)' });
+      t.textContent = mv.toFixed(3); svg.appendChild(t);
+      d[k].forEach(v => {
+        const c = mk('circle', { cx: x + bw / 2, cy: y(v), r: 4.5, fill: 'var(--viz)', stroke: s.c, 'stroke-width': 2, class: 'dot' });
+        wireTip(c, `${s.label} · seed value ${v.toFixed(3)}`);
+        svg.appendChild(c);
+      });
+    });
+    const gl = mk('text', { x: gx, y: H - 22, class: 'glabel', 'text-anchor': 'middle' });
+    gl.textContent = d.g; svg.appendChild(gl);
+  });
+  svg.appendChild(mk('line', { x1: m.l, x2: W - m.r, y1: y(0), y2: y(0), stroke: 'var(--muted)', 'stroke-width': 1 }));
+})();
+</script>

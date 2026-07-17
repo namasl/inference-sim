@@ -441,6 +441,17 @@ func NewClusterSimulator(config DeploymentConfig, requests []*sim.Request, onReq
 			prefillSnapshots := func() []sim.RoutingSnapshot {
 				return cs.buildPoolFilteredSnapshots(PoolRolePrefill)
 			}
+			// Size-aware c_xfer (opt-in): derive per-GPU KV bytes/token from the model config +
+			// prefill TP so EDPP's transfer cost matches the DES executor (pd_events.go). Validated
+			// non-error at construction when PD is enabled (see the KVBytesPerToken guard above).
+			var edppKVBytesPerTok float64
+			if config.EDPPCXferSizeAware {
+				if v, err := latency.KVBytesPerToken(config.ModelConfig, config.EffectivePrefillTP()); err == nil {
+					edppKVBytesPerTok = v
+				} else {
+					logrus.Fatalf("[cluster] EDPP --edpp-c-xfer-size-aware: cannot derive KV bytes/token: %v", err)
+				}
+			}
 			cs.disaggregationDecider = sim.NewEDPPDecider(sim.EDPPConfig{
 				TauTTFTUs:         config.EDPPTauTTFTUs,
 				TauITLUs:          config.EDPPTauITLUs,
@@ -460,6 +471,11 @@ func NewClusterSimulator(config DeploymentConfig, requests []*sim.Request, onReq
 				Joint:             config.EDPPJoint,
 				Rule:              config.EDPPRule,
 				JointTraceEnabled: config.EDPPJoint && config.EDPPJointTrace,
+				OracleOutputLen:   config.EDPPOracleOutputLen,
+				CXferSizeAware:        config.EDPPCXferSizeAware,
+				KVBytesPerTokenPerGPU: edppKVBytesPerTok,
+				XferBandwidthGBps:     config.PDTransferBandwidthGBps,
+				XferBaseUs:            config.PDTransferBaseLatencyMs * 1000.0,
 			}, lm, cs.cacheQueryFn, prefillSnapshots)
 			// Inject the shadow prefill scorer used ONLY to populate the joint divergence
 			// trace's scorer_p (logging-only). It runs a DEDICATED-RNG copy of the prefill

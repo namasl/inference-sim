@@ -90,6 +90,8 @@ type DeploymentConfig struct {
 	EDPPJoint            bool             // when true, EDPP enumerates all (decode, prefill) candidates and picks the drift-plus-penalty argmin (--edpp-joint); false ⇒ reduced fixed-d rule
 	EDPPRule             string           // EDPP reduced-path decision rule: "" / "dpp" (default) | "least-ttft"
 	EDPPJointTrace       bool             // when true (joint mode only), record the per-decision scorer-vs-joint divergence trace (--edpp-joint-trace); pure instrumentation, no routing effect
+	EDPPOracleOutputLen  bool             // DIAGNOSTIC / UPPER-BOUND ONLY (--edpp-oracle-output-len): charge the routed request's OWN decode work with its TRUE output length instead of N̂_out. Violates INV-9; never deployable.
+	EDPPCXferSizeAware   bool             // --edpp-c-xfer-size-aware: EDPP computes c_xfer per request from KV size (mirrors the DES KV-transfer executor), instead of the flat EDPPCXferUs. Deployable (input-only).
 
 	// E/P/D disaggregation configuration (GAP-4, issue #1264).
 	// When EncodeInstances == 0 (default), the encode stage is disabled and the

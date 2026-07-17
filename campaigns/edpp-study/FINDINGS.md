@@ -1279,3 +1279,82 @@ what the terms MEASURE (value-at-risk, externality), not which action set they a
 
 **Caveats.** 1P2D only (|A| = 2 decode x 2 prefill-choices = 4 candidates — a wider pool might give
 joint more to work with). Cap 16. 3 seeds. z_itl inert throughout.
+
+---
+
+## E10 / F12 — Oracle output-length control: `o_r` estimation is NOT the cause (2026-07-17)
+
+**Question.** Is the overload collapse / decode-bound veto an artifact of output-length (`N̂_out`)
+estimation error, rather than the work-vs-value currency (F11)?
+
+**Mechanism.** New flag `--edpp-oracle-output-len` (DIAGNOSTIC / UPPER-BOUND / INV-9-violating):
+substitutes the routed request's TRUE `len(req.OutputTokens)` for the per-class `N̂_out` when charging
+its OWN decode work (`reqNHatOut` → joint `W_d` at `edpp.go:794/875`, and the `qdWork` backlog in
+`OnRoute`). Co-resident remaining stays estimated/censored. Loud CLI warning; off by default (flat path
+byte-identical).
+
+```bash
+ORACLE=1 MODE=ablate RATES="8 12 16" SEEDS="42 7 123" bash campaigns/edpp-study/repro_spectrum.sh
+JOINT=1 ORACLE=1 MODE=ablate RATES="8 12 16" SEEDS="42 7 123" bash campaigns/edpp-study/repro_spectrum.sh
+```
+
+**Result — near-no-op.** Reduced `prefill_bound` byte-identical est vs oracle; joint `full` r16
+0.161 → 0.167; decode veto `full` = 0.133 unmoved; only `drift-only` decode-bound moves +0.02–0.03
+(warmup transient). **Reason:** every archetype has a CONSTANT output length, so `N̂_out` converges to
+the true `o_r` — almost no error to remove.
+
+**F12.** Output-length estimation is not the cause of the collapse or the veto. Closes the "maybe it's
+bad `o_r` estimates" escape hatch. Caveat: these constant-output workloads can't stress the estimate;
+a VARIABLE-output workload is needed to test that dimension (still untested).
+
+---
+
+## E11 / F13 — Size-aware `c_xfer`: `least-ttft`'s overload robustness was a transfer-cost artifact (2026-07-17)
+
+**Question (raised by V.).** The decider assumed a flat `--edpp-c-xfer 5ms`, but the transfer cost
+depends on the KV size moved. Is 5ms wrong, and does it matter?
+
+**The mismatch.** The DES *executes* a size-based KV transfer
+(`sim/cluster/pd_events.go`: `base + blocks·blockSize·kvBytesPerToken / bandwidth`, added to the
+disaggregated request's TTFT), while EDPP *decided* with a flat 5ms. Measured real transfers
+(llama-70b TP4, 25 GB/s, from the DES `--log debug` `duration=` line):
+
+| archetype | prefill tok | real transfer | flat c_xfer | error |
+|-----------|-------------|---------------|-------------|-------|
+| decode 256/512      | 256   | 1.1 ms  | 5 ms | 4.5× too big |
+| mixed 2048/128      | 2048  | 7.0 ms  | 5 ms | ~right |
+| prefill_lean 8192/64| 8192  | 27.1 ms | 5 ms | 5.4× too small |
+| prefill_bound 16000/16 | 16000 | 52.7 ms | 5 ms | 10.5× too small |
+
+**Mechanism.** New flag `--edpp-c-xfer-size-aware` (deployable, input-only): EDPP computes
+`c_xfer = XferBaseUs + ⌈a_r/blockSize⌉·blockSize·KVBytesPerTokenPerGPU / bandwidth` per request
+(`cXferUsFor`, `edpp.go`), mirroring the executor. KVBytesPerToken + bandwidth + base plumbed from the
+cluster config. Applied to BOTH `ttftP` (→ `least-ttft`, `z_ttft`) AND the penalty term. Off by default
+(flat path byte-identical). NOT used by `drift-only` (its decision reduces to `sign(q_d/W*−q_p/W*)`).
+
+```bash
+CXSIZE=1 MODE=ablate RATES="8 12 16" SEEDS="42 7 123" bash campaigns/edpp-study/repro_spectrum.sh
+```
+
+**Result (reduced, mean of 3 seeds), flat → size-aware:**
+
+| archetype | rate | least-ttft | drift-only | drift+z | full |
+|-----------|------|-----------|-----------|---------|------|
+| prefill_bound | 12 | 0.492 → 0.242 | 0.264 → **0.264** | 0.408 → 0.238 | 0.414 → 0.233 |
+| prefill_bound | 16 | **0.397 → 0.101** | 0.061 → **0.061** | 0.062 → 0.065 | 0.064 → 0.065 |
+| mixed         | 16 | 0.750 → 0.368 | 0.803 → **0.803** | 0.747 → 0.410 | 0.708 → 0.417 |
+| decode (veto) | 8  | 0.133 → 0.152 | 0.250 → **0.250** | 0.138 → 0.169 | 0.133 → 0.146 |
+
+`drift-only` is **byte-identical** in every cell (clean invariant check — it never reads `c_xfer`).
+
+**F13.** `least-ttft`'s "5–6× robustness under overload" (E4) was an artifact of under-charged transfer:
+correcting to the true ~53ms collapses it (prefill_bound r16 0.397 → 0.101), closing the gap to
+`drift-only` (0.061) to ~0.04. It was over-disaggregating because disagg looked cheap, landing near the
+interior optimum by luck. **Core diagnosis intact:** `drift-only` invariant, `full` still wins 0/12, and
+the decode veto survives the correct SMALLER cost (so F7 is NOT a `c_xfer` artifact). Reinforces F11:
+true transfer pricing makes `least-ttft` more accurate about its OWN TTFT and thus more globally wrong —
+it declines the disaggregation that helps the system.
+
+**Note on the penalty term (V.'s follow-up).** The anomaly applies to the penalty too
+(`transferPenalty` now takes the per-request `c_xfer`), but per F8 even the 10× scale-up leaves it
+~0.008 vs `z_ttft`'s 25.7 — corrected for honesty, still a non-driver.

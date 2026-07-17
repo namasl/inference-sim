@@ -1,6 +1,6 @@
 # EDPP policy study — what we ran, what we found, what it means
 
-Status as of 2026-07-15. Branch `feat/edpp-estimator-validation` (not pushed).
+Status as of 2026-07-17. Branch `feat/edpp-estimator-validation` (not pushed).
 Every number below is reproducible with a command in this document. If a claim has no
 command, it is marked as an assumption or a gap.
 
@@ -8,43 +8,67 @@ command, it is marked as an assumption or a gap.
 
 ## 1. Executive summary (read this first)
 
-**The question.** We built EDPP, a drift-plus-penalty policy that decides, per request,
-whether to disaggregate prefill and where to route it. The question this study answers is:
-**does EDPP actually beat trivial heuristics on a fixed disaggregated topology, and where?**
+**The question.** We built EDPP, a Lyapunov drift-plus-penalty policy that decides, per request,
+whether to disaggregate prefill and where to route it. Does it beat trivial heuristics on a fixed
+disaggregated topology, and where?
 
-**What we found, in one paragraph.** On a fixed 1P2D topology, which trivial heuristic is
-optimal *flips* across the workload spectrum: `always` disaggregate wins on decode-bound
-workloads, `never` wins on prefill-bound ones. So no fixed heuristic is universally right,
-which is the first real motivation for an adaptive policy. In the **prefill-bound** regime
-under overload, the optimum is an *interior* split (use all three servers for the bottleneck
-prefill work), and **EDPP finds it dynamically and wins big** — goodput 0.917 vs 0.108
-(`never`), 0.033 (`always`), and 0.604 (the best *static* split). That is a genuine, robust
-(3 seeds), and previously-unclaimed positive result for EDPP. **However**, a one-line
-baseline that strips EDPP down to "disaggregate iff predicted TTFT is lower" captures most
-of that win (0.854–0.975), and at extreme overload it *beats* EDPP decisively (0.375–0.433
-vs 0.054–0.071 — EDPP collapses). So the win looks like **dynamic latency-aware routing**,
-not the drift-plus-penalty machinery.
+**The answer, in one line.** **The shipped rule is the best arm in 0 of 12 tested cells** — it is
+dominated everywhere by one of its own ablated subsets. And every failure we found has one cause:
+
+> **Every term in the rule prices the deciding request's own experience. The one term that does
+> price the effect on others (the congestion drift) does it in the wrong currency — work, not
+> value-at-risk.**
+
+Four independent experiments converge on that sentence: the decode-bound veto, the prefill-bound
+collapse, the Type-A/B workload failure, and the SLO-class backfire. It is a mechanistic diagnosis,
+measured term-by-term, not an argument.
+
+**What is genuinely working.** In the *prefill-bound* regime the optimum is an interior split (use
+all three servers for the bottleneck prefill work) and EDPP finds it dynamically: goodput 0.917 vs
+0.108 (`never`), 0.033 (`always`), 0.604 (the best *static* split), robust across seeds. Ablation
+shows this win is delivered **entirely by the congestion-drift term** (rate 10: drift-only 0.765 vs
+`least-ttft` 0.603). The drift structure is the part worth keeping.
+
+**What is not working, and why.**
+- **`z` (the SLO virtual queues) — sign flips by archetype.** It *hurts* decode-bound by −0.110 and
+  helps prefill-heavy by ~+0.03. It prices disaggregation's TTFT cost (the transfer) while blind to
+  the decode capacity disaggregation buys, so on decode-bound it vetoes the right answer and drives
+  EDPP to behave exactly like `never` (0.133 vs `always` 0.271). This explains the long-standing
+  "EDPP under-disaggregates on decode-bound" anomaly.
+- **`V·c_xfer` (the stated objective) is numerically invisible** — `max|transfer_term| = 0.0008` vs
+  a `ttft_term` of 25.7, four orders of magnitude down. It barely moves the rule.
+- **Per-instance θ_i over-corrects**; **per-class targets are counterproductive** (they make the
+  deprioritised class *selfish*, which harms the priority class); **joint routing is a wash**.
+
+**Three hypotheses tested and retired.** (1) Hardware fidelity (θ_i) → made it worse. (2) Per-class
+SLO machinery → counterproductive. (3) **Joint routing — the project's central thesis** → a wash; it
+fixes none of the failures. The formulation's §1 coupling argument is real but **second-order**:
+choosing (d,p) jointly in the wrong currency is still choosing in the wrong currency.
+
+**Two confounds ruled out.** (a) **Output-length estimation** — feeding the rule the true `o_r` (oracle)
+is a near-no-op; the collapse and veto are not `o_r`-estimation artifacts (E10/F12). (b) **Transfer-cost
+mispricing** — the decider used a flat 5 ms `c_xfer` while the real KV transfer is size-based (~53 ms
+on prefill_bound). Correcting it (E11/F13) leaves the core diagnosis intact (`drift-only` is invariant;
+`full` still wins 0/12; the veto survives) but **retires one earlier claim**: `least-ttft`'s "5–6×
+robustness under overload" was an artifact of under-charged transfer — with the true cost it collapses
+too (0.397 → 0.101).
 
 **A separate finding worth its own line.** The **llm-d shipped decode scorer**
-(`precise-prefix-cache:2,queue-depth:1`) pins *all* decode traffic onto a single instance
-when requests share a prefix group, costing **6.6× goodput** (0.133 vs 0.879). This is not a
-bug in our code. It is a finding about a shipped production configuration, and every policy
-comparison in the literature that uses it is measuring the scorer, not the policy.
+(`precise-prefix-cache:2,queue-depth:1`) pins *all* decode traffic onto a single instance when
+requests share a prefix group, costing **6.6× goodput** (0.133 vs 0.879). Not a bug in our code — a
+property of a shipped production configuration, and it contaminates any policy comparison run on the
+default profile.
 
-**Honest status.** Three things we have **not** done, which bound every claim above:
-1. **We never used EDPP's joint routing.** Every spectrum experiment ran EDPP in *reduced*
-   mode. Which decode instance a request lands on was decided by the scorer, not by EDPP.
-   EDPP's actual thesis — the joint `(d,p)` argmin — is untested against a fair baseline.
-2. **We never tested SLO-class heterogeneity.** Every workload was single-class, which
-   switches off EDPP's most distinctive machinery (the per-class virtual queues).
-3. **We never changed EDPP's objective.** It still minimizes transfer cost subject to the SLO
-   constraints, which is a poor surrogate for goodput once those constraints go infeasible (§3.2).
+**Honest status — what remains untested.**
+1. **The value-currency fix itself.** Everything points at it; nothing has tested it. This is the one
+   live idea left.
+2. **The objective was never changed.** The rule still minimises transfer cost subject to the SLO
+   constraints — a poor surrogate for goodput once those constraints go infeasible (§3.2).
+3. Scope bounds: 1P2D only, cap 16, `z_itl` inert throughout, most cells 3 seeds.
 
-**Effort delivered.** Four reviewed, merged implementation plans (hardware heterogeneity
-wiring, per-instance θ_i, the least-TTFT baseline, plus the earlier estimator/joint work),
-a reproducible experiment harness, and the findings above.
-
----
+**Effort delivered.** Four reviewed, merged implementation plans (hardware-heterogeneity wiring,
+per-instance θ_i, the `least-ttft` baseline, plus the earlier estimator/joint work), a reproducible
+four-mode harness (`repro_spectrum.sh`), and the findings above.
 
 ## 2. What EDPP is, precisely
 
@@ -113,7 +137,10 @@ Two modes exist:
 
 Defaults used everywhere below: `--edpp-v 1`, `--edpp-c-xfer 5ms`, `--edpp-tadm-estimator
 rollforward` (the occupancy-aware admission-delay estimator; the shipped default `waiting` is
-occupancy-blind and would understate EDPP).
+occupancy-blind and would understate EDPP). **Caveat on `--edpp-c-xfer 5ms`:** it is a *flat
+constant*, but the actual KV transfer the simulator executes is *size-based* (∝ prefill tokens);
+5 ms is ~right only for the `mixed` archetype and mis-prices the others by 4–10× (§E11). All
+tables below use the flat default unless marked `+c_xfer-size`.
 
 ---
 
@@ -261,8 +288,15 @@ not move when `SEED` sweeps, so every seed is graded against the same goalposts.
 
 At rate 8 both dynamic policies beat the best static split, and `edpp` edges `least-ttft` on
 2 of 3 seeds (~0.06). At rate 16 the static split collapses too (0.075–0.083), `edpp` collapses
-with it (0.054–0.071), and only `least-ttft` holds up (0.375–0.433) — a **5–6× gap in favour of
-the stripped-down rule** under extreme overload.
+with it (0.054–0.071), and `least-ttft` appears to hold up (0.375–0.433) — seemingly a **5–6× gap
+in favour of the stripped-down rule** under extreme overload.
+
+> **Correction (E11).** That 5–6× gap is an artifact of the flat `--edpp-c-xfer 5ms`. The real KV
+> transfer is size-based and costs **~53 ms** for a 16000-token prefill (measured, §E11). When EDPP's
+> decision prices transfer correctly, `least-ttft` collapses too — prefill_bound rate 16 falls from
+> **0.397 → 0.101**, closing the gap to the drift arms (0.06) to ~0.04. `least-ttft`'s robustness was
+> under-charging transfer and thus over-disaggregating, landing near the interior optimum by accident.
+> See E11 / F13.
 
 ### E5 — Hardware heterogeneity (earlier work, `repro_hetero_hw.sh`)
 
@@ -302,91 +336,274 @@ disaggregating *everything* fixes it — no per-request smartness needed here.
 
 ---
 
+### E7 — SLO-class heterogeneity (the third axis)
+
+```bash
+# prefill-bound 16000/16, rate 10, 50% critical + 50% batch, IDENTICAL sizes
+# critical: ttft 1794ms/itl 100ms/e2e 1600ms   batch: 60s/500ms/60s (loose)
+# EDPP gets per-class targets:
+#   --edpp-tau-ttft-classes "critical=1794ms,batch=60s" --edpp-tau-itl-classes "critical=100ms,batch=500ms"
+# The control arm simply OMITS those two flags (one tau for both classes).
+```
+Rate 10 chosen from a probe: ~40% of requests miss (so routing decides *who* survives) but EDPP has
+not yet collapsed — the generous choice for EDPP. Both classes share a size profile so a win cannot
+be attributed to workload heterogeneity. **Critical-class goodput** (batch = 1.000 everywhere):
+
+| seed | never | always | least-ttft | **edpp single-τ** | edpp per-class τ |
+|------|-------|--------|-----------|------------------|------------------|
+| 42   | 0.163 | 0.039  | 0.581     | **0.884**        | 0.752            |
+| 7    | —     | —      | 0.636     | **0.836**        | 0.891            |
+| 123  | —     | —      | 0.456     | **0.856**        | 0.800            |
+| mean | —     | —      | 0.558     | **0.859**        | 0.814            |
+
+Mechanism, from EDPP's own decision trace (seed 42): batch `z_ttft` = **exactly 0**, batch disagg
+55%→28.8%, critical disagg 27.1%→43.4%, critical gp 0.884→0.752, **batch e2e 3424→1879ms**. The
+machinery did what it was designed to do and critical still got worse; the deprioritised class got
+*faster*. See F9.
+
+### E8 — Term ablation (which term is load-bearing?)
+
+```bash
+MODE=ablate RATES="8 12 16" SEEDS="42 7 123" bash campaigns/edpp-study/repro_spectrum.sh
+```
+Reachable from config alone: `--edpp-v 0` zeroes `transferTerm`; `--edpp-tau-ttft 999s` makes TTFT
+unviolatable ⇒ `z_ttft ≡ 0`. τ_itl is held at 100ms in every arm so the normalizer μ_D does not move
+between arms (and `z_itl` is inert anyway — measured ITL never approaches 100ms). Both off ⇒
+`lhs > 0` = pure congestion drift. Integrity verified from the trace: drift-only arm shows peak
+z_ttft = 0, ttft_term = 0, transfer = 0; full arm shows z_ttft = 435.6, ttft_term = 25.74,
+**transfer = 0.00078**.
+
+Means over 3 seeds (four cells sit at the 1.000 ceiling and carry no signal):
+
+| archetype | rate | least-ttft | drift-only | drift+z | full | winner |
+|-----------|------|-----------|-----------|---------|------|--------|
+| decode        | 8  | 0.133 | **0.267** | 0.135 | 0.133 | drift-only |
+| decode        | 12 | 0.133 | **0.237** | 0.135 | 0.133 | drift-only |
+| decode        | 16 | 0.133 | **0.233** | 0.137 | 0.133 | drift-only |
+| mixed         | 16 | 0.750 | **0.803** | 0.747 | 0.708 | drift-only |
+| prefill_lean  | 16 | 0.754 | 0.696 | **0.793** | 0.771 | drift+z |
+| prefill_bound | 8  | 0.904 | **0.971** | 0.921 | 0.925 | drift-only |
+| prefill_bound | 12 | **0.492** | 0.264 | 0.408 | 0.414 | least-ttft |
+| prefill_bound | 16 | **0.397** | 0.061 | 0.062 | 0.064 | least-ttft |
+
+`z`'s effect (drift+z − drift-only): decode **−0.110**, mixed −0.018, prefill_lean +0.030,
+prefill_bound +0.032. See F5–F8.
+
+### E9 — The same ablation on the JOINT path (closes the biggest gap)
+
+```bash
+JOINT=1 MODE=ablate RATES="8 12 16" SEEDS="42 7 123" bash campaigns/edpp-study/repro_spectrum.sh
+```
+In joint mode EDPP enumerates all (d,p) and picks the argmin **itself, overriding the decode scorer**.
+This is EDPP's actual thesis and had never been exercised. `least-ttft` is reduced-only, so that
+column is absent. Reduced → JOINT, mean of 3 seeds:
+
+| archetype | rate | drift-only | drift+z | full |
+|-----------|------|-----------|---------|------|
+| decode        | 12 | 0.237 → **0.296 ↑** | 0.135 → 0.136 | 0.133 → 0.133 |
+| decode        | 16 | 0.233 → 0.221 | 0.137 → 0.139 | 0.133 → 0.133 |
+| mixed         | 12 | 0.999 → **0.843 ↓** | 1.000 → 1.000 | 1.000 → 0.978 ↓ |
+| mixed         | 16 | 0.803 → **0.681 ↓** | 0.747 → 0.724 ↓ | 0.708 → **0.626 ↓** |
+| prefill_lean  | 16 | 0.696 → 0.679 | 0.793 → **0.728 ↓** | 0.771 → **0.711 ↓** |
+| prefill_bound | 8  | 0.971 → **0.992 ↑** | 0.921 → **0.954 ↑** | 0.925 → **0.953 ↑** |
+| prefill_bound | 12 | 0.264 → 0.238 ↓ | 0.408 → 0.403 | 0.414 → 0.396 |
+| prefill_bound | 16 | 0.061 → 0.062 | 0.062 → **0.161 ↑** | 0.064 → **0.161 ↑** |
+
+A wash. See F10.
+
+### E10 — Oracle output-length control (is the failure an `o_r`-estimation artifact?)
+
+```bash
+ORACLE=1 MODE=ablate RATES="8 12 16" SEEDS="42 7 123" bash campaigns/edpp-study/repro_spectrum.sh
+JOINT=1 ORACLE=1 MODE=ablate RATES="8 12 16" SEEDS="42 7 123" bash campaigns/edpp-study/repro_spectrum.sh
+```
+`--edpp-oracle-output-len` (DIAGNOSTIC, UPPER-BOUND, INV-9-violating) substitutes the routed
+request's **true** output length for the per-class `N̂_out` estimate when charging its *own* decode
+work (joint `W_d` and the `qdWork` backlog); co-resident remaining stays estimated/censored. This
+tests whether output-length estimation error explains the collapse/veto.
+
+**Result — a near-no-op.** Reduced `prefill_bound` is *byte-identical* est vs oracle; joint `full`
+rate 16 moves 0.161 → 0.167; the decode-bound veto is unmoved (`full` = 0.133 both). The only
+systematic effect is `drift-only` on decode-bound, +0.02–0.03 (a warmup transient). **Reason:** every
+archetype here has a *constant* output length, so `N̂_out` converges to the true `o_r` — there is
+almost no estimation error to remove. See F12.
+
+### E11 — Size-aware transfer cost (`c_xfer` ∝ KV size)
+
+```bash
+CXSIZE=1 MODE=ablate RATES="8 12 16" SEEDS="42 7 123" bash campaigns/edpp-study/repro_spectrum.sh
+```
+The decider assumed a **flat** `c_xfer = 5 ms`, but the simulator *executes* a size-based KV transfer
+(`sim/cluster/pd_events.go`: `base + blocks·blockSize·kvBytesPerToken / bandwidth`) that is added to
+the disaggregated request's TTFT. Measured real transfers (llama-70b TP4, 25 GB/s), from the DES debug
+log:
+
+| archetype | prefill tokens | **real transfer** | flat `c_xfer` | error |
+|---|---|---|---|---|
+| decode 256/512 | 256 | 1.1 ms | 5 ms | 4.5× too big |
+| mixed 2048/128 | 2048 | 7.0 ms | 5 ms | ~right |
+| prefill_lean 8192/64 | 8192 | 27.1 ms | 5 ms | 5.4× too small |
+| prefill_bound 16000/16 | 16000 | **52.7 ms** | 5 ms | **10.5× too small** |
+
+`--edpp-c-xfer-size-aware` makes the decider mirror the executor's formula. It affects `ttftP` (hence
+`least-ttft` and the `z_ttft` term) and the penalty, but **not** `drift-only`. Reduced ablation,
+flat → size-aware (mean of 3 seeds):
+
+| archetype | rate | least-ttft | drift-only | drift+z | full |
+|-----------|------|-----------|-----------|---------|------|
+| prefill_bound | 12 | 0.492 → 0.242 | 0.264 → **0.264** | 0.408 → 0.238 | 0.414 → 0.233 |
+| prefill_bound | 16 | **0.397 → 0.101** | 0.061 → **0.061** | 0.062 → 0.065 | 0.064 → 0.065 |
+| mixed | 16 | 0.750 → 0.368 | 0.803 → **0.803** | 0.747 → 0.410 | 0.708 → 0.417 |
+| decode (veto) | 8 | 0.133 → 0.152 | 0.250 → **0.250** | 0.138 → 0.169 | 0.133 → 0.146 |
+
+`drift-only` is **byte-identical** in every cell (it never reads `c_xfer` — a clean invariant check).
+See F13.
+
 ## 5. Findings
 
-**F1 — llm-d's shipped decode scorer pins decode onto one instance.** With one shared prefix
-group, `precise-prefix-cache:2` dominates `queue-depth:1` and sends *all* 240 requests to a
-single decode instance (E1). Cost: **6.6× goodput** (0.133 → 0.879). This is a property of a
-shipped production config, not a bug we introduced. It also means any policy comparison run
-on the default profile is partly measuring the scorer. We hold it fixed in the spectrum and
-report both.
+**F1 — llm-d's shipped decode scorer pins decode onto one instance.** With one shared prefix group,
+`precise-prefix-cache:2` dominates `queue-depth:1` and sends *all* 240 requests to a single decode
+instance (E1). Cost: **6.6× goodput** (0.133 → 0.879). A property of a shipped production config,
+not a bug we introduced — and it means any comparison run on the default profile is partly measuring
+the scorer.
 
-**F2 — The optimal naive corner flips across the workload spectrum.** `always` wins
-decode-bound (it uses the otherwise-idle prefill server); `never` wins prefill-bound (two
-decode servers doing prefill beats one prefill server doing it). No fixed heuristic is right
-everywhere — the first honest motivation for adaptivity.
+**F2 — The optimal naive corner flips across the workload spectrum.** `always` wins decode-bound (it
+uses the otherwise-idle prefill server); `never` wins prefill-bound (two decode servers doing prefill
+beats one prefill server doing it). No fixed heuristic is right everywhere.
 
-**F3 — On prefill-bound overload, the optimum is an interior split.** f=35 → 0.604, beating
-both corners (0.108, 0.033). Routing genuinely matters here.
+**F3 — On prefill-bound overload the optimum is an interior split.** f=35 → 0.604, beating both
+corners (0.108, 0.033). Routing genuinely matters here.
 
-**F4 — EDPP wins big in that regime, and it is robust.** 0.917/0.917/0.942 across seeds,
-beating both corners *and* the best static split (0.604) by ~0.32. Mechanism: it dynamically
-spreads the bottleneck prefill work across all three servers using live congestion, which a
-static split cannot do. **This is a genuine positive result for EDPP.**
+**F4 — EDPP wins that regime, robustly** (0.917/0.917/0.942 across seeds), beating both corners *and*
+the best static split by ~0.32, by dynamically spreading the bottleneck prefill across all three
+servers. **A genuine positive result.**
 
-**F5 — But the machinery is not what wins, and it hurts under overload.** `least-ttft` —
-EDPP's estimator with the drift, virtual queues, and V *removed* — reaches 0.854–0.975 at
-rate 8 (capturing most of the win), and at rate 16 it beats EDPP **0.375–0.433 vs
-0.054–0.071**. EDPP collapses where the stateless rule stays robust. The likely cause is §3.2:
-the accumulating virtual queues optimize a non-saturating surrogate that diverges from goodput
-exactly when load is infeasible.
+**F5 — The shipped full rule is the best arm in 0 of 12 cells (E8).** Dominated everywhere by one of
+its own ablated subsets, on both the reduced and joint paths.
 
-**F6 — Giving EDPP more hardware knowledge made it worse.** Per-instance θ_i over-corrects
-(E5). More model fidelity did not help; the missing ingredient was a capacity governor, and an
-ITL-based one is provably the wrong governor (we measured the overloaded fast node at 16.8 ms
-ITL — far under its 50 ms target — so an ITL-deficit signal is silent exactly where the
-overload is).
+**F6 — The congestion-drift term delivers the entire win, and also causes the collapse (E8).**
+drift-only is best in 5 of 8 informative cells (+0.16 over `least-ttft` at rate 10). It is *also* the
+worst arm at prefill_bound rate ≥12 (0.264 vs `least-ttft` 0.492) — one term, both the win and the
+failure. The collapse is bimodal across seeds (0.100/0.529/0.163), i.e. a tipping point.
 
----
+**F7 — `z`'s sign flips by archetype (E8).** decode −0.110 (badly hurts), mixed −0.018, prefill_lean
++0.030, prefill_bound +0.032. **Mechanism:** `z_ttft` prices the TTFT cost of disaggregating (the
+transfer) but is blind to the decode capacity it buys; with a tiny prompt that cost is essentially
+just the transfer, so z vetoes disagg and EDPP degenerates to `never`. This explains the
+decode-bound anomaly first seen in E2 and unexplained until now.
+
+**F8 — `V·c_xfer`, the stated objective, is numerically invisible (E8).** `max|transfer_term| =
+0.0008` against `ttft_term = 25.7`. Removing it slightly *helps*.
+
+**F9 — Per-class SLO machinery is counterproductive (E7).** Per-class targets *hurt* critical goodput
+(0.859 → 0.814). The machinery did exactly what it was designed to do — batch's `z_ttft` went to
+exactly 0, prefill-server access shifted from batch (55%→29%) to critical (27%→43%) — and critical
+still got **worse**, while the deprioritised class got **faster** (e2e 3424→1879ms). **Routing cannot
+sacrifice a class:** lowering a class's target does not make it yield capacity, it makes it *selfish*
+— it stops optimising its own latency and takes the cheapest (contended) resource.
+
+**F10 — Joint routing does not rescue EDPP (E9).** A wash: helps prefill_bound 8/16 and decode 12,
+hurts mixed 12/16, prefill_lean 16, prefill_bound 12. Fixes none of the failures — the decode-bound
+veto survives (0.133 = `never`), the collapse survives (0.161 vs `least-ttft` 0.397), the full rule
+still wins nowhere. **The formulation's §1 coupling argument is real but second-order.** Sharpest
+evidence: on `mixed`, joint's only gift is that EDPP picks the decode instance instead of the
+queue-depth scorer — and handed that control the work-currency drift picks *worse than plain load
+balancing* (0.803 → 0.681).
+
+**F11 — THE UNIFYING FINDING.** `z_ttft` prices the deciding request's own TTFT; `V·c_xfer` prices
+its own transfer; only the drift term prices the effect on everyone else — in **work**, not
+**value-at-risk**. At moderate load work ≈ value (a loaded queue really does hold savable requests),
+which is why drift wins there. Under overload every queue is huge, so work-drift balances between two
+hopeless queues, where a value-weighted term would price them at ~0 (they hold doomed requests;
+dumping is free) and steer the savable to where they can still make the deadline. **One sentence
+accounts for F6, F7, F9, F10 and the Type-A/B failure (E6).**
+
+**F12 — Output-length estimation is not the cause of the collapse or the veto (E10).** Feeding the
+rule the *true* `o_r` (oracle) is a near-no-op: the prefill_bound collapse is byte-identical, the
+decode veto is unmoved. This closes the "maybe it's just bad `o_r` estimates" escape hatch — but with
+a caveat: these archetypes have *constant* output length, so `N̂_out` already ≈ true `o_r` and there
+is little error to remove. A genuine test of the estimation dimension needs a *variable*-output
+workload (where a class mean is a poor per-request predictor); that remains untested.
+
+**F13 — `least-ttft`'s overload robustness was a transfer-cost artifact (E11).** The decider priced
+disaggregation with a flat 5 ms while the real KV transfer is size-based and costs ~53 ms on
+prefill_bound. Correcting it (`--edpp-c-xfer-size-aware`) collapses `least-ttft` on prefill_bound rate
+16 from **0.397 → 0.101**, shrinking its once-headline "5–6× beats EDPP under overload" gap to ~0.04.
+`least-ttft` was under-charging transfer, so it over-disaggregated and landed near the interior
+optimum by accident. **`drift-only` is invariant** (it never reads `c_xfer`), so F5/F6/F11 stand
+untouched; and the decode-bound veto survives the correct *smaller* cost, so it is **not** a `c_xfer`
+artifact either (F7 stands). Sharpest twist: correct transfer pricing makes `least-ttft` *more*
+accurate about the deciding request's own TTFT and therefore *more globally wrong* — it declines the
+disaggregation that would have helped the system's throughput. The F11 currency error, now visible in
+the stripped-down baseline itself.
 
 ## 6. What we have NOT established (bounds on every claim above)
 
-1. **Joint routing was never exercised in the spectrum.** All spectrum runs are *reduced*
-   EDPP with the decode instance chosen by the scorer. EDPP's central claim — the joint
-   `(d,p)` argmin — is tested only in E5, and never against a fair dynamic baseline
-   (`least-ttft` is reduced-only). **This is the single biggest gap.**
-2. **SLO-class heterogeneity is completely untested.** Every workload is single-class. The
-   per-class `z` queues — EDPP's most distinctive machinery, and the one thing `least-ttft`
-   *structurally cannot do* (it is class-blind) — never had anything to act on.
-3. **The objective was never corrected.** Still `V·c_xfer` (§3.2).
-4. **The virtual queues were never shown per request.** The instrumentation exists
-   (`--edpp-decision-trace` writes per-decision `z_ttft`, `z_itl`, each term, `lhs/rhs`) and
-   we used it once for a diagnosis, but we never presented the traces. A reader cannot
-   currently see *why* EDPP decided what it decided.
-5. **Most spectrum cells are single-seed** (seed 42). Only the prefill-bound cell has 3 seeds.
-6. **1P2D only**, and the saturation is induced by an artificial concurrency cap.
-7. **No global optimum.** The oracle is a *static* fraction sweep, not the joint hindsight
-   optimum (the MILP remains unbuilt), so "leaves goodput on the table" is measured against a
-   weaker target than the true one.
+Two gaps from the first version of this report are now **closed by measurement**, not argument:
+~~joint routing was never exercised~~ (E9 — it is a wash) and ~~SLO-class heterogeneity was never
+tested~~ (E7 — the machinery is counterproductive). What remains:
 
----
+1. **The value-currency fix is untested.** Every finding points at it; nothing has measured it. This
+   is the one live idea left, and the honest next experiment (§7).
+2. **The objective was never changed.** The rule still minimises transfer cost subject to the SLO
+   constraints (§2.1) — a poor surrogate for goodput once those constraints go infeasible (§3.2).
+   Every number in this report was produced with the shipped objective.
+3. **Output-length estimation is untested on variable-output workloads (E10/F12).** The oracle-`o_r`
+   control was a near-no-op *because* every archetype has a constant output length, so `N̂_out` ≈ true
+   `o_r`. A workload with per-request output variance is needed to actually stress this dimension.
+3. **`z_itl` never fired in any experiment.** Measured ITL never approached its 100ms target, so half
+   the SLO machinery has been dead throughout. E8 therefore ablates `z_ttft` specifically.
+4. **One topology (1P2D), cap 16.** The concurrency cap is an artificial stressor; without it nothing
+   saturates and every policy scores 1.000. Joint's action set here is only |A| = 4 — a wider pool
+   might give it more to work with.
+5. **The yardstick is a *static* fraction sweep**, not the true joint hindsight optimum (the MILP
+   remains unbuilt), so "leaves goodput on the table" is measured against a weaker target than the
+   real one.
+6. **Seeds:** most cells are 3 seeds; four spectrum cells sit at the 1.000 ceiling and carry no
+   information. The prefill_bound rate-12 collapse is bimodal across seeds (0.100/0.529/0.163).
 
 ## 7. What this means, and what to do next
 
-The value case for EDPP now rests on three axes of heterogeneity, and we have tested each
-incompletely:
+**Three of the three heterogeneity axes have now been tested, and all three failed for one reason.**
 
-| axis | status | expectation |
-|---|---|---|
-| **Workload** (request mix) | `always` wins; EDPP slightly worse (E6). EDPP is *externality-blind* — it judges each request by its own SLO and misses that B's prefill harms A. | Structural flaw; may need a coupling term |
-| **Hardware** (fast/slow) | joint-EDPP wins under-capacity (E5); θ_i over-corrects under saturation | `least-ttft` may capture it too — untested |
-| **SLO-class** (critical/batch) | **untested** | EDPP's strongest structural home — `least-ttft` is class-blind and *cannot* compete |
+| axis | result | why |
+|------|--------|-----|
+| **Workload** (Type A/B) | `always` wins; EDPP loses (E6) | externality-blind — each request judged by its *own* SLO |
+| **Hardware** (fast/slow) | joint-EDPP wins under-capacity; θ_i **over-corrects** under saturation (E5) | work-currency drift overwhelms the congestion signal |
+| **SLO-class** (critical/batch) | per-class machinery **counterproductive** (E7) | *same* externality-blindness — deprioritising makes a class selfish |
 
-**Recommended next steps, in order:**
-1. **SLO-class experiment** (no new code). Mixed critical+batch workload; measure critical-class
-   goodput. This is the one axis where `least-ttft` structurally cannot compete, so it is
-   EDPP's best and fairest shot.
-2. **Extend `least-ttft` to the joint path** (small change), then re-run E5 and the spectrum
-   with `--edpp-joint` for both. This closes gap #1 and finally tests EDPP's actual thesis.
-3. **Publish the decision traces** for the key cells, so the `z`/drift behavior is visible
-   rather than asserted.
+Plus the two structural results: the shipped rule wins **0 of 12 cells** (F5), and **joint routing —
+the project's central thesis — is a wash** (F10). The formulation's §1 coupling argument is real but
+second-order.
 
-**The paper this supports today** is a characterization: *which heterogeneity axes justify
-adaptive P/D routing, when a one-line rule suffices, and why the drift-plus-penalty apparatus
-destabilizes under overload* — plus the llm-d scorer finding, which is independently useful.
-Whether it becomes a *method* paper depends on step 1 and 2.
+**The one live idea: change what the drift term measures.** Keep Neely's drift structure — a virtual
+queue can measure anything — but price **value-at-risk** instead of **work**: the marginal goodput
+destroyed at instance *i* by adding work there. It is computable (we know each co-resident's stage
+and estimated remaining latency). One change addresses F6 (drift's overload collapse), F9 (the
+class backfire), and the Type-A/B failure, because all three are the same missing externality.
 
----
+**The honest next experiment — an oracle upper bound.** Test the *ceiling* before paying for the
+machinery:
+1. **Read the true output length** (`o_r`) rather than estimating it. ✅ *Built and run* as
+   `--edpp-oracle-output-len` (explicitly oracle-marked, diagnostic-only, upper-bound; E10). Result:
+   a near-no-op on these constant-output archetypes — it neither rescues nor breaks the rule, and it
+   rules out `o_r` estimation as the cause (F12). The value-at-risk build below will need to extend
+   this oracle to *un-censor co-resident remaining* so "will my work tip request *j* past its
+   deadline" is computable at all (today that state is stripped for INV-9).
+2. **Value-at-risk drift + a saturating utility**, measured against the fixed-plan yardstick across
+   the same archetypes.
+3. **Watch for the known trap:** a saturating utility gives û ≈ 0 for doomed requests, which means
+   *no signal*, which means their placement falls to the remaining terms and they grab the cheapest
+   (contended) resource — reproducing E7's failure exactly. Saturation alone gives **neglect**, not
+   **triage**. Triage needs the doomed to *yield* capacity, which is an admission/scheduling lever
+   EDPP does not hold. This is a real boundary on the whole approach and should be stated, not
+   discovered late.
+
+**The paper this supports today** is a characterization with a mechanistic root cause: *which
+heterogeneity axes justify adaptive P/D routing, why a principled drift-plus-penalty policy is
+dominated by its own ablated subsets, and the single currency error that explains all four failures*
+— plus the llm-d scorer finding, which is independently useful to that project. Whether it also
+becomes a *method* paper depends entirely on the oracle experiment above.
 
 ## 8. Reproduction
 
@@ -407,6 +624,18 @@ MODE=oracle ARCH=prefill_bound RATE=8 bash campaigns/edpp-study/repro_spectrum.s
 # E5 hardware heterogeneity
 bash campaigns/edpp-study/repro_hetero_hw.sh
 SAT=1 THETA=1 bash campaigns/edpp-study/repro_hetero_hw.sh
+
+# E8/E9 term ablation (reduced, then joint)
+MODE=ablate       RATES="8 12 16" SEEDS="42 7 123" bash campaigns/edpp-study/repro_spectrum.sh
+JOINT=1 MODE=ablate RATES="8 12 16" SEEDS="42 7 123" bash campaigns/edpp-study/repro_spectrum.sh
+
+# E10 oracle output-length control (diagnostic; upper bound)
+ORACLE=1 MODE=ablate RATES="8 12 16" SEEDS="42 7 123" bash campaigns/edpp-study/repro_spectrum.sh
+
+# E11 size-aware c_xfer (mirrors the DES KV-transfer executor)
+CXSIZE=1 MODE=ablate RATES="8 12 16" SEEDS="42 7 123" bash campaigns/edpp-study/repro_spectrum.sh
+# measure the REAL transfer durations the sim executes:
+#   ./blis run ... --pd-decider always --log debug 2>&1 | grep "blocks, duration="
 
 # See WHY a decision was made (per-decision term breakdown incl. z_ttft/z_itl)
 ./blis run --model meta-llama/llama-3.3-70b-instruct \

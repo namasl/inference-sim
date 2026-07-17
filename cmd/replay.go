@@ -259,6 +259,9 @@ Example:
 		if edppRule == "least-ttft" && edppJoint {
 			logrus.Fatalf("--edpp-rule least-ttft is a reduced-path baseline and cannot be combined with --edpp-joint")
 		}
+		if edppOracleOutputLen {
+			logrus.Warnf("--edpp-oracle-output-len is a DIAGNOSTIC oracle: it charges each routed request's own decode work with its TRUE output length (violates INV-9). Results are an UPPER BOUND, not an achievable policy.")
+		}
 
 		// ModelConfig resolution for PD KV transfer sizing (same as runCmd).
 		// When PD is active and an analytical backend is in use, the ModelConfig may need to
@@ -493,6 +496,8 @@ Example:
 			EDPPTAdmEstimator:               edppTAdmEstimator,
 			EDPPJoint:                       edppJoint,
 			EDPPRule:                        edppRule,
+			EDPPOracleOutputLen:             edppOracleOutputLen,
+			EDPPCXferSizeAware:              edppCXferSizeAware,
 			EDPPJointTrace:                  edppJointTracePath != "",
 			PDTransferBandwidthGBps:         pdTransferBandwidth,
 			PDTransferBaseLatencyMs:         pdTransferBaseLatency,

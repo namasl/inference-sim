@@ -205,7 +205,20 @@ elif [[ "$MODE" == "ablate" ]]; then
   # `least-ttft` is reduced-only (rejected with --edpp-joint), so that column is absent under JOINT=1.
   JF=(); JLBL="reduced"
   if [[ "${JOINT:-0}" == "1" ]]; then JF=(--edpp-joint); JLBL="JOINT"; fi
-  echo "TERM ABLATION [$JLBL]  topology=1P2D cap=$CAP scorer=$SCORER seeds=[${SEEDS:-42 7 123}]" >&2
+  # ORACLE=1 adds --edpp-oracle-output-len to EVERY arm: each routed request's OWN decode work
+  # is charged with its TRUE output length instead of the per-class N̂_out estimate (DIAGNOSTIC,
+  # UPPER BOUND, violates INV-9). This is the C3 control: does removing output-length estimation
+  # error move the collapse/veto? o_r enters the deciding action only on the JOINT decode work W_d
+  # and (both paths) the qdWork backlog bookkeeping — so pair ORACLE=1 with JOINT=1 for the
+  # arm where o_r actually reaches the decision. On the reduced path it only sharpens the backlog.
+  OF=(); OLBL=""
+  if [[ "${ORACLE:-0}" == "1" ]]; then OF=(--edpp-oracle-output-len); OLBL=" +oracle-o_r"; fi
+  # CXSIZE=1 makes EDPP's c_xfer size-based (base + blocks*blockSize*kvBytes/bandwidth),
+  # mirroring the DES KV-transfer executor, instead of the flat --edpp-c-xfer (5ms default).
+  # Affects ttftP (least-ttft + z_ttft arms) and the penalty; does NOT touch drift-only.
+  XF=(); XLBL=""
+  if [[ "${CXSIZE:-0}" == "1" ]]; then XF=(--edpp-c-xfer-size-aware); XLBL=" +c_xfer-size"; fi
+  echo "TERM ABLATION [$JLBL$OLBL$XLBL]  topology=1P2D cap=$CAP scorer=$SCORER seeds=[${SEEDS:-42 7 123}]" >&2
   echo "(goodput; which TERM is load-bearing?  z_itl is inert throughout — this ablates z_ttft)" >&2
   for name in $ARCH_ORDER; do
     set -- $(arch_dims "$name"); IN=$1; O=$2
@@ -217,11 +230,11 @@ elif [[ "$MODE" == "ablate" ]]; then
         spec "$IN" "$O" "$r" "$s"
         BB=(--edpp-coeffs "$COEFFS" --edpp-tadm-estimator rollforward --edpp-tau-itl 100ms)
         if [[ "${JOINT:-0}" == "1" ]]; then L="n/a"; else
-          L=$(run_policy ab_l --pd-decider edpp "${BB[@]}" --edpp-tau-ttft "${SLO_TTFT}ms" --edpp-rule least-ttft); L=${L%% *}
+          L=$(run_policy ab_l --pd-decider edpp "${BB[@]}" ${OF[@]+"${OF[@]}"} ${XF[@]+"${XF[@]}"} --edpp-tau-ttft "${SLO_TTFT}ms" --edpp-rule least-ttft); L=${L%% *}
         fi
-        D=$(run_policy ab_d --pd-decider edpp "${BB[@]}" ${JF[@]+"${JF[@]}"} --edpp-tau-ttft 999s --edpp-v 0);            D=${D%% *}
-        Z=$(run_policy ab_z --pd-decider edpp "${BB[@]}" ${JF[@]+"${JF[@]}"} --edpp-tau-ttft "${SLO_TTFT}ms" --edpp-v 0); Z=${Z%% *}
-        F=$(run_policy ab_f --pd-decider edpp "${BB[@]}" ${JF[@]+"${JF[@]}"} --edpp-tau-ttft "${SLO_TTFT}ms");            F=${F%% *}
+        D=$(run_policy ab_d --pd-decider edpp "${BB[@]}" ${JF[@]+"${JF[@]}"} ${OF[@]+"${OF[@]}"} ${XF[@]+"${XF[@]}"} --edpp-tau-ttft 999s --edpp-v 0);            D=${D%% *}
+        Z=$(run_policy ab_z --pd-decider edpp "${BB[@]}" ${JF[@]+"${JF[@]}"} ${OF[@]+"${OF[@]}"} ${XF[@]+"${XF[@]}"} --edpp-tau-ttft "${SLO_TTFT}ms" --edpp-v 0); Z=${Z%% *}
+        F=$(run_policy ab_f --pd-decider edpp "${BB[@]}" ${JF[@]+"${JF[@]}"} ${OF[@]+"${OF[@]}"} ${XF[@]+"${XF[@]}"} --edpp-tau-ttft "${SLO_TTFT}ms");            F=${F%% *}
         printf "   %-5s %-5s| %-11s %-11s %-11s %-11s\n" "$r" "$s" "$L" "$D" "$Z" "$F" >&2
       done
     done

@@ -82,6 +82,11 @@ type EDPPConfig struct {
 	Joint             bool                  // when true, Decide enumerates all (decode, prefill) candidates and picks the drift-plus-penalty argmin (joint P/D routing, --edpp-joint); false ⇒ the reduced fixed-d local-vs-disagg rule.
 	JointTraceEnabled bool                  // when true (joint mode only), decideJoint attaches an EDPPJointDecisionTrace comparing the scorer's (d,p) pick to the joint argmin. Off ⇒ zero allocation, no shadow prefill scorer run.
 	Rule              string                // reduced-path decision rule: "" / "dpp" (drift-plus-penalty, default) or "least-ttft" (disaggregate iff ttftP < ttftD; bypasses the drift/z/V machinery). Design 2026-07-15.
+	OracleOutputLen   bool                  // DIAGNOSTIC / UPPER-BOUND ONLY (--edpp-oracle-output-len): substitute the routed request's TRUE output length (len(req.OutputTokens)) for the per-class N̂_out estimate when charging its OWN decode work (joint W_d and the qdWork backlog bookkeeping). Violates INV-9 by design; never a deployable policy. Co-resident remaining stays estimated/censored. Used to test whether output-length estimation error explains the overload collapse (control for the value-vs-work-currency hypothesis).
+	CXferSizeAware    bool                  // --edpp-c-xfer-size-aware: compute c_xfer per request from KV size (XferBaseUs + ⌈a_r/blockSize⌉·blockSize·KVBytesPerTokenPerGPU / bandwidth), mirroring the DES KV-transfer executor, instead of the flat CXferUs. Off ⇒ byte-identical to the flat-c_xfer behavior. Deployable (input-only, oracle-safe).
+	KVBytesPerTokenPerGPU float64           // per-GPU KV bytes per token (from ModelConfig + prefill TP); used only when CXferSizeAware
+	XferBandwidthGBps float64               // inter-instance KV-transfer bandwidth (GB/s), matching the DES executor; used only when CXferSizeAware
+	XferBaseUs        float64               // KV-transfer base latency (µs), matching the DES executor; used only when CXferSizeAware
 }
 
 // EDPPJointDecisionTrace records, for one joint (--edpp-joint) decision, the scorer's
@@ -610,7 +615,8 @@ func (d *EDPPDecider) Decide(req *Request, state *RouterState) DisaggregationDec
 	}
 	tAdmP := d.tadmEstimator.EstimateTAdm(prefillCtx)
 	tAdmD := d.tadmEstimator.EstimateTAdm(decodeCtx)
-	ttftP := tAdmP + nChunks*(d.coeffs.tIterPrefill(sPfPrefill)+deltaPfChunk) + float64(d.cfg.CXferUs)
+	cXferUs := d.cXferUsFor(req) // flat CXferUs, or the size-aware transfer cost
+	ttftP := tAdmP + nChunks*(d.coeffs.tIterPrefill(sPfPrefill)+deltaPfChunk) + cXferUs
 	ttftD := tAdmD + nChunks*(tBminus1+deltaPfChunkLocal)
 
 	// Per-class virtual queues.
@@ -626,7 +632,7 @@ func (d *EDPPDecider) Decide(req *Request, state *RouterState) DisaggregationDec
 	balanceTermP := qp * (wp / n.wStarP)
 	lhs := balanceTermD - balanceTermP
 
-	transferTerm := d.transferPenalty(n)
+	transferTerm := d.transferPenalty(n, cXferUs)
 	ttftTerm := zTTFT * (ttftP - ttftD) / n.tauTTFT
 	itlTerm := -zITL * (thetaD.CPf * float64(chunk)) / n.tauITL
 	rhs := transferTerm + ttftTerm + itlTerm
@@ -722,8 +728,29 @@ func (d *EDPPDecider) prefillRemStepsEst(snap RoutingSnapshot) float64 {
 // transferPenalty is the normalized KV-transfer cost paid when offloading prefill:
 // V·(c_xfer/τ_ttft)·(τ_ref/τ_ttft) (design §3; scales like 1/τ_ttft² as the other terms).
 // Shared by the reduced path (RHS) and the joint path (added to disagg candidates).
-func (d *EDPPDecider) transferPenalty(n edppNorm) float64 {
-	return d.cfg.V * (float64(d.cfg.CXferUs) / n.tauTTFT) * (float64(d.cfg.TauRefUs) / n.tauTTFT)
+// cXferUs is the transfer cost for THIS request (flat CXferUs, or the size-aware value
+// from cXferUsFor) — the same quantity added to ttftP, so the penalty and the TTFT
+// prediction stay consistent about what a disaggregation costs.
+func (d *EDPPDecider) transferPenalty(n edppNorm, cXferUs float64) float64 {
+	return d.cfg.V * (cXferUs / n.tauTTFT) * (float64(d.cfg.TauRefUs) / n.tauTTFT)
+}
+
+// cXferUsFor returns the assumed KV-transfer cost (µs) for routing this request to a
+// prefill node. Default: the flat CXferUs. With CXferSizeAware it mirrors the DES
+// executor's sizing (sim/cluster/pd_events.go): base + blocks·blockSize·kvBytes / bandwidth,
+// where blocks = ⌈a_r/blockSize⌉ = the request's KV footprint (input-only, oracle-safe).
+// This removes the decision/execution mismatch where a flat 5ms mis-priced disaggregation
+// by ~10× on long prompts and ~4.5× on short ones.
+func (d *EDPPDecider) cXferUsFor(req *Request) float64 {
+	if !d.cfg.CXferSizeAware {
+		return float64(d.cfg.CXferUs)
+	}
+	bwBytesPerUs := d.cfg.XferBandwidthGBps * 1000.0 // GB/s → bytes/µs
+	if bwBytesPerUs <= 0 || d.cfg.BlockSize <= 0 {
+		return d.cfg.XferBaseUs
+	}
+	transferBytes := float64(d.reqKVNeed(req)) * float64(d.cfg.BlockSize) * d.cfg.KVBytesPerTokenPerGPU
+	return d.cfg.XferBaseUs + transferBytes/bwBytesPerUs
 }
 
 // instWorkRaw reads the per-instance waiting-work backlog (µs) for id WITHOUT creating a
@@ -791,7 +818,7 @@ func (d *EDPPDecider) decideJoint(req *Request, state *RouterState) Disaggregati
 	}
 
 	reqKVNeed := d.reqKVNeed(req)
-	nHatOut := d.nHatFor(class).mean()
+	nHatOut := d.reqNHatOut(req) // deployable N̂_out, or TRUE o_r under the diagnostic oracle flag
 
 	// Candidate-invariant terms shared by every (d,·) cost evaluation this decision.
 	// wd (W_d) and mDec (m_dec = δ̄_dec) are now computed per candidate in
@@ -923,12 +950,13 @@ func (d *EDPPDecider) jointCandidateCost(ec *jointEvalCtx, ds RoutingSnapshot, p
 		Running: ps.RunningPrefill,
 	}
 	tAdmP := d.tadmEstimator.EstimateTAdm(prefillCtx)
-	tHatDisagg := tAdmP + nChunksP*(tIterP+deltaPfP) + float64(d.cfg.CXferUs) // ABSOLUTE T̂_disagg(d,p)
+	cXferUs := d.cXferUsFor(ec.req) // flat CXferUs, or the size-aware transfer cost
+	tHatDisagg := tAdmP + nChunksP*(tIterP+deltaPfP) + cXferUs // ABSOLUTE T̂_disagg(d,p)
 	return jDecodeBacklog +
 		qp*(wpP/n.wStarP) +
 		ec.zTTFT*(tHatDisagg/n.tauTTFT) +
 		jDecodeITL + // base decode-step ITL marginal m_dec (same as local: decode is on d)
-		d.transferPenalty(n) // disagg pays the KV-transfer penalty; no local ITL inflation
+		d.transferPenalty(n, cXferUs) // disagg pays the KV-transfer penalty; no local ITL inflation
 }
 
 // buildJointTrace assembles the scorer-vs-joint divergence record for a committed joint
@@ -1167,6 +1195,20 @@ func (d *EDPPDecider) nHatFor(class string) *edppRunningMean {
 	return m
 }
 
+// reqNHatOut returns the output-length estimate used to charge THIS request's own
+// decode work (its joint W_d and its qdWork backlog contribution). Deployable path:
+// the per-class running-mean N̂_out. DIAGNOSTIC oracle path (cfg.OracleOutputLen,
+// --edpp-oracle-output-len): the request's TRUE output length. This reads
+// req.OutputTokens in the control plane — a deliberate INV-9 violation, gated behind
+// the oracle flag and never a deployable policy (results are an upper bound). It is
+// applied only to the request being routed/decided, never to co-residents.
+func (d *EDPPDecider) reqNHatOut(req *Request) float64 {
+	if d.cfg.OracleOutputLen {
+		return float64(len(req.OutputTokens))
+	}
+	return d.nHatFor(req.SLOClass).mean()
+}
+
 // OnRoute increments the work backlog for a committed request (design §6.1,
 // conservation form). apTokens is the uncached prompt token count (input-only; INV-9
 // safe). W_d uses the class N̂_out estimate at the nominal decode context.
@@ -1181,7 +1223,8 @@ func (d *EDPPDecider) OnRoute(req *Request, key string, toPrefill bool, apTokens
 	}
 	wp := d.coeffs.Wp(apTokens, len(req.InputTokens))
 	// W_d now uses the exact discrete decode sum Wd(a_r, N̂_out); it no longer uses NomDecodeCtx.
-	wd := d.coeffs.Wd(len(req.InputTokens), d.nHatFor(req.SLOClass).mean())
+	// reqNHatOut yields the deployable N̂_out, or the TRUE o_r under the diagnostic oracle flag.
+	wd := d.coeffs.Wd(len(req.InputTokens), d.reqNHatOut(req))
 	pw := edppPendingWork{toPrefill: toPrefill, decodeInst: decodeInst, prefillInst: prefillInst}
 	if toPrefill {
 		pw.wp = wp // prefill work lands on the prefill pool
