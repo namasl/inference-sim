@@ -563,10 +563,6 @@ func (d *EDPPDecider) Decide(req *Request, state *RouterState) DisaggregationDec
 		chunk = d.cfg.ChunkTokens
 	}
 	nChunks := math.Ceil(float64(ap) / float64(chunk))
-	// deltaPfChunkLocal: prefill co-resident on the decode node (ttftD, local path) → thetaD.
-	// deltaPfChunk: prefill on the pool (ttftP, disagg path) → pool-aggregate d.coeffs.
-	deltaPfChunkLocal := thetaD.CPf * float64(chunk)
-	deltaPfChunk := d.coeffs.CPf * float64(chunk)
 	// Occupancy inputs for the admission-delay estimators (fluid/rollforward, Tasks 4/5).
 	// Decode side reads the selected decode snapshot; prefill side reads the first prefill snapshot.
 	// ReqKVNeed: KV blocks this request needs ≈ ⌈a_r / blockSize⌉ (a_r = full input length; oracle-safe).
@@ -616,8 +612,14 @@ func (d *EDPPDecider) Decide(req *Request, state *RouterState) DisaggregationDec
 	tAdmP := d.tadmEstimator.EstimateTAdm(prefillCtx)
 	tAdmD := d.tadmEstimator.EstimateTAdm(decodeCtx)
 	cXferUs := d.cXferUsFor(req) // flat CXferUs, or the size-aware transfer cost
-	ttftP := tAdmP + nChunks*(d.coeffs.tIterPrefill(sPfPrefill)+deltaPfChunk) + cXferUs
-	ttftD := tAdmD + nChunks*(tBminus1+deltaPfChunkLocal)
+	// Prefill time = admission delay + the batch-iteration overhead the request waits through
+	// (nChunks iterations at the path's per-iteration time: the decode batch's load for the local
+	// path, the prefill pool's for the disagg path) + the request's OWN prefill work Wp. Wp carries
+	// both projection (C_pf·a_p) AND attention over context (C_attn·a_p·(a_r+a_p/2)), matching the
+	// executor's per-prefill-step charge. (Earlier this charged only the projection term C_pf·chunk,
+	// which under-modelled long-context prefill; the attention term is now included for fidelity.)
+	ttftP := tAdmP + nChunks*d.coeffs.tIterPrefill(sPfPrefill) + d.coeffs.Wp(ap, len(req.InputTokens)) + cXferUs
+	ttftD := tAdmD + nChunks*tBminus1 + thetaD.Wp(ap, len(req.InputTokens))
 
 	// Per-class virtual queues.
 	var zTTFT, zITL float64
@@ -644,7 +646,7 @@ func (d *EDPPDecider) Decide(req *Request, state *RouterState) DisaggregationDec
 	dec := DisaggregationDecision{Disaggregate: disagg}
 	if d.cfg.TraceEnabled {
 		dec.EDPPTrace = &EDPPDecisionTrace{
-			Class: req.SLOClass, Ap: ap, Wp: wp, DeltaPfChunk: deltaPfChunk,
+			Class: req.SLOClass, Ap: ap, Wp: wp, DeltaPfChunk: thetaD.CPf * float64(chunk),
 			QdRaw: qD, QpRaw: qP, Qd: qd, Qp: qp,
 			MuDNom: n.muDNom, MuPNom: n.muPNom, WStarD: n.wStarD, WStarP: n.wStarP,
 			TauTTFT: n.tauTTFT, TauITL: n.tauITL,
@@ -924,7 +926,10 @@ func (d *EDPPDecider) jointCandidateCost(ec *jointEvalCtx, ds RoutingSnapshot, p
 		apLoc := d.apForInstance(ec.req, ds.ID)
 		nChunksLoc, deltaPfLoc := d.chunkTerms(thetaD, apLoc)
 		wpLoc := thetaD.Wp(maxInt(apLoc, 0), len(ec.req.InputTokens))
-		tHatLocal := tAdmD + nChunksLoc*(tIterD+deltaPfLoc) // ABSOLUTE T̂_local(d)
+		// T̂_local: admission + batch-iteration overhead (nChunks·tIter) + the request's OWN
+		// prefill work Wp (projection AND attention over context). Wp replaces the projection-only
+		// nChunks·deltaPf so the estimate keeps the quadratic attention cost (matches the executor).
+		tHatLocal := tAdmD + nChunksLoc*tIterD + wpLoc // ABSOLUTE T̂_local(d)
 		return jDecodeBacklog +
 			qd*(wpLoc/n.wStarD) +
 			ec.zTTFT*(tHatLocal/n.tauTTFT) +
@@ -935,7 +940,7 @@ func (d *EDPPDecider) jointCandidateCost(ec *jointEvalCtx, ds RoutingSnapshot, p
 	// --- disagg: decode on d, prefill on node *ps ⇒ prefill uses the prefill node's θ_i ---
 	thetaP := d.coeffsFor(ps.GPUType)
 	apP := d.apForInstance(ec.req, ps.ID)
-	nChunksP, deltaPfP := d.chunkTerms(thetaP, apP)
+	nChunksP, _ := d.chunkTerms(thetaP, apP)
 	wpP := thetaP.Wp(maxInt(apP, 0), len(ec.req.InputTokens))
 	qpRaw, _ := d.instWorkRaw(ps.ID)
 	qp := qpRaw / n.wStarP
@@ -951,7 +956,9 @@ func (d *EDPPDecider) jointCandidateCost(ec *jointEvalCtx, ds RoutingSnapshot, p
 	}
 	tAdmP := d.tadmEstimator.EstimateTAdm(prefillCtx)
 	cXferUs := d.cXferUsFor(ec.req) // flat CXferUs, or the size-aware transfer cost
-	tHatDisagg := tAdmP + nChunksP*(tIterP+deltaPfP) + cXferUs // ABSOLUTE T̂_disagg(d,p)
+	// T̂_disagg: admission + prefill-pool iteration overhead + the request's OWN prefill work Wp
+	// (projection AND attention, replacing the projection-only nChunks·deltaPf) + transfer time.
+	tHatDisagg := tAdmP + nChunksP*tIterP + wpP + cXferUs // ABSOLUTE T̂_disagg(d,p)
 	return jDecodeBacklog +
 		qp*(wpP/n.wStarP) +
 		ec.zTTFT*(tHatDisagg/n.tauTTFT) +
