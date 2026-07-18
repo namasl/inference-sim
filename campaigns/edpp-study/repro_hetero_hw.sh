@@ -81,7 +81,7 @@ YAML
 BUNDLE="$SPECDIR/bundle_1p2d.yaml"; SPEC="$SPECDIR/synth_hw.yaml"
 SLO=(--slo-ttft "batch=10s" --slo-itl "batch=50ms")   # fast~17ms MEETS, slow~74ms VIOLATES
 TOPO=(--num-instances 3 --prefill-instances 1 --decode-instances 2 --policy-config "$BUNDLE")
-EC=(--edpp-coeffs "$COEFFS" --edpp-tau-ttft 10s --edpp-tau-itl 50ms --edpp-tadm-estimator rollforward)
+EC=(--edpp-coeffs "$COEFFS" --edpp-tau-ttft 10s --edpp-tau-itl 50ms --edpp-tadm-estimator rollforward --edpp-c-xfer-size-aware)
 gp(){ python3 -c "import json;print('%.3f'%json.load(open('$1'))['per_class']['batch']['slo_attainment'])" 2>/dev/null || echo NA; }
 # split(): parse the per-instance stdout blocks captured for an arm and report the
 # realized fast/slow DECODE split. instance_1 = fast H100 decode, instance_2 = slow

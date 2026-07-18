@@ -210,61 +210,152 @@
 <div class="wrap">
 
 <header>
-  <p class="eyebrow">Research status · BLIS simulator</p>
+  <p class="eyebrow">Research status · BLIS simulator · v2 (realistic re-baseline)</p>
   <h1>Does EDPP actually beat trivial heuristics?</h1>
-  <p class="lede">A policy study of joint prefill/decode routing on a fixed disaggregated
-  topology. This page reports what we ran, what we found, and — explicitly — what we have
-  not yet established.</p>
+  <p class="lede">A policy study of prefill/decode routing on a fixed 1P2D topology, re-baselined on
+  <strong>realistic, provenance-backed workloads</strong> (inference-perf catalog, variable output),
+  a <strong>utilization-normalized</strong> load axis, and <strong>derived</strong> SLOs.</p>
   <div class="meta">
-    <span>2026-07-17</span>
-    <span>branch feat/edpp-estimator-validation</span>
-    <span>4 merged plans · all reviewed</span>
-    <span>every number reproducible</span>
+    <span>2026-07-17 · v2</span>
+    <span>3 archetypes × ρ=load/λ* × 3 seeds</span>
+    <span>SLOs derived @ 70–80% util</span>
+    <span>size-aware transfer cost</span>
   </div>
 </header>
 
 <h2>The bottom line</h2>
 <div class="prose">
-<p>The <strong>shipped full rule is the best arm in 0 of 12 tested cells</strong>. Everywhere it is
-dominated by one of its <em>own</em> ablated subsets — strip a term out and the rule gets better.
-We now know term-by-term <em>why</em>, and every failure we found has a single cause.</p>
+<p>On realistic long-context workloads, <strong>adaptive prefill/decode routing clearly beats the
+naive heuristics</strong> — but a <strong>one-line latency rule captures essentially all of that
+win</strong>. EDPP's heavier drift-plus-penalty machinery does not yet earn its extra complexity, and
+the <strong>shipped llm-d scorer is a larger problem than the routing policy</strong>.</p>
 </div>
 
 <blockquote class="doc" style="max-width:44rem; border-left:2px solid var(--accent)">
-  <span class="src">The unifying finding — measured, not argued</span>
-  Every term in the rule prices the <strong>deciding request's own experience</strong>. The one term
-  that prices the effect on <em>others</em> — the congestion drift — does it in the wrong currency:
-  <strong>work, not value-at-risk</strong>.
+  <span class="src">The robust result — 3 seeds, realistic workloads</span>
+  At 85% utilization on prefill-heavy (long-context) traffic, <strong>edpp / least-ttft reach ~0.91
+  goodput vs ~0.62</strong> for the naive “always/never” corners. Routing genuinely matters — and
+  <strong>edpp ≈ least-ttft</strong> (they make near-identical decisions: 64% vs 66% disaggregated).
 </blockquote>
 
 <div class="prose">
-<p>Four independent experiments converge on that sentence — the decode-bound veto, the prefill-bound
-collapse, the Type-A/B workload failure, and the SLO-class backfire. There <em>is</em> a genuine
-positive: in the <strong>prefill-bound</strong> regime the optimum is an <em>interior</em> split and
-EDPP finds it dynamically (0.917 vs 0.604 for the best static plan). Ablation shows that win is
-delivered <strong>entirely by the congestion-drift term</strong> — the drift structure is the part
-worth keeping. The full apparatus around it is not.</p>
+<p>We deliberately do <em>not</em> make fine-grained “which term earns it” claims: near and above
+saturation the prefill regime is <strong>high-variance across seeds</strong>, so 3 seeds only supports
+the coarse dynamic-vs-naive result. (This retires the earlier single-seed, caricature-specific
+term-by-term story.)</p>
 </div>
 
 <div class="tiles">
   <div class="tile">
-    <div class="k">EDPP's best result</div>
-    <div class="v" style="color:var(--s4)">0.917</div>
-    <div class="d">goodput on prefill-bound overload, vs <b>0.604</b> for the best static split and
-    <b>0.108 / 0.033</b> for the two corners. Robust across 3 seeds.</div>
+    <div class="k">Adaptive routing, prefill-heavy @85% util</div>
+    <div class="v" style="color:var(--s4)">0.91</div>
+    <div class="d">goodput for <b>edpp / least-ttft</b> vs <b>0.62</b> for the naive corners
+    (never/always). Mean of 3 seeds. The real, defensible positive.</div>
   </div>
   <div class="tile">
-    <div class="k">Shipped rule's win rate</div>
-    <div class="v" style="color:var(--s3)">0 / 12</div>
-    <div class="d">the full rule is the best arm in <b>zero of twelve</b> tested cells — dominated
-    everywhere by one of its own ablated subsets, on both the reduced and joint paths.</div>
+    <div class="k">edpp vs one-line rule</div>
+    <div class="v" style="color:var(--s3)">≈</div>
+    <div class="d">edpp ≈ least-ttft everywhere, and they disaggregate <b>64% vs 66%</b> of requests —
+    the drift/z/V machinery doesn't visibly earn its keep.</div>
   </div>
   <div class="tile">
     <div class="k">llm-d shipped scorer</div>
-    <div class="v" style="color:var(--s1)">6.6×</div>
-    <div class="d">goodput lost to a production default that pins <b>all</b> decode traffic onto
-    one instance. A finding about a shipped config, not our bug.</div>
+    <div class="v" style="color:var(--s1)">6.7×</div>
+    <div class="d">goodput lost to the production default pinning decode onto one instance
+    (prefill 0.10 → 0.67 with a balanced scorer). Not our bug.</div>
   </div>
+</div>
+
+<h2>How we measure it (v2)</h2>
+<div class="prose">
+<p>Three realistic archetypes with <strong>variable</strong> output lengths from the
+<strong>kubernetes-sigs/inference-perf catalog</strong>; load swept on a <strong>utilization axis</strong>
+ρ = achieved ÷ λ* (λ* measured per archetype); SLOs <strong>derived</strong> as the TTFT/ITL p99 the
+server delivers at 70–80% utilization (not asserted); size-based transfer cost; no artificial cap.</p>
+</div>
+<div class="cmd" style="max-width:44rem">go build -o blis main.go
+<b>MODE=lambda bash campaigns/edpp-study/repro_realistic.sh</b>  <span style="color:var(--muted)"># derive λ* + the SLOs per archetype</span></div>
+<div class="scroll">
+<table>
+  <caption>Realistic archetypes and their derived SLOs (λ* = achieved-throughput plateau, SLO-free).</caption>
+  <thead><tr><th>archetype</th><th>in / out (tok)</th><th>source</th><th>λ*</th><th>SLO (p99 @ρ≈0.8)</th></tr></thead>
+  <tbody>
+    <tr><td class="name">decode-bound</td><td>~500 / 4000±2500</td><td class="name">inference-perf synth-gen</td><td>~5000 t/s</td><td>TTFT 170ms · ITL 60ms</td></tr>
+    <tr><td class="name">balanced</td><td>~1500 / ~1500</td><td class="name">fabricated (documented)</td><td>~7000 t/s</td><td>TTFT 180ms · ITL 50ms</td></tr>
+    <tr><td class="name">prefill-heavy</td><td>~2k+60k / 500±300</td><td class="name">inference-perf RAG</td><td>~1350 t/s</td><td>TTFT 2300ms · ITL 60ms</td></tr>
+  </tbody>
+</table>
+</div>
+
+<h2>Result 1 — the llm-d shipped scorer is catastrophic</h2>
+<div class="prose"><p>Goodput at ρ≈0.85, llm-d default profile (<span style="font-family:var(--mono);font-size:.85em">precise-prefix-cache:2,queue-depth:1</span>) vs a load-balanced decode scorer:</p></div>
+<div class="scroll">
+<table>
+  <thead><tr><th>archetype</th><th>llm-d never / always</th><th>balanced never / always</th></tr></thead>
+  <tbody>
+    <tr><td class="name">decode</td><td>0.398 / 0.458</td><td class="win">0.993 / 0.995</td></tr>
+    <tr><td class="name">balanced</td><td>0.720 / 0.955</td><td class="win">0.995 / 1.000</td></tr>
+    <tr><td class="name">prefill</td><td>0.100 / 0.495</td><td class="win">0.672 / 0.495</td></tr>
+  </tbody>
+</table>
+</div>
+<div class="cmd" style="max-width:44rem"><b>MODE=scorer bash campaigns/edpp-study/repro_realistic.sh</b></div>
+<div class="prose" style="margin-top:.6rem"><p>Up to <strong>6.7× goodput lost</strong> to the shipped scorer pinning decode onto one instance — independent of EDPP, and a bigger lever than the routing policy. We hold the scorer at <span style="font-family:var(--mono)">queue-depth:1</span> for everything below.</p></div>
+
+<h2>Result 2 — adaptive routing wins prefill-heavy; a one-line rule captures it</h2>
+<div class="prose"><p>Policy comparison on the prefill-heavy archetype, <strong>mean of 3 seeds</strong>, load axis = utilization ρ:</p></div>
+<div class="scroll">
+<table>
+  <caption>Goodput vs utilization. Dynamic policies beat the naive corners by ~0.3 at 85% util (robust across seeds).</caption>
+  <thead><tr><th>ρ (util)</th><th>never</th><th>always</th><th>least-ttft</th><th>edpp</th></tr></thead>
+  <tbody>
+    <tr><td>0.5</td><td>0.95</td><td>0.90</td><td class="win">0.99</td><td class="win">0.98</td></tr>
+    <tr><td>0.7</td><td>0.90</td><td>0.81</td><td class="win">0.92</td><td class="win">0.92</td></tr>
+    <tr><td>0.85</td><td>0.63</td><td>0.61</td><td class="win">0.91</td><td class="win">0.91</td></tr>
+    <tr><td>1.0</td><td>0.33</td><td>0.40</td><td>0.71</td><td>0.74</td></tr>
+    <tr><td>1.2</td><td colspan="4" style="text-align:left;color:var(--muted)">high variance across seeds — not reported</td></tr>
+  </tbody>
+</table>
+</div>
+<div class="cmd" style="max-width:44rem"><b>MODE=policy bash campaigns/edpp-study/repro_realistic.sh</b></div>
+<div class="callout">
+  <p><strong>edpp ≈ least-ttft</strong> at every load — and from the decision trace they disaggregate
+  <strong>64% vs 66%</strong> of requests, i.e. they make nearly the same routing decisions. So the
+  win is <em>dynamic routing</em>, not the drift-plus-penalty machinery. On decode/balanced all
+  policies are within ~0.02 (routing barely matters; edpp declines to disaggregate — a genuine 0%
+  veto).</p>
+</div>
+
+<h2>Result 3 — hardware heterogeneity</h2>
+<div class="scroll">
+<table>
+  <caption>Fast H100 + crippled A100 decode, 4 seeds. Goodput.</caption>
+  <thead><tr><th>regime</th><th>reduced</th><th>joint EDPP</th><th>blind LB</th><th>+θ_i (joint)</th><th>optimum</th></tr></thead>
+  <tbody>
+    <tr><td class="name">under-capacity</td><td>0.00</td><td class="win">0.97–1.00</td><td>0.72–0.77</td><td>—</td><td>1.00</td></tr>
+    <tr><td class="name">saturating</td><td>0.82–0.95</td><td>0.82–0.98</td><td>0.84–0.95</td><td class="name" style="color:var(--s3)">0.67–0.88 (over-corrects)</td><td>~0.96</td></tr>
+  </tbody>
+</table>
+</div>
+<div class="prose" style="margin-top:.6rem"><p>Joint EDPP recovers the fast node under-capacity (reactively — it avoids the node that visibly congests). Giving it the hardware model (<b>θ_i</b>) makes it <strong>over-correct</strong> — 95–97% to the fast node, <em>below</em> the reactive baselines.</p></div>
+<div class="cmd" style="max-width:44rem">bash campaigns/edpp-study/repro_hetero_hw.sh              <span style="color:var(--muted)"># under-capacity</span>
+<b>SAT=1 bash campaigns/edpp-study/repro_hetero_hw.sh</b>        <span style="color:var(--muted)"># saturating</span>
+<b>SAT=1 THETA=1 bash campaigns/edpp-study/repro_hetero_hw.sh</b>  <span style="color:var(--muted)"># + θ_i</span></div>
+
+<h2>What we do <em>not</em> claim (v2)</h2>
+<ul class="plain">
+  <li><strong>No term-level "which term earns it" claim.</strong> Near/above saturation the prefill ablation swings from 0.46 to 1.0 across seeds; 3 seeds is too few. The earlier single-seed "drift is the win / z sign-flips" story does not replicate and is retired.</li>
+  <li><strong>No overload-regime policy ranking</strong> (ρ≥1.0) — same high-variance reason.</li>
+  <li>The <strong>value-currency redesign</strong> remains the one untested idea; it's what the diagnosis points at.</li>
+</ul>
+
+<hr style="border:none;border-top:1px solid var(--hair);margin:3rem 0 0">
+<div class="callout" style="border-left-color:var(--s3)">
+  <p><strong>Everything below is the v1 study (SUPERSEDED).</strong> It used constant-token caricature
+  workloads (e.g. 16-token outputs), a fixed 4/8/16 req/s grid, an artificial concurrency cap, and a
+  flat transfer cost — all of which distorted the term-level findings. It is retained for provenance
+  and before/after only. <strong>Do not cite v1 numbers</strong> (e.g. the "0/12", "5–6×", "6.6×"
+  figures below are v1).</p>
 </div>
 
 <h2>How we got here</h2>

@@ -60,6 +60,12 @@ RATES="${RATES:-4 8 16}"
 mkdir -p "$SPECDIR" "$OUT"
 [[ -x ./blis ]] || go build -o blis main.go
 
+# Size-aware c_xfer (corrected transfer model, mirrors the DES KV-transfer executor). CXSIZE=1 turns
+# it on for the EDPP arms in EVERY mode (spectrum/oracle/ablate). It is the corrected basis for the
+# study; the flat --edpp-c-xfer 5ms (CXSIZE unset) is kept only for the E8/E9/E11 flat-vs-size deltas.
+XF=(); XLBL=""
+if [[ "${CXSIZE:-0}" == "1" ]]; then XF=(--edpp-c-xfer-size-aware); XLBL=" +c_xfer-size"; fi
+
 # 1P2D: instance_0 = prefill, instance_1 + instance_2 = decode.
 TOPO=(--num-instances 3 --prefill-instances 1 --decode-instances 2 --max-num-running-reqs "$CAP")
 case "$SCORER" in
@@ -126,7 +132,7 @@ run_policy(){ # $1=tag $2..=extra flags ; echoes "goodput  i1=..,i2=.."
 }
 
 if [[ "$MODE" == "spectrum" ]]; then
-  echo "SPECTRUM  topology=1P2D cap=$CAP seed=$SEED scorer=$SCORER  (goodput; higher is better)" >&2
+  echo "SPECTRUM$XLBL  topology=1P2D cap=$CAP seed=$SEED scorer=$SCORER  (goodput; higher is better)" >&2
   for name in $ARCH_ORDER; do
     set -- $(arch_dims "$name"); IN=$1; O=$2
     auto_slo "$IN" "$O"
@@ -138,8 +144,8 @@ if [[ "$MODE" == "spectrum" ]]; then
       N=$(run_policy n --pd-decider never);                                          N=${N%% *}
       A=$(run_policy a --pd-decider always);                                         A=${A%% *}
       P=$(run_policy p --pd-decider prefix-threshold --pd-prefix-threshold 16);      P=${P%% *}
-      L=$(run_policy l --pd-decider edpp "${EC[@]}" --edpp-rule least-ttft);         L=${L%% *}
-      E=$(run_policy e --pd-decider edpp "${EC[@]}");                                E=${E%% *}
+      L=$(run_policy l --pd-decider edpp "${EC[@]}" ${XF[@]+"${XF[@]}"} --edpp-rule least-ttft);  L=${L%% *}
+      E=$(run_policy e --pd-decider edpp "${EC[@]}" ${XF[@]+"${XF[@]}"});                         E=${E%% *}
       printf "   %-5s| %-8s %-8s %-8s %-10s %-8s\n" "$r" "$N" "$A" "$P" "$L" "$E" >&2
     done
   done
@@ -181,9 +187,9 @@ for i in range(240):
     printf "   f=%-3s disagg%%  goodput=%s\n" "$f" "$g" >&2
   done
   EC=(--edpp-coeffs "$COEFFS" --edpp-tau-ttft "${SLO_TTFT}ms" --edpp-tau-itl 100ms --edpp-tadm-estimator rollforward)
-  echo "   ---- dynamic policies on the same cell ----" >&2
-  printf "   %-12s goodput=%s\n" "least-ttft" "$(run_policy o_l --pd-decider edpp "${EC[@]}" --edpp-rule least-ttft)" >&2
-  printf "   %-12s goodput=%s\n" "edpp"       "$(run_policy o_e --pd-decider edpp "${EC[@]}")" >&2
+  echo "   ---- dynamic policies on the same cell$XLBL ----" >&2
+  printf "   %-12s goodput=%s\n" "least-ttft" "$(run_policy o_l --pd-decider edpp "${EC[@]}" ${XF[@]+"${XF[@]}"} --edpp-rule least-ttft)" >&2
+  printf "   %-12s goodput=%s\n" "edpp"       "$(run_policy o_e --pd-decider edpp "${EC[@]}" ${XF[@]+"${XF[@]}"})" >&2
 elif [[ "$MODE" == "ablate" ]]; then
   # TERM ABLATION of the reduced rule:  disagg iff  lhs > rhs
   #   lhs = balanceTermD - balanceTermP        (congestion drift, the Q_i work backlogs)
@@ -213,11 +219,8 @@ elif [[ "$MODE" == "ablate" ]]; then
   # arm where o_r actually reaches the decision. On the reduced path it only sharpens the backlog.
   OF=(); OLBL=""
   if [[ "${ORACLE:-0}" == "1" ]]; then OF=(--edpp-oracle-output-len); OLBL=" +oracle-o_r"; fi
-  # CXSIZE=1 makes EDPP's c_xfer size-based (base + blocks*blockSize*kvBytes/bandwidth),
-  # mirroring the DES KV-transfer executor, instead of the flat --edpp-c-xfer (5ms default).
-  # Affects ttftP (least-ttft + z_ttft arms) and the penalty; does NOT touch drift-only.
-  XF=(); XLBL=""
-  if [[ "${CXSIZE:-0}" == "1" ]]; then XF=(--edpp-c-xfer-size-aware); XLBL=" +c_xfer-size"; fi
+  # CXSIZE=1 (global XF, defined near the top) makes EDPP's c_xfer size-based, mirroring the DES
+  # KV-transfer executor; affects ttftP (least-ttft + z_ttft arms) and the penalty, NOT drift-only.
   echo "TERM ABLATION [$JLBL$OLBL$XLBL]  topology=1P2D cap=$CAP scorer=$SCORER seeds=[${SEEDS:-42 7 123}]" >&2
   echo "(goodput; which TERM is load-bearing?  z_itl is inert throughout — this ablates z_ttft)" >&2
   for name in $ARCH_ORDER; do
