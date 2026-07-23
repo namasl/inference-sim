@@ -1,0 +1,33 @@
+{
+  "units": {
+    "time": "microseconds",
+    "tokens": "tokens",
+    "requests": "count"
+  },
+  "source_csvs": [
+    "/tmp/theta_ratio3p0/D1.csv",
+    "/tmp/theta_ratio3p0/D2.csv",
+    "/tmp/theta_ratio3p0/D3.csv",
+    "/tmp/theta_ratio3p0/D4.csv",
+    "/tmp/theta_ratio3p0/P1.csv",
+    "/tmp/theta_ratio3p0/P2.csv",
+    "/tmp/theta_ratio3p0/P3.csv"
+  ],
+  "total_rows": 11506,
+  "decode": {
+    "n_rows": 9975,
+    "alpha_us": 44454.16800981979,
+    "c0_us_per_req": 7.207937566559489,
+    "c1_us_per_token": 0.14284169893712748,
+    "r2": 0.9999999998182493,
+    "cond_b_dec_kv": 2.257461365755379
+  },
+  "prefill": {
+    "n_rows": 940,
+    "alpha_p_us": 44458.49434855404,
+    "c_pf_us_per_token": 10.541109658984418,
+    "c_attn_us_per_unit": 0.00015115180610671152,
+    "r2": 0.9999999960926236,
+    "cond_s_pf_pf_ctx": 6.616387115201036
+  }
+}

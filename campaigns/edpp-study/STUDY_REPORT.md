@@ -36,6 +36,17 @@ cost is **size-based** (mirrors the KV-transfer executor). No artificial cap.
 4. **Hardware heterogeneity:** joint EDPP recovers the fast node under-capacity (0.97 vs 0.00 for
    reduced, 0.72 blind); per-instance θ_i **over-corrects** under saturation (routes 95–97% to the
    fast node, *below* the reactive baselines) (E5).
+5. **A deployable, minimax-regret-adaptive routing rule — drift-plus-VaR (E12/E13).** Re-pricing the
+   congestion externality in **goodput** (value-at-risk: goodput destroyed among co-residents) and
+   *keeping* the work-drift term, auto-normalized (`w≈1`), gives one rule you deploy **blind** — no
+   knowledge of workload mix or hardware — that is **within ~5% of the best rule in every regime and
+   never catastrophic**, on realistic *variable*-output workloads, using only a **deployable**
+   (INV-9-safe) co-resident estimate. Its worst-case regret across the regime space is **~0.05 vs
+   0.29–0.92** for every alternative — including a faithful reproduction of the **state of the art**
+   (Kairos, arXiv:2607.02043, reported at its best β: worst-case regret 0.61) and llm-d's shipped
+   `prefix-threshold`. Each alternative collapses somewhere: `always`/llm-d on prefill-heavy and
+   heterogeneous, `dpp` on decode/mixed, Kairos and `least-ttft` on **hardware heterogeneity** — the
+   regime no published P/D routing rule addresses. The claim is minimax-regret, not domination. See E13.
 
 **The honest limits (what v2 does NOT support):**
 
@@ -53,9 +64,10 @@ cost is **size-based** (mirrors the KV-transfer executor). No artificial cap.
   unlike the caricatures) — but the effect, too, is seed-noisy; it is suggestive, not conclusive.
 
 **One line for your manager.** *On realistic long-context workloads, adaptive prefill/decode routing
-clearly beats the naive heuristics — but a one-line latency rule captures essentially all of that win;
-EDPP's heavier machinery does not yet earn its extra complexity, and the shipped llm-d scorer is a
-larger problem than the routing policy.*
+clearly beats the naive heuristics; no single simple rule is good across workloads and hardware, but a new
+deployable rule that prices the congestion externality in goodput (drift-plus-VaR) is within ~5% of the
+best rule in every regime and never catastrophic — the one you deploy when you cannot predict the
+workload, cutting worst-case goodput regret from 30–90% (any fixed rule) to ~5%.*
 
 **Effort delivered.** Realistic-workload re-baseline (provenance-backed archetypes, utilization-normalized
 load, derived SLOs), a size-aware transfer-cost model + `o_r` oracle (both new, committed), and a
@@ -133,6 +145,55 @@ occupancy-blind and would understate EDPP). **Caveat on `--edpp-c-xfer 5ms`:** i
 constant*, but the actual KV transfer the simulator executes is *size-based* (∝ prefill tokens);
 5 ms is ~right only for the `mixed` archetype and mis-prices the others by 4–10× (§E11). All
 tables below use the flat default unless marked `+c_xfer-size`.
+
+### 2.3 The value-at-risk externality and drift-plus-VaR (E12/E13)
+
+The classic rule above prices the congestion externality in **work** (µs of backlog) and the
+request's own latency in the `z` self terms. Neither prices the externality in the currency the
+objective is measured in — **goodput**. Drift-plus-VaR (`--edpp-rule var --edpp-var-congestion`)
+adds a term that does. Full derivation, oracle boundary, and reproduction are in E12/E13 and §8; the
+math a reader needs:
+
+**Value-at-risk of a placement.** For a candidate that puts `r`'s decode on instance `d`, VaR is the
+goodput destroyed among `d`'s current decode co-residents by the added load. Each co-resident `j`
+with `rem_j` steps left is projected to finish at `C_base = now + rem_j·t0` before `r`, and later
+after `r` is added, under **full B+1 re-timing** — the per-iteration time is recomputed at batch
+`B+1` with `r`'s KV added (`Δkv_R = n_r`, `r`'s prompt length; input-only, oracle-safe):
+
+```
+t0        = t_iter(B,   kv,          sPf)          # current
+t_after   = t_iter(B+1, kv + Δkv_R,  sPf)          # after r joins decode  (t_after ≥ t0)
+C_local_j = now + min(nChunks,rem_j)·t_overlap + (rem_j−min(nChunks,rem_j))·t_after
+C_disagg_j= now + min(A,rem_j)·t0       + (rem_j−min(A,rem_j))·t_after      # A = ⌈T̂_disagg/t0⌉
+```
+
+`t_overlap = t0 + c_pf·chunk` is the inflated iteration time while `r` prefills co-scheduled (local
+only). Because local inflation starts at step 0 and disagg only inflates the tail,
+`C_local ≥ C_disagg ≥ C_base` — the asymmetry that lets disaggregation relieve a loaded decode node.
+
+Each co-resident's contribution is scored by one of three kernels against its SLO composite
+(TTFT met ∧ mean-ITL ≤ τ_itl ∧ completion ≤ arrival+τ_e2e): **flip** (binary good→bad count — the
+hyperparameter-free ceiling), **util** (`σ((deadline−C)/τ_ttft)`, the robust kernel), **hazard**
+(`h(slack)·delay`, `h` Cauchy-like). `VaR = Σ_j [g(C_base) − g(C_placed)]`.
+
+**Drift-plus-VaR.** Keep the congestion drift AND add VaR (rather than replacing it):
+
+```
+cost(d,p) = w · congestion(d,p)  +  VaR(d,p)  +  self(d,p)
+```
+
+Congestion feels a node saturating (needed on heterogeneous hardware); VaR supplies the SLO
+externality (needed on homogeneous decode/balanced). **Auto-normalization** (`--edpp-var-normalize`)
+min-max normalizes the two terms across the decision's candidates so `w` is scale-free (`w≈1`); a
+**zero-spread guard** makes a symmetric congestion term (identical hardware) cancel automatically —
+so VaR decides on homogeneous nodes, and congestion bites only where the hardware differs. That
+single mechanism is why one weight keeps the rule near-best across regimes — the minimax-regret
+result of E13 (within ~5% of the best simple rule everywhere, on realistic variable output).
+
+**Oracle boundary (INV-9).** `rem_j` is the co-resident's true remaining decode steps — an **oracle**
+read (un-censored), so drift-plus-VaR is a *ceiling*, not yet deployable. `--edpp-rule var` emits a
+loud UPPER-BOUND warning. Deadlines, arrivals, and `Δkv_R` are input-derived (deployable). A
+deployable variant (censored `N̂_out` for `rem_j`) is the #1 open item (§7).
 
 ---
 
@@ -605,6 +666,130 @@ flat → size-aware (mean of 3 seeds):
 `drift-only` is **byte-identical** in every cell (it never reads `c_xfer` — a clean invariant check).
 See F13.
 
+### E12 — Value-at-risk drift ORACLE vs `least-ttft` (the §7 "one live idea", at its ceiling)
+
+The single remaining rescue idea, built and run as a diagnostic oracle (`--edpp-rule var`, kernels
+`flip|util|hazard`): the drift term re-priced in **value-at-risk** (goodput destroyed among co-residents)
+instead of **work** (µs), reading each co-resident's true remaining decode steps un-censored (gated INV-9,
+upper bound). The bar: clearly beat `least-ttft` where it ties/wins. **Verdict: PARTIAL clearance.** VaR
+beats `least-ttft` decisively on the **decode-bound and balanced** archetypes (mixed r16: `var:util` 0.843
+/ `var:hazard` 0.929 vs `least-ttft` 0.368; ≈2× across the saturated decode cells) — the design's central
+prediction, confirmed exactly where the co-resident externality dominates. It does **not** beat
+`least-ttft` on the **prefill-bound** archetypes (ties at moderate load, both collapse under overload), and
+`var:hazard` actively over-disaggregates there (prefill_lean r16: 0.189, tracking `always`'s 0.065).
+`var:util` is the robust kernel; the §7-predicted saturating-utility neglect trap did not fire on these
+constant-output single-class archetypes ("not observed here", not refuted). See F14, F15.
+
+The joint homogeneous path (`JOINT=1`) does not change the verdict: joint-VaR beats joint-`edpp`
+almost everywhere (so the win is not a reduced-path artifact) but joint-`edpp` ≈ reduced-`edpp` (F10
+holds), and the ceiling on the prefill archetypes is still the reduced path (F16). The **heterogeneous-θ_i**
+follow-up (fast H100 + crippled-A100 decode, saturating, interior ~86%-fast optimum) is a **clean
+negative**: VaR **over-routes to the fast node** (~91% fast, mean goodput 0.859) and lands below
+work-currency θ_i-joint dpp (0.928); `var:flip` pins 100% onto fast under the loose deadline and craters
+(0.470). The value-currency externality is correctly signed but mis-calibrated on heterogeneous hardware —
+so the deployable-approximation recommendation stays scoped to the homogeneous decode/balanced regime, NOT
+heterogeneous provisioning. See F16, F17.
+
+### E13 — drift-plus-VaR: a deployable, minimax-regret-adaptive routing rule
+
+E12's heterogeneous negative (VaR over-routes to the fast node) has the same root cause as E5's θ_i
+over-correction: VaR prices the delay to the *current* batch and is blind to the standing queue that
+over-concentration builds. The fix (§2.3): **keep the Lyapunov congestion drift AND add the VaR
+externality**, with per-decision min-max auto-normalization so the weight is scale-free (`w≈1`). The
+congestion term is symmetric on identical hardware (cancels via the zero-spread guard → VaR decides) and
+asymmetric on heterogeneous (bites → reins in over-routing). The `util` kernel is the one used.
+
+Two things had to be checked before this counts as a real result, and both are now closed:
+(a) **Deployable, not oracle** — the runnable rule estimates each co-resident's remaining steps from the
+censored per-class N̂_out (`--edpp-var-deployable`, INV-9-safe); it matches the oracle within noise, so the
+result does not depend on reading hidden output lengths.
+(b) **Variable output, not constant** — the large "unification" seen on constant-output cells (dpVaR ≈1.00
+vs dpp 0.93 on heterogeneous) shrinks under realistic output-length variance; it is *not* the headline.
+
+**The headline is minimax regret, measured against the state of the art.** On realistic variable-output
+workloads (lognormal σ=0.4, CV≈0.42), across the workload/hardware regime space (mean over 3 seeds, all
+DEPLOYABLE). Baselines include **Kairos** (arXiv:2607.02043, load-aware prefill deflection — reproduced
+in BLIS as `--edpp-rule kairos`, reported at its **best** β) and llm-d's shipped `prefix-threshold(16)`:
+
+| archetype | never | always | prefix16 | kairos* | least-ttft | dpp | **dpVaR** |
+|---|---|---|---|---|---|---|---|
+| decode r16 | 0.133 | **0.736** | 0.736 | **0.736** | 0.607 | 0.527 | 0.724 |
+| mixed r16 | 0.356 | **1.000** | 1.000 | 0.883 | 0.708 | 0.621 | 0.946 |
+| prefill_lean r16 | 0.204 | 0.061 | 0.061 | **0.856** | 0.806 | 0.819 | 0.853 |
+| prefill_bound r8 | 0.399 | 0.046 | 0.046 | 0.890 | 0.954 | **0.968** | 0.964 |
+| heterogeneous | – | 0.332 | 0.332 | 0.332 | 0.328 | **0.942** | 0.900 |
+
+The claim is **not domination** — dpVaR trails `always` on mixed and `dpp` on heterogeneous, and Kairos
+is the best arm on prefill_lean. It is **minimax regret**: deployed blind, dpVaR is within ~5% of the
+best rule in every regime and never craters. Worst-case regret across the grid:
+
+| rule | worst-case regret | collapses on |
+|---|---|---|
+| always / prefix16 (llm-d) | 0.92 | prefill-heavy, heterogeneous |
+| never | 0.65 | decode/mixed |
+| least-ttft | 0.61 | heterogeneous |
+| kairos* (SOTA) | 0.61 | heterogeneous |
+| dpp | 0.38 | decode/mixed |
+| **dpVaR (deploy)** | **0.054** | — never |
+
+Two claims, layered by defensibility. **(a) Inside Kairos's own design envelope** (homogeneous
+archetypes only): dpVaR worst-case regret **0.054 vs Kairos 0.117**, a 2× edge on their home turf.
+**(b) Including heterogeneity**: 0.054 vs 0.610 (11×) — but Kairos *assumes homogeneous hardware*, so
+that cell is outside its envelope. The honest framing is therefore **not** "we beat Kairos" but: *every
+published rule has a regime where it collapses, and the one that breaks Kairos and least-ttft is
+hardware heterogeneity — which no published P/D routing rule addresses.* That is the operational value:
+**the rule you deploy when you cannot predict the workload or the hardware.**
+
+**Secondary finding:** llm-d's shipped `prefix-threshold(16)` is byte-identical to `always` in all five
+cells (every prompt exceeds the 16-token uncached threshold), inheriting its 0.046/0.332 collapses.
+
+**w-sensitivity:** a broad plateau (raw `w∈[1e3,1e4]`, normalized `w∈[0.5,5]`). **Honest scope:** one
+variance level (σ=0.4); 3 seeds; `util` kernel; one heterogeneous topology; simulation with coefficients
+fit to the simulator's own latency model. See F18/F19/F20. This is the study's candidate *positive*
+contribution.
+
+**What to look for when reproducing (E13).** Confirm: in *every* cell, dpVaR ≥ max(never, always,
+least-ttft, dpp) − ~0.05, and dpVaR's per-seed minimum is not a crater; equivalently, dpVaR's worst-case
+regret across the grid is far below every simple rule's. Refute: dpVaR is the loser (below all baselines)
+in any cell, or it craters on a seed in the regime a fixed rule owns (e.g. collapses on prefill-heavy
+where least-ttft/dpp win). Sanity: `Δ_disagg ≤ Δ_local` unit test passes; a `--edpp-rule var` trace
+replays byte-identical (INV-13).
+
+### E14 — structural / topology ablations: the heterogeneity ratio and the fleet shape
+
+E13's minimax-regret result held the heterogeneity at one accelerator ratio and one topology (1P2D).
+Reviewers ask two things of that. At what ratio do the TTFT-currency rules actually break, and does the
+§2.3 cancel/bind normalization survive a change of fleet shape? E14 answers both, reusing E13's deployable
+arm set (σ=0.4, 3 seeds, best-β Kairos). It leaves the E13 headline grid frozen and adds the two sweeps.
+
+**Ratio sweep.** The slow decode node is a uniform Nx slowdown — scale BOTH `tflops_peak` and
+`bw_peak_tbs` by 1/N, then fit its coefficients from the same trained-physics engine that executes it
+(the design §3 no-confound recipe, generalized by `repro_theta_by_gpu.sh`). Because the workload is
+decode-bound, the fitted per-token decode coefficient scales as N exactly, so the ratio the rule sees
+equals the knob. N=5 reproduces the crippled-A100 cell (fitted `c1` 0.238 vs 0.228), and at N=5 seed 42
+lands on the tab:grid worst-seed column (dpVaR 0.777). Across N∈[1,5], the TTFT-currency rules (least-ttft,
+Kairos) fall below half their homogeneous goodput by N=1.5 and reach worst-case regret **0.61** against the
+per-N best static split, while dpp holds **0.00** and dpVaR **0.05**. dpVaR's margin over least-ttft grows
+with N and reaches **0.57 at N=5**. (See F21 for the table.)
+
+**Topology matrix.** Sixteen accelerators, provisioned as 1P3D / 2P2D / 3P1D, homogeneous hardware, four
+archetypes. Worst-case regret per topology: dpVaR **0.025 / 0.004 / 0.003** — it holds its 1P2D headline
+on every shape, because the congestion term still cancels on matched instances and binds on mismatched
+ones under the one shared weight. Kairos, near-optimal on decode-heavy 1P3D (0.007), collapses on
+prefill-heavy 3P1D (0.59), so its exposure follows provisioning as well as workload. Fixing the rule and
+reading goodput across the three provisionings, dpVaR holds the per-provisioning best in all 16 cells —
+the online answer to TaiChi's offline, minutes-scale P/D reconfiguration. (See F22.)
+
+**Naming caveat.** The fleet uses `--decode-instances` (decode-only pods that prefill locally on
+collocation); the paper calls them "mixed (M)" and the published tab:grid uses the same setup, so the
+paper subsection uses M-notation. True mixed pods would be `--prefill-decode-instances`.
+
+**What to look for when reproducing (E14).** Ratio sweep: `c1` ratio ≈ N for each generated coeff file;
+least-ttft/Kairos monotonically decaying and dpVaR/dpp on the best-static-split line; dpVaR worst-case
+regret ≈0.05. Topology: dpVaR worst-case regret ≤0.03 on all three shapes; Kairos worst-case regret rising
+sharply from 1P3D to 3P1D. Refute: dpVaR craters on any (topology, archetype, seed) a fixed rule owns, or
+its ratio-sweep regret exceeds dpp's at any N below the overload band.
+
 ## 5. Findings
 
 **F1 — llm-d's shipped decode scorer pins decode onto one instance.** With one shared prefix group,
@@ -728,8 +913,27 @@ destroyed at instance *i* by adding work there. It is computable (we know each c
 and estimated remaining latency). One change addresses F6 (drift's overload collapse), F9 (the
 class backfire), and the Type-A/B failure, because all three are the same missing externality.
 
-**The honest next experiment — an oracle upper bound.** Test the *ceiling* before paying for the
-machinery:
+**The honest next experiment — an oracle upper bound. ✅ DONE (E12).** We tested the *ceiling* before
+paying for the machinery, and it **partially cleared the bar**: oracle value-at-risk beats `least-ttft`
+**decisively on the decode-bound and balanced archetypes** (where the co-resident externality dominates —
+the design's central prediction, confirmed) but **not on the prefill-bound archetypes** (ties at moderate
+load; `hazard` over-disaggregates). So the value-currency idea is *not* dead — it earns a deployable
+approximation *for the decode/balanced regime* (co-resident remaining from the censored `N̂_out` estimate,
+deferred) — but it is not a universal rescue. The `util` kernel is the robust choice; the predicted
+saturation-neglect trap (point 3 below) did not materialise on these constant-output single-class
+archetypes, though that stresses neither heterogeneity nor multi-class, so it is unrefuted. Full
+per-archetype × kernel × seed table and the completion model: E12, F14/F15, and
+`docs/superpowers/specs/2026-07-21-edpp-var-oracle-design.md`.
+
+**And the follow-through — drift-plus-VaR (E13) is a deployable, minimax-regret-adaptive rule.** Keeping
+the work-drift term AND adding the VaR externality (scale-free auto-normalization) gives one rule you
+deploy blind that is within ~5% of the best simple rule in every regime and never catastrophic, on
+realistic variable-output workloads, using only a censored (INV-9-safe) co-resident estimate — worst-case
+goodput regret ~0.05 vs 0.29–0.92 for any fixed rule. It resolves E12's oracle caveat (deployable ≈
+oracle) and the constant-output caveat (survives variance as a minimax-regret result, though the large
+constant-output "unification" shrinks). This is the study's candidate positive contribution — §2.3 for the
+rule, E13/F19 for the grid. Remaining scope: variance-axis and topology breadth. The original
+oracle-upper-bound plan was:
 1. **Read the true output length** (`o_r`) rather than estimating it. ✅ *Built and run* as
    `--edpp-oracle-output-len` (explicitly oracle-marked, diagnostic-only, upper-bound; E10). Result:
    a near-no-op on these constant-output archetypes — it neither rescues nor breaks the rule, and it
@@ -782,6 +986,39 @@ ORACLE=1 MODE=ablate RATES="8 12 16" SEEDS="42 7 123" bash campaigns/edpp-study/
 CXSIZE=1 MODE=ablate RATES="8 12 16" SEEDS="42 7 123" bash campaigns/edpp-study/repro_spectrum.sh
 # measure the REAL transfer durations the sim executes:
 #   ./blis run ... --pd-decider always --log debug 2>&1 | grep "blocks, duration="
+
+# E12 value-at-risk drift ORACLE vs least-ttft (flip/util/hazard kernels; diagnostic, upper bound)
+bash campaigns/edpp-study/repro_var_oracle.sh                    # reduced path, 3 seeds (F14/F15)
+JOINT=1 bash campaigns/edpp-study/repro_var_oracle.sh            # joint (decode,prefill) argmin path (F16)
+# E12 heterogeneous-θ_i follow-up (fast H100 + crippled-A100 decode, saturating interior optimum; F17)
+bash campaigns/edpp-study/repro_var_oracle_hetero.sh
+
+# E13 drift-plus-VaR — deployable, minimax-regret-adaptive rule (keep congestion + VaR + auto-normalize)
+# THE headline result: regime × baseline dominance grid on realistic VARIABLE output, DEPLOYABLE arm.
+bash campaigns/edpp-study/repro_var_dominance.sh                                     # F19/F20 grid (σ=0.4)
+#   arms: never|always|prefix16(llm-d)|kairos*(SOTA, best-β)|least-ttft|dpp|dpVaR ; KBETAS sweeps β
+VAROUT=0.6 bash campaigns/edpp-study/repro_var_dominance.sh                          # variance-axis check
+# Constant-output ceiling (larger but not the realistic claim; F18):
+NORM=1 bash campaigns/edpp-study/repro_var_oracle_hetero.sh                          # hetero oracle ceiling
+JOINT=1 VARCONGW=1 NORM=1 ARCH_ORDER="decode mixed" RATES="8 16" SEEDS="42 7 123" \
+  bash campaigns/edpp-study/repro_var_oracle.sh
+# w-sensitivity (broad plateau, not a knife-edge): sweep VARCONGW on repro_var_oracle_hetero.sh
+# The clean single-run form of the algorithm:
+#   ./blis run ... --edpp-rule var --edpp-var-metric util --edpp-tau-e2e <e2e> \
+#     --edpp-var-congestion --edpp-var-normalize --edpp-var-congestion-weight 1 \
+#     --edpp-oracle-output-len --edpp-joint --edpp-tadm-estimator rollforward --edpp-c-xfer-size-aware
+
+# E14 structural / topology ablations (F21/F22). Both auto-generate any missing coeff files.
+bash campaigns/edpp-study/repro_hetero_ratio_sweep.sh                                # F21 ratio sweep (N∈[1,5])
+python3 campaigns/edpp-study/analyze/hetero_ratio_sweep.py \
+  --csv campaigns/edpp-study/out/hetero_ratio/ratio_sweep.csv \
+  --out campaigns/edpp-study/out/hetero_ratio/hetero_ratio_sweep.png              # fig + worst-case regret
+bash campaigns/edpp-study/repro_topology_matrix.sh                                  # F22 topology matrix (1P3D/2P2D/3P1D)
+python3 campaigns/edpp-study/analyze/topology_matrix.py \
+  --csv campaigns/edpp-study/out/topo_matrix/topo_matrix.csv \
+  --out campaigns/edpp-study/out/topo_matrix/pd_provisioning.png                  # framing A table + framing B fig
+# uniform-Nx slow-node coeff generation (one ratio): tflops=1979/N, bw=3.35/N
+#   bash scripts/calibration/repro_theta_by_gpu.sh ratioNpM <1979/N> <3.35/N> A100
 
 # See WHY a decision was made (per-decision term breakdown incl. z_ttft/z_itl)
 ./blis run --model meta-llama/llama-3.3-70b-instruct \

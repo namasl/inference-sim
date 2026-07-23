@@ -1358,3 +1358,301 @@ it declines the disaggregation that helps the system.
 **Note on the penalty term (V.'s follow-up).** The anomaly applies to the penalty too
 (`transferPenalty` now takes the per-request `c_xfer`), but per F8 even the 10× scale-up leaves it
 ~0.008 vs `z_ttft`'s 25.7 — corrected for honesty, still a non-driver.
+
+---
+
+## E12 — Value-at-risk drift ORACLE vs `least-ttft` (the one live idea, tested at its ceiling)
+
+Design: `docs/superpowers/specs/2026-07-21-edpp-var-oracle-design.md`. The §7 "one live idea" made
+concrete: keep Neely's drift structure but re-price the drift term in **value-at-risk** — the marginal
+goodput destroyed among the co-residents on the candidate decode instance — instead of in **work** (µs).
+Built as a DIAGNOSTIC ORACLE (`--edpp-rule var`, kernels `--edpp-var-metric flip|util|hazard`): it reads
+each co-resident's TRUE remaining decode steps (un-censored `TrueRemaining`, a gated INV-9 violation) to
+project its completion under local vs disagg placement, then flips the reduced rule's LHS from the
+work-currency balance term to `VaR_local − VaR_disagg`. Completion model = **full B+1 re-timing**
+(co-resident per-iter time recomputed at batch `B+1`, `kv + a_r` after the routed request joins). g()'s
+composite (TTFT ∧ mean-ITL ∧ E2E ≤ deadline) uses the SAME thresholds as the goodput metric (new
+`--edpp-tau-e2e`). Composed with `--edpp-oracle-output-len` for a fully clean ceiling.
+
+**The bar (§1):** oracle VaR must **clearly beat** the one-line `least-ttft` rule on the archetypes where
+`least-ttft` ties/wins. If a perfect oracle can't, the value-currency idea is dead.
+
+```bash
+COEFFS=scripts/calibration/coeffs-llama70b-h100-tp4.json bash campaigns/edpp-study/repro_var_oracle.sh
+```
+
+**Result — contested cells only (mean of 3 seeds; cells where every arm scores 1.000 omitted):**
+
+| archetype | rate | never | always | least-ttft | edpp | var:flip | var:util | var:hazard |
+|-----------|------|-------|--------|-----------|------|----------|----------|-----------|
+| decode (256/512)        | 4  | 0.414 | **1.000** | 0.414 | 0.414 | 0.981 | 0.981 | **1.000** |
+| decode                  | 8  | 0.133 | 0.295 | 0.152 | 0.146 | 0.276 | 0.276 | **0.293** |
+| decode                  | 16 | 0.133 | 0.267 | 0.133 | 0.133 | 0.214 | 0.214 | **0.267** |
+| mixed (2048/128)        | 16 | 0.303 | 0.928 | 0.368 | 0.417 | 0.711 | 0.843 | **0.929** |
+| prefill_lean (8192/64)  | 16 | 0.249 | 0.065 | 0.771 | **0.786** | 0.726 | 0.747 | 0.189 |
+| prefill_bound (16000/16)| 8  | 0.276 | 0.033 | 0.947 | **0.967** | 0.878 | 0.943 | 0.958 |
+| prefill_bound           | 16 | 0.049 | 0.026 | **0.101** | 0.065 | 0.082 | 0.090 | 0.079 |
+
+**F14 — the oracle CLEARS the bar on the decode-bound and balanced archetypes, and only there.**
+On `decode` and `mixed` — exactly where `least-ttft` is blind to the co-resident externality (it prices
+only the deciding request's own TTFT) — VaR beats it decisively: `var:util` 0.843 vs 0.368 and `var:hazard`
+0.929 vs 0.368 at mixed r16; `var:*` roughly doubles `least-ttft` across the saturated `decode` cells. This
+is the design's central prediction confirmed: supplying the externality `least-ttft` lacks is worth a large
+goodput gain when the decode pool is the contended resource. **On the prefill-bound archetypes the oracle
+does NOT beat `least-ttft`** — it ties at moderate load (`var:util` 0.943 vs 0.947 at prefill_bound r8) and
+neither clearly wins under deep overload (r16, all ≈ 0.08–0.10). There `least-ttft`'s own-TTFT signal is
+already near-optimal and the placement externality is prefill-side, which VaR models only coarsely.
+
+**F15 — kernel ranking: `util` is the robust pick; `hazard` over-disaggregates; the predicted B-trap did
+not fire.** `var:hazard` is strongest on decode/balanced (it tracks `always`, which is right there) but
+**collapses on `prefill_lean`** (0.189, tracking `always`'s 0.065) — it disaggregates too aggressively when
+prefill is the bottleneck. `var:util` (kernel B) never collapses and captures most of the decode/balanced
+win, making it the best-behaved kernel — notably, the §7-predicted "saturating utility ⇒ doomed-request
+neglect" trap did **not** materialise at these operating points (constant-output, single-class). That is
+"not observed here," not "refuted": the trap is a heterogeneous/multi-class phenomenon this grid does not
+stress. `var:flip` is the noisy hyperparameter-free ceiling — directionally identical to `util`, lower.
+
+**Verdict.** PARTIAL clearance. The value-currency idea has real, large merit **on the decode-bound and
+balanced regimes** — enough to justify building a deployable approximation *for those regimes* (co-resident
+remaining from the censored `N̂_out` estimate rather than the oracle; deferred per §7). It does **not**
+rescue the prefill-bound regime, where `least-ttft`/`edpp` already win and `hazard` actively hurts. This is
+the nuanced, per-archetype verdict §9 anticipated — not a single operating point. The honest boundary from
+§7 stands: VaR gives externality-aware *placement*, not *triage*; a saturating utility yields neglect, not
+capacity-yielding, because EDPP holds no admission/scheduling lever.
+
+**F16 — joint path, HOMOGENEOUS hardware (`JOINT=1`; `least-ttft` is reduced-only ⇒ n/a).** The headline
+verdict is unchanged: `var:*` clears the bar vs reduced `least-ttft` on decode/balanced (joint `var:util`
+mixed r16 mean 0.796 vs reduced `least-ttft` 0.368) and not on prefill-bound (joint `var:util` prefill_lean
+r16 0.743 ≈ reduced `least-ttft` 0.771; prefill_bound r8 0.911 vs 0.947). But two things stand out. (1)
+**Joint-VaR beats joint-`edpp` (dpp argmin) almost everywhere** — mixed r16 0.796 vs 0.325, prefill_lean r16
+`var:util` 0.743 vs `edpp` 0.622 — so VaR's win is not a reduced-path artifact; it improves the joint rule
+too. (2) **Joint-`edpp` is no better than (often slightly worse than) reduced-`edpp`** on this homogeneous
+grid (mixed r16 0.325 vs 0.417; prefill_lean r16 0.622 vs 0.786), consistent with F10: the joint
+(decode,prefill) argmin earns nothing when every candidate shares the same θ_i. The ceiling on the prefill
+archetypes is still set by the reduced path. `var:hazard` stays the over-aggressive kernel (collapses on
+prefill_lean, tracking `always`), though it is oddly the least-bad arm under prefill_bound deep overload
+(r16, all arms ≈ 0.05–0.31, noise-dominated). **This isolates the open question:** joint's structural value
+requires heterogeneous θ_i (fast/slow decode nodes) — the axis F10/E5 identify and this homogeneous sweep
+cannot exercise. A heterogeneous-θ_i VaR run (fast H100 + crippled-A100 pools via `--edpp-coeffs-by-gpu`,
+mirroring `repro_hetero_hw.sh THETA=1`) is the natural next test, because a fast node destroys *less*
+goodput per unit work — precisely the externality VaR prices and the work-currency θ_i drift over-corrected
+on in E5.
+
+**F17 — heterogeneous θ_i, saturating regime: VaR does NOT beat work-currency θ_i-joint dpp — it
+over-routes to the fast node.** Ran the test above (`repro_var_oracle_hetero.sh`): a saturating 1P2D
+deployment with the two decode instances on different hardware (fast H100 + crippled A100), per-instance
+θ_i via `coeffs_by_gpu`, joint (decode,prefill) argmin. The goodput optimum is a NON-degenerate interior
+decode split (~86% fast). Mean of 4 seeds:
+
+| arm | goodput | realized fast-share |
+|-----|---------|--------------------|
+| optimum (fixed plan, 86% fast) | 0.949 | 86% |
+| **θ_i-joint dpp** (work currency) | **0.928** | 80% |
+| blind load-balance | 0.878 | 78% |
+| var:util | 0.859 | ~91% |
+| var:hazard | 0.859 | ~91% |
+| var:flip | 0.470 | **100%** |
+
+**VaR over-weights the fast node** (~91% fast, past the 86% optimum) and lands BELOW work-currency
+θ_i-joint dpp (0.928) — and `var:util`/`hazard` even below blind load-balance. `var:flip` pins **100%**
+onto the fast node every seed and craters (0.470): under a loose E2E deadline (8s) the fast node's
+co-residents never cross their deadline, so the flip count on fast is identically 0 → VaR sees adding to
+fast as always free → it never stops. This is the mirror image of dpp's failure, not a fix for it: the
+goodput-currency externality is correctly signed but MIS-CALIBRATED on heterogeneous hardware — a fast
+node destroys so little goodput per unit work that VaR concentrates load there past the throughput
+optimum. Work-currency θ_i-drift, which DOES feel the fast node's rising per-iter time as it fills, stays
+closer to the optimum here. **Net: the value-currency win is real on homogeneous decode/balanced (F14),
+but it does NOT extend to heterogeneous provisioning** — the deployable-approximation recommendation stays
+scoped to the decode/balanced regime. A calibration fix (tighter deadline sensitivity, or a hazard band
+scaled to the node's own per-iter time) is a possible future lever, but is not part of this finding.
+
+**F18 — drift-plus-VaR unifies both regimes: keep the congestion drift AND add the VaR externality.**
+The F17 diagnosis said pure VaR over-routes because it prices the delay to the current batch and is blind
+to the standing queue that over-concentration builds — exactly the snapshot-blindness the admission
+estimator shows in overload. The fix is to keep the Lyapunov work-congestion drift term (which DOES feel a
+node's backlog grow) and ADD the VaR externality, rather than replacing congestion with VaR:
+`cost(i) = w · congestion_i + VaR_i + self terms` (new `--edpp-var-congestion [--edpp-var-congestion-weight w]`).
+
+Mechanism (why one weight works in both regimes): on HOMOGENEOUS hardware the congestion term is symmetric
+across identical decode nodes, so it cancels out of the argmin and VaR does the discriminating; on
+HETEROGENEOUS hardware the fast node's backlog grows asymmetrically as it fills, so congestion bites and
+reins in the over-routing. The weight only needs to be large enough to dominate WHERE congestion is
+asymmetric; it is inert where it is symmetric. Verified with `w=10000`, `util` kernel, joint path:
+
+| regime / cell | dpVaR:util (w=1e4) | joint-dpp | pure-VaR:util | best baseline |
+|---|---|---|---|---|
+| homog decode r8 (3 seeds) | 0.281 | 0.139 | 0.293 | never/always 0.19/0.29 |
+| homog mixed r16 (3 seeds) | 0.860 | 0.325 | 0.796 | always 0.928 |
+| hetero saturating (4 seeds) | **0.9995** | 0.928 | 0.859 | static-opt 0.949 |
+
+On heterogeneous, dpVaR:util reaches ~1.00 on all four seeds — beating θ_i-joint dpp, pure VaR, blind
+load-balance, and even the static-fraction optimum (it adapts per request, landing at ~82% fast vs the
+static 86%). On homogeneous it preserves the VaR win (≈ pure VaR, ~2–3× over dpp), because congestion
+cancels. **dpVaR:util is the only rule near-optimal across BOTH regimes** — always wins homog-mixed but
+collapses on prefill/heterogeneous; dpp wins heterogeneous but loses homog decode/balanced; pure VaR is the
+reverse. Only the `util` kernel unifies (hazard+congestion still over-routes, ~0.86 on hetero).
+
+**Weight sensitivity + auto-normalization (caveat 2, now addressed).** The raw congestion weight is NOT a
+knife-edge: sweeping `w` shows a broad plateau — heterogeneous dpVaR:util mean goodput 0.894 (w=100) →
+0.965 (w=1e3) → 0.9995 (w=1e4) → 0.990 (w=1e5), and homogeneous mixed-r16 holds 0.79–0.80 across
+w∈[100,1e4]. Any `w`∈[1e3,1e4] wins both regimes (a full order of magnitude wide), exactly as a Neely `V`
+knob is presented. The large absolute value is only because congestion (work-µs, normalized) and VaR
+(goodput units) live on different scales. Adding per-decision min-max normalization of the two terms across
+the joint candidates (`--edpp-var-normalize`) makes the weight SCALE-FREE: the win moves to `w≈1` (hetero
+seed42: w=0.5→1.000, w=1→1.000, w=2→0.970, w=5→0.978) and holds across seeds at `w=1` (hetero ~0.999 over
+4 seeds; homog decode-r8 ~0.30 vs dpp ~0.14, mixed-r16 ~0.86 vs dpp ~0.33 over 3 seeds). A zero-spread guard
+in the normalizer makes symmetric congestion (identical hardware) cancel automatically — the mechanism is
+now built in, not hand-set. So drift-plus-VaR:util + auto-normalization at `w=1` is the clean form.
+
+**Remaining honest scope:** (1) still an ORACLE (un-censored co-resident remaining + true o_r) — a ceiling;
+a deployable variant (censored N̂_out) is untested. (2) one heterogeneous topology (H100 + crippled-A100,
+1P2D, one saturating rate) and the homogeneous archetypes at specific rates — broader topology / rate /
+heterogeneity-ratio robustness is future work. (3) the util kernel unifies; hazard does not. Within those
+bounds this is a positive, unifying algorithmic result with a principled (scale-free) weight, not a diagnosis.
+
+**F19 — the honest, deployable result: drift-plus-VaR is minimax-regret-adaptive, and F18's "unification"
+was a constant-output ceiling.** Two follow-ups closed the F18 caveats and, in doing so, corrected the
+claim.
+
+*(a) Deployable ≈ oracle.* A DEPLOYABLE variant (`--edpp-var-deployable`) estimates each co-resident's
+remaining steps from the censored per-class N̂_out (`max(N̂_out − StepsDone, 1)`, INV-9-safe) instead of the
+oracle true remaining. It matches the oracle within noise everywhere tested (hetero constant: 0.925 vs
+0.944; homog: ~equal) — so the result does NOT depend on reading hidden output lengths. Even the ORACLE
+degrades under output variance, so the limit is the *mechanism*, not the estimate.
+
+*(b) Variable output shrinks the win — it is minimax-regret, not domination.* On constant output dpVaR
+beats dpp outright on heterogeneous (F18). On realistic VARIABLE output (lognormal σ=0.4, CV≈0.42) the
+advantage narrows: dpVaR **ties** the regime winner rather than beating it. Regime × baseline dominance
+grid (deployable, variable output, mean(min) over 3 seeds; `repro_var_dominance.sh`):
+
+| archetype | never | always | least-ttft | dpp | dpVaR(deploy) |
+|-----------|-------|--------|-----------|-----|---------------|
+| decode r16        | 0.133 | **0.736** | 0.607 | 0.527 | 0.724 |
+| mixed r16         | 0.356 | **1.000** | 0.708 | 0.621 | 0.946 |
+| prefill_lean r16  | 0.204 | 0.061 | 0.806 | 0.819 | **0.853** |
+| prefill_bound r8  | 0.399 | 0.046 | 0.954 | **0.968** | 0.964 |
+| heterogeneous     | –     | 0.332 | n/a   | **0.942** | 0.900 |
+
+dpVaR is NOT ≥ every baseline everywhere (trails `always` 5pts on mixed, `dpp` 4pts on heterogeneous). The
+real claim is **minimax regret**: deployed blind, dpVaR is within ~5% of the best rule in every regime and
+never craters, whereas every simple rule collapses somewhere. Worst-case regret across the grid: **dpVaR
+0.054** vs dpp 0.38 vs least-ttft ≥0.29 vs always 0.92 — a 5–17× reduction. **This is the operational
+value:** the rule you deploy when you cannot predict workload or hardware, cutting worst-case goodput loss
+from 30–92% to ~5%. Scope: σ=0.4 (the heterogeneous gap to dpp widens modestly at higher CV — a
+variance-axis figure is the natural follow-up); 3 seeds; util kernel; one heterogeneous topology. This
+supersedes F18's "unifies both regimes" framing (true only on constant output) with the deployable,
+variable-output minimax-regret result.
+
+**F20 — the minimax-regret result survives against a real SOTA baseline (Kairos), and the regime that
+breaks every published rule is hardware heterogeneity.** F19's grid compared only against simple rules.
+We implemented **Kairos** ("Towards Load-Aware Prefill Deflection for Disaggregated LLM Serving",
+arXiv:2607.02043 — published ~3 weeks before this run) as a first-class baseline in BLIS
+(`sim/edpp_kairos.go`, `--edpp-rule kairos`), plus llm-d's shipped `prefix-threshold(16)` decider.
+
+*Fidelity of the baseline (stated because it decides whether the comparison is honest).* Kairos is
+reproduced faithfully: prefill-node TTFT = their FIFO queue wait + own chunked execution + KV transfer;
+per decode node, the greedy **largest TBT-safe chunk schedule** (their hard constraint
+`T_step ≤ β·τ_itl`, solved here in closed form rather than swept); one deflected prefill per node;
+deflection avoids the KV transfer. It is evaluated on the SAME trained-physics coefficients AND the SAME
+occupancy-aware admission estimator our rule consumes, so the comparison isolates the POLICY. Two
+fairness bugs in our first implementation were found and fixed: (i) the deflect path initially omitted
+admission delay while the prefill path carried queue wait, making deflection look free on saturated
+decode nodes; (ii) their queue-wait `T_step(χ, Σℓ/2)`, read literally, charges a chunk attention over
+half the *entire queue*, which over-prices the prefill path — we cap the context at one request's prompt
+length, the reading most generous to Kairos. Finally, β is swept ∈{0.25,0.5,1.0} and Kairos is reported
+at its **best** β per seed. The fixes moved Kairos from 0.164→0.736 (decode) and 0.437→0.883 (mixed).
+
+**Grid (deployable arms, variable output σ=0.4, mean over 3 seeds):**
+
+| archetype | never | always | prefix16 | kairos* | least-ttft | dpp | dpVaR |
+|-----------|-------|--------|----------|---------|-----------|-----|-------|
+| decode r16       | 0.133 | **0.736** | 0.736 | **0.736** | 0.607 | 0.527 | 0.724 |
+| mixed r16        | 0.356 | **1.000** | 1.000 | 0.883 | 0.708 | 0.621 | 0.946 |
+| prefill_lean r16 | 0.204 | 0.061 | 0.061 | **0.856** | 0.806 | 0.819 | 0.853 |
+| prefill_bound r8 | 0.399 | 0.046 | 0.046 | 0.890 | 0.954 | **0.968** | 0.964 |
+| heterogeneous    | –     | 0.332 | 0.332 | 0.332 | 0.328 | **0.942** | 0.900 |
+
+**Worst-case regret (deploy blind):** dpVaR **0.054** | dpp 0.38 | kairos* 0.61 | least-ttft 0.61 |
+never 0.65 | always = prefix16 0.92.
+
+Two claims, layered by defensibility. **(a) Inside Kairos's own design envelope** (homogeneous
+archetypes only), dpVaR's worst-case regret is **0.054 vs Kairos 0.117** — a 2× edge on their home turf.
+**(b) Including heterogeneity**, 0.054 vs 0.610 (11×) — but Kairos *assumes homogeneous hardware*, so
+that cell is outside its stated envelope. The honest framing is therefore NOT "we beat Kairos" but:
+**every published rule has a regime where it collapses, and the regime that breaks Kairos and least-ttft
+is hardware heterogeneity — which no published P/D routing rule addresses** (confirmed by survey: Kairos
+uses uniform A100s; TaiChi's "differentiated capability" is chunk-size configuration on identical GPUs).
+
+**Secondary finding: llm-d's shipped PD decider degenerates to `always`.** `prefix-threshold(16)` is
+byte-identical to `always` in all five cells — every prompt exceeds the 16-token uncached threshold — so
+it inherits `always`'s collapses (0.046 prefill_bound, 0.332 heterogeneous). A property of a shipped
+production config, independent of our rule.
+
+Scope unchanged from F19: σ=0.4, 3 seeds, one heterogeneous topology, simulation with coefficients fit to
+the simulator's own latency model. Harness: `repro_var_dominance.sh` (KBETAS sweeps Kairos's β).
+
+## Structural / topology ablations (2026-07-23) — dpVaR's edge survives the heterogeneity ratio AND the fleet shape
+
+F19/F20 fixed the heterogeneity at ONE accelerator ratio (the crippled-A100 cell, decode-θ ratio ~4.8×)
+and ONE topology (1P2D). This ablation varies both — the two axes the paper's threats section named as
+open. Design: `docs/superpowers/specs/2026-07-23-edpp-structural-ablations-design.md`. Both experiments
+reuse the F20 deployable arm set (σ=0.4, 3 seeds, best-β Kairos, rollforward + size-aware c_xfer). Paper
+subsection: `infocom/joint-pd-routing.tex` `sec:eval:structural` (frozen tab:grid/tab:regret).
+
+**F21 — the heterogeneity ratio at which the TTFT-currency rules break, and where dpVaR's margin peaks.**
+Uniform-Nx slow node (scale BOTH tflops_peak and bw_peak_tbs by 1/N via `repro_theta_by_gpu.sh`); the
+fitted decode per-token coefficient `c1` comes out at ratio EXACTLY N (memory-bound), so the ratio the
+rule sees equals the knob. Coeff ladder: `scripts/calibration/coeffs-llama70b-ratio{1p0,1p2,1p5,2p0,3p0,5p0}-tp4.json`.
+N=5 (c1=0.238) ≈ the published crippled-A100 cell (c1=0.228, N≈4.79), and at N=5 seed 42 reproduces the
+tab:grid WORST-seed column exactly (dpVaR 0.777, dpp ~0.865) — the sweep extends the headline, it does
+not restate it. 1P2D, rate 10, cap 8, mean over 3 seeds:
+
+| N (=θ_slow/θ_fast) | always | kairos* | least-ttft | dpp | dpVaR | best static split |
+|---|---|---|---|---|---|---|
+| 1.0 | 0.783 | 0.783 | 0.768 | **1.000** | **1.000** | 1.000 |
+| 1.2 | 0.554 | 0.554 | 0.554 | **1.000** | **1.000** | 1.000 |
+| 1.5 | 0.462 | 0.462 | 0.462 | **1.000** | **1.000** | 1.000 |
+| 2.0 | 0.421 | 0.421 | 0.421 | **1.000** | **1.000** | 0.998 |
+| 3.0 | 0.379 | 0.379 | 0.379 | **0.994** | 0.941 | 0.990 |
+| 5.0 | 0.328 | 0.328 | 0.322 | **0.940** | 0.889 | 0.888 |
+
+**Worst-case regret vs the per-N best static split, across N∈[1,5]:** always/kairos/least-ttft **0.611** |
+dpp **0.000** | dpVaR **0.049** (matches the 0.054 headline). The TTFT-currency rules (least-ttft, Kairos)
+fall below half their homogeneous goodput by N=1.5 and never recover. dpp and dpVaR track the best static
+split across the whole range; dpVaR's margin over least-ttft grows monotonically and reaches **0.57 at
+N=5**. Note the oracle is the best *static* decode split (per-N grid search) — the joint rules route
+adaptively and can EXCEED it, so their regret dips slightly negative at high N. Harness:
+`repro_hetero_ratio_sweep.sh`; fig `out/hetero_ratio/hetero_ratio_sweep.png` → `infocom/figures/hetero_ratio_sweep.png`.
+
+**F22 — the cancel/bind normalization holds as the fleet SHAPE changes; Kairos is provisioning-fragile.**
+GPU-matched 16 accelerators provisioned as 1P3D / 2P2D / 3P1D (num-instances 4), HOMOGENEOUS hardware (no
+bundle → the first-fit placement fragility does not apply). Four workload archetypes × 7 arms × 3 seeds,
+one CSV, two framings. **Framing A — worst-case regret per topology (across the four archetypes):**
+
+| topology | never | always | kairos* | least-ttft | dpp | dpVaR |
+|---|---|---|---|---|---|---|
+| 1P3D | 0.79 | 0.95 | 0.007 | 0.23 | 0.34 | **0.025** |
+| 2P2D | 0.79 | 0.95 | 0.13 | 0.29 | 0.32 | **0.004** |
+| 3P1D | 0.95 | 0.94 | **0.59** | 0.64 | 0.10 | **0.003** |
+
+dpVaR's worst case stays ≤0.025 on every shape, matching its 1P2D headline — the §norm congestion term
+still cancels where instances match and binds where they differ, with the shared weight fixed. NEW: Kairos
+is near-optimal on the decode-heavy 1P3D shape (0.007) and collapses to 0.59 on the prefill-heavy 3P1D
+shape, so its exposure follows the PROVISIONING as well as the workload (F20 showed only the workload
+axis). dpp is worst on decode-heavy provisioning (0.34 on 1P3D) and best on 3P1D (0.10), the mirror image.
+
+**Framing B — P:D provisioning adaptivity (the TaiChi answer).** Fixing the rule and reading its goodput
+across the three provisionings, dpVaR sits at the per-provisioning BEST in all 16 archetype×provisioning
+cells, so it adapts the effective split online with the one shared weight — vs TaiChi's offline,
+minutes-scale reconfiguration. Fig `out/topo_matrix/pd_provisioning.png` → `infocom/figures/pd_provisioning.png`.
+Harness: `repro_topology_matrix.sh`.
+
+**Paper-vs-harness naming caveat (flagged, not silently resolved).** The fleet is built with
+`--decode-instances` (decode-only pods that prefill LOCALLY on the collocated path, per
+`TestDisaggregation_NonDisaggRoutedToDecodePoolOnly`), while the paper calls them "mixed (M)". The
+published tab:grid uses the same setup, so the subsection uses paper M-notation (1P3M/2P2M/3P1M). True
+mixed pods = `--prefill-decode-instances` (SharedInstances). The reduced rule charges the prefill side
+with the global `d.coeffs`, so per-instance prefill-θ heterogeneity needs `--edpp-joint`.
+
+Scope: σ=0.4, 3 seeds, one model/TP, homogeneous multi-topology (heterogeneity ratio is a separate axis,
+F21), coefficients fit to the simulator's own latency model.
