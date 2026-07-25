@@ -58,15 +58,15 @@ func LoadEDPPCoeffs(path string) (EDPPCoeffs, error) {
 	return c, nil
 }
 
-// Wp is the prefill demand of a_p uncached tokens for a prompt of full length
-// a_r, in µs. It is the trajectory sum of the active (trained-physics) latency
-// model's per-step prefill charge C_pf·s + C_attn·s·(a_r + s/2) — hence the
-// (a_r + a_p/2) form (see docs/superpowers/specs/2026-07-01-edpp-work-model-design.md
-// §2, §7). At a_p = a_r (no cache) this is C_pf·a_r + 1.5·C_attn·a_r².
+// Wp is the prefill demand of a_p uncached tokens for a prompt of full length a_r, in
+// µs. It is the trajectory sum of the active (trained-physics) latency model's causal
+// per-step prefill charge C_pf·s + C_attn·s·(prefix + s/2), integrated over the prefill
+// from prefix a_r−a_p to a_r — hence the (a_r − a_p/2) form. At a_p = a_r (no cache) this
+// is C_pf·a_r + 0.5·C_attn·a_r².
 func (c EDPPCoeffs) Wp(ap, ar int) float64 {
 	a := float64(ap)
 	r := float64(ar)
-	return c.CPf*a + c.CAttn*a*(r+a/2.0)
+	return c.CPf*a + c.CAttn*a*(r-a/2.0)
 }
 
 // Wd is the decode demand for a prompt of length a_r generating o output tokens,
