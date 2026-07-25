@@ -209,6 +209,11 @@ func (sim *Simulator) RunningDecodeState() []RunningReqState {
 			StepsDone:     stepsDone,
 			KVBlocks:      (req.ProgressIndex + blockSize - 1) / blockSize,
 			TrueRemaining: trueRemaining,
+			// Deployable per-co-resident SLO-deadline inputs (INV-9-safe) for the VaR oracle.
+			SLOClass:     req.SLOClass,
+			ArrivalUs:    req.ArrivalTime,
+			FirstTokenUs: req.FirstTokenTime,
+			TTFTSet:      req.TTFTSet,
 		})
 	}
 	return out
@@ -245,6 +250,11 @@ func (sim *Simulator) RunningPrefillState() []RunningReqState {
 			StepsDone:     req.ProgressIndex,
 			KVBlocks:      (req.ProgressIndex + blockSize - 1) / blockSize,
 			TrueRemaining: trueRemaining,
+			// Deployable per-co-resident SLO-deadline inputs (INV-9-safe) for the VaR oracle.
+			// A prefill occupant has not produced its first token (TTFTSet=false); its VaR
+			// flip is TTFT-side, keyed on ArrivalUs + τ_ttft.
+			SLOClass:  req.SLOClass,
+			ArrivalUs: req.ArrivalTime,
 		})
 	}
 	return out
@@ -894,7 +904,7 @@ func (sim *Simulator) executeBatchStep(now int64) int64 {
 			if req.ProgressIndex < si {
 				nt := int64(req.NumNewTokens)
 				sPf += nt
-				pfCtx += nt * (si + nt/2)
+				pfCtx += nt * (req.ProgressIndex + nt/2) // causal prefix, mirrors StepTime
 			} else if len(req.OutputTokens) > 0 {
 				bDec++
 				kv += req.ProgressIndex

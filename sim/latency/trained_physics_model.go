@@ -176,9 +176,9 @@ func (m *TrainedPhysicsModel) StepTime(batch []*sim.Request) int64 {
 		if req.ProgressIndex < util.Len64(req.InputTokens) {
 			// Prefill
 			ti := float64(req.NumNewTokens)
-			si := float64(len(req.InputTokens))
+			prefix := float64(req.ProgressIndex) // causal context: tokens already prefilled
 			totalPrefillTokens += ti
-			prefillAttnFlops += 4 * hPerGPU * ti * (si + ti/2) * dH
+			prefillAttnFlops += 4 * hPerGPU * ti * (prefix + ti/2) * dH
 		} else if len(req.OutputTokens) > 0 {
 			// Decode
 			totalDecodeTokens++

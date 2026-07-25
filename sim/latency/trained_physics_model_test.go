@@ -478,3 +478,18 @@ func TestTrainedPhysicsModel_GQA_ReducesKVBandwidth(t *testing.T) {
 	assert.Less(t, gqaTime, mhaTime,
 		"GQA step time (%d µs) must be less than MHA (%d µs): fewer KV heads → lower bandwidth", gqaTime, mhaTime)
 }
+
+// Causal attention: a prefill chunk attends to the prefix already processed, so a
+// later chunk (larger ProgressIndex) at the SAME prompt length and chunk size costs
+// strictly more. Under the old full-prompt basis both charge against len(InputTokens)
+// and are identical, so this test discriminates the change.
+func TestTrainedPhysicsModel_CausalPrefillAttention(t *testing.T) {
+	m := newTestTrainedPhysicsModel(t, trainedPhysicsTestModelConfig(), testHardwareConfig(), testCoeffs())
+	early := []*sim.Request{{InputTokens: make([]int, 1000), NumNewTokens: 100, ProgressIndex: 0, OutputTokens: []int{}}}
+	late := []*sim.Request{{InputTokens: make([]int, 1000), NumNewTokens: 100, ProgressIndex: 800, OutputTokens: []int{}}}
+	tEarly := m.StepTime(early)
+	tLate := m.StepTime(late)
+	if !(tLate > tEarly) {
+		t.Fatalf("causal attention: later chunk (ProgressIndex 800) must cost more than early (0); got late=%d early=%d", tLate, tEarly)
+	}
+}
