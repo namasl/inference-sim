@@ -74,6 +74,10 @@ func loadTrainedPhysicsGoldenDataset(t *testing.T) *trainedPhysicsGoldenDataset 
 // Regression guard for issue #965: inference_perf SLOClass "batch" caused
 // deferred-queue serialization, inflating TTFT 6-100× across all experiments.
 // This test will catch any recurrence of that regression pattern.
+//
+// Golden values regenerated 2026-07-25: prefill attention moved to the causal prefix
+// basis (see docs/superpowers/specs/2026-07-25-edpp-causal-prefill-attention-design.md).
+// Long-prompt prefill charges ~3x less attention, lowering prefill-heavy TTFT/E2E.
 func TestTrainedPhysics_GoldenDataset(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping trained-physics golden dataset test in short mode (-short flag)")
