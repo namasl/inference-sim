@@ -5,29 +5,29 @@
     "requests": "count"
   },
   "source_csvs": [
-    "/tmp/theta_ratio2/D1.csv",
-    "/tmp/theta_ratio2/D2.csv",
-    "/tmp/theta_ratio2/D3.csv",
-    "/tmp/theta_ratio2/D4.csv",
-    "/tmp/theta_ratio2/P1.csv",
-    "/tmp/theta_ratio2/P2.csv",
-    "/tmp/theta_ratio2/P3.csv"
+    "/tmp/theta_ratio2p0/D1.csv",
+    "/tmp/theta_ratio2p0/D2.csv",
+    "/tmp/theta_ratio2p0/D3.csv",
+    "/tmp/theta_ratio2p0/D4.csv",
+    "/tmp/theta_ratio2p0/P1.csv",
+    "/tmp/theta_ratio2p0/P2.csv",
+    "/tmp/theta_ratio2p0/P3.csv"
   ],
-  "total_rows": 12005,
+  "total_rows": 12008,
   "decode": {
-    "n_rows": 10390,
-    "alpha_us": 30533.92117877209,
-    "c0_us_per_req": 6.277509186370501,
-    "c1_us_per_token": 0.09522810370032891,
-    "r2": 0.999999999590687,
-    "cond_b_dec_kv": 2.3423881480009334
+    "n_rows": 10392,
+    "alpha_us": 30533.92227721394,
+    "c0_us_per_req": 6.277477192316058,
+    "c1_us_per_token": 0.0952281028577366,
+    "r2": 0.9999999995867735,
+    "cond_b_dec_kv": 2.3425534650993347
   },
   "prefill": {
     "n_rows": 1074,
-    "alpha_p_us": 30538.3689290044,
-    "c_pf_us_per_token": 7.027333141882806,
-    "c_attn_us_per_unit": 0.00010075786627348929,
-    "r2": 0.999999999624325,
-    "cond_s_pf_pf_ctx": 6.9784914083726814
+    "alpha_p_us": 30538.46775606207,
+    "c_pf_us_per_token": 7.02740245534748,
+    "c_attn_us_per_unit": 0.0001007465797925968,
+    "r2": 0.9999999995211415,
+    "cond_s_pf_pf_ctx": 2.5566809347314488
   }
 }

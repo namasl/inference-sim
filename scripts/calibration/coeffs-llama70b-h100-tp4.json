@@ -5,53 +5,53 @@
     "requests": "count"
   },
   "source_csvs": [
-    "/tmp/llama70/D1.csv",
-    "/tmp/llama70/D2.csv",
-    "/tmp/llama70/D3.csv",
-    "/tmp/llama70/D4.csv",
-    "/tmp/llama70/P1.csv",
-    "/tmp/llama70/P2.csv",
-    "/tmp/llama70/P3.csv"
+    "/tmp/llama70_causal/D1.csv",
+    "/tmp/llama70_causal/D2.csv",
+    "/tmp/llama70_causal/D3.csv",
+    "/tmp/llama70_causal/D4.csv",
+    "/tmp/llama70_causal/P1.csv",
+    "/tmp/llama70_causal/P2.csv",
+    "/tmp/llama70_causal/P3.csv"
   ],
-  "total_rows": 13037,
+  "total_rows": 13043,
   "decode": {
-    "n_rows": 11369,
-    "alpha_us": 16613.539607002218,
-    "c0_us_per_req": 5.347233255096054,
-    "c1_us_per_token": 0.0476140288153138,
-    "r2": 0.9999999983360309,
-    "cond_b_dec_kv": 2.4955766511019166
+    "n_rows": 11374,
+    "alpha_us": 16613.537554540144,
+    "c0_us_per_req": 5.347316038602452,
+    "c1_us_per_token": 0.04761401141756073,
+    "r2": 0.9999999983271451,
+    "cond_b_dec_kv": 2.4958437467803143
   },
   "prefill": {
     "n_rows": 1074,
-    "alpha_p_us": 16617.95001666865,
-    "c_pf_us_per_token": 6.1446533788622295,
-    "c_attn_us_per_unit": 0.00010075607622433406,
-    "r2": 0.9999999995290791,
-    "cond_s_pf_pf_ctx": 6.9784914083726814
+    "alpha_p_us": 16617.85321583337,
+    "c_pf_us_per_token": 6.144687138665833,
+    "c_attn_us_per_unit": 0.00010075247918809842,
+    "r2": 0.9999999991998407,
+    "cond_s_pf_pf_ctx": 2.5566809347314488
   },
   "validation": {
-    "n_mixed": 1778,
+    "n_mixed": 1777,
     "classifier": "marginal prefill share = c_pf*S_pf / (c_pf*S_pf + c0*B_dec + c1*KV)",
     "overall": {
-      "n": 1778,
-      "mape_pct": 0.01855335050609833,
-      "rmse_us": 5.052859071755001
+      "n": 1777,
+      "mape_pct": 0.018587043114180142,
+      "rmse_us": 5.039023766327452
     },
     "decode_bound": {
-      "n": 1085,
-      "mape_pct": 0.020107725273964414,
-      "rmse_us": 5.266190452164758
+      "n": 1084,
+      "mape_pct": 0.02008397580235553,
+      "rmse_us": 5.270171003731196
     },
     "near_ridge": {
       "n": 428,
-      "mape_pct": 0.0198477621893672,
-      "rmse_us": 4.767670717155184
+      "mape_pct": 0.019876139807510074,
+      "rmse_us": 4.770011722360528
     },
     "prefill_bound": {
       "n": 265,
-      "mape_pct": 0.010098615322801022,
-      "rmse_us": 4.587111868827183
+      "mape_pct": 0.010381728326529819,
+      "rmse_us": 4.461614888722113
     },
     "note": "MAPE expected to rise in near_ridge: E3 is a local linearization of max(compute,memory) (design line 121)."
   }
