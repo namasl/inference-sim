@@ -50,7 +50,7 @@ type DeploymentConfig struct {
 	// Units: microseconds of simulated time.
 	CacheSignalDelay int64
 
-	// Phase 1A: Node pool infrastructure (optional — empty = backward-compatible mode).
+	// Phase 1A: Node pool infrastructure (optional â empty = backward-compatible mode).
 	// When non-empty, activates PlacementManager for GPU inventory tracking.
 	NodePools []NodePoolConfig
 
@@ -63,7 +63,7 @@ type DeploymentConfig struct {
 	// and the pipeline is unchanged (BC-PD-1).
 	PrefillInstances int // Number of instances dedicated to prefill (0 = disabled)
 	DecodeInstances  int // Number of instances dedicated to decode (0 = disabled)
-	// SharedInstances (issue #1276, GAP-5) — number of instances serving both
+	// SharedInstances (issue #1276, GAP-5) â number of instances serving both
 	// prefill and decode (shared-role pods, llm-d "prefill-decode" / legacy "both"
 	// role labels). When > 0, ValidatePoolTopology accepts
 	// prefill+decode+shared <= total, and BuildPoolMembershipFromIndices
@@ -74,24 +74,34 @@ type DeploymentConfig struct {
 	PDPrefixThreshold int    // Non-cached token threshold for prefix-threshold decider (PR6)
 	PDPlanPath        string // Path to a fixed-plan CSV; when set, forces a FixedPlanDecider (overrides PDDecider). Counterfactual-regret harness / offline yardstick.
 
-	// EDPP (Lyapunov drift-plus-penalty) decider knobs — used only when PDDecider == "edpp".
+	// EDPP (Lyapunov drift-plus-penalty) decider knobs â used only when PDDecider == "edpp".
 	// All durations are microseconds. See sim/edpp.go and the design doc for semantics.
-	EDPPTauTTFTUs        int64            // default τ_ttft: time-average TTFT SLO target (µs)
-	EDPPTauITLUs         int64            // default τ_itl: time-average ITL SLO target (µs)
-	EDPPTauRefUs         int64            // fixed reference τ for the transfer-penalty normalization (µs)
-	EDPPTauTTFTByClassUs map[string]int64 // per-SLO-class τ_ttft overrides (µs); nil = defaults for all
-	EDPPTauITLByClassUs  map[string]int64 // per-SLO-class τ_itl overrides (µs); nil = defaults for all
-	EDPPV                float64          // V: penalty/stability tradeoff knob (larger ⇒ fewer offloads)
-	EDPPCXferUs          int64            // c_xfer: KV-transfer cost paid when routing P (µs)
-	EDPPNomPrefillTokens int              // S_nom: nominal prefill chunk for the fixed prefill normalizer
-	EDPPNomDecodeCtx     int              // L_nom: nominal decode context for the fixed decode normalizer
-	EDPPCoeffs           sim.EDPPCoeffs   // frozen E3 latency-law coefficients; required when PDDecider == "edpp"
-	EDPPTAdmEstimator    string           // admission-delay estimator that DRIVES routing ("" ⇒ waiting); deployable-only, oracle names rejected by NewEDPPDecider
-	EDPPJoint            bool             // when true, EDPP enumerates all (decode, prefill) candidates and picks the drift-plus-penalty argmin (--edpp-joint); false ⇒ reduced fixed-d rule
-	EDPPRule             string           // EDPP reduced-path decision rule: "" / "dpp" (default) | "least-ttft"
-	EDPPJointTrace       bool             // when true (joint mode only), record the per-decision scorer-vs-joint divergence trace (--edpp-joint-trace); pure instrumentation, no routing effect
-	EDPPOracleOutputLen  bool             // DIAGNOSTIC / UPPER-BOUND ONLY (--edpp-oracle-output-len): charge the routed request's OWN decode work with its TRUE output length instead of N̂_out. Violates INV-9; never deployable.
-	EDPPCXferSizeAware   bool             // --edpp-c-xfer-size-aware: EDPP computes c_xfer per request from KV size (mirrors the DES KV-transfer executor), instead of the flat EDPPCXferUs. Deployable (input-only).
+	EDPPTauTTFTUs           int64            // default Ï_ttft: time-average TTFT SLO target (Âµs)
+	EDPPTauITLUs            int64            // default Ï_itl: time-average ITL SLO target (Âµs)
+	EDPPTauRefUs            int64            // fixed reference Ï for the transfer-penalty normalization (Âµs)
+	EDPPTauTTFTByClassUs    map[string]int64 // per-SLO-class Ï_ttft overrides (Âµs); nil = defaults for all
+	EDPPTauITLByClassUs     map[string]int64 // per-SLO-class Ï_itl overrides (Âµs); nil = defaults for all
+	EDPPTauE2EUs            int64            // default Ï_e2e for the VaR E2E composite (Âµs); 0 â E2E conjunct disabled. Used only when EDPPRule=="var".
+	EDPPTauE2EByClassUs     map[string]int64 // per-SLO-class Ï_e2e overrides (Âµs); nil = defaults for all
+	EDPPV                   float64          // V: penalty/stability tradeoff knob (larger â fewer offloads)
+	EDPPCXferUs             int64            // c_xfer: KV-transfer cost paid when routing P (Âµs)
+	EDPPNomPrefillTokens    int              // S_nom: nominal prefill chunk for the fixed prefill normalizer
+	EDPPNomDecodeCtx        int              // L_nom: nominal decode context for the fixed decode normalizer
+	EDPPCoeffs              sim.EDPPCoeffs   // frozen E3 latency-law coefficients; required when PDDecider == "edpp"
+	EDPPTAdmEstimator       string           // admission-delay estimator that DRIVES routing ("" â waiting); deployable-only, oracle names rejected by NewEDPPDecider
+	EDPPJoint               bool             // when true, EDPP enumerates all (decode, prefill) candidates and picks the drift-plus-penalty argmin (--edpp-joint); false â reduced fixed-d rule
+	EDPPRule                string           // EDPP reduced-path decision rule: "" / "dpp" (default) | "least-ttft" | "var" (DIAGNOSTIC ORACLE)
+	EDPPVarMetric           string           // EDPP VaR scoring kernel when EDPPRule=="var": "flip" (default) | "util" | "hazard"
+	EDPPVarKeepCongestion   bool             // EDPP drift-plus-VaR when EDPPRule=="var": keep the congestion drift and ADD the VaR externality (instead of replacing it)
+	EDPPVarCongestionWeight float64          // EDPP drift-plus-VaR congestion weight: cost = weightÂ·congestion + VaR (0 â 1.0)
+	EDPPVarNormalize        bool             // EDPP drift-plus-VaR auto-normalization: per-decision min-max normalize congestion vs VaR so the weight is scale-free
+	EDPPVarDeployable       bool             // DEPLOYABLE VaR: estimate co-resident remaining from censored N̂_out instead of the oracle true remaining (INV-9-safe)
+	EDPPVarCollocPrefill    bool             // DEPLOYABLE VaR extra: also price the first-token VaR of collocated prefill occupants on the decode instance (INV-9-safe; default ON — the rule prices this externality)
+	EDPPVarGoodputObjective bool             // DIAGNOSTIC (EDPPRule=="var" && keep-congestion): reframe the objective to goodput — charge VaR − good_r and drop the standalone transfer penalty. Upper bound when paired with EDPPOracleOutputLen; off ⇒ byte-identical to the current rule.
+	EDPPKairosBeta          float64          // Kairos baseline TBT safety margin β (EDPPRule=="kairos"); 0 ⇒ 1.0
+	EDPPJointTrace          bool             // when true (joint mode only), record the per-decision scorer-vs-joint divergence trace (--edpp-joint-trace); pure instrumentation, no routing effect
+	EDPPOracleOutputLen     bool             // DIAGNOSTIC / UPPER-BOUND ONLY (--edpp-oracle-output-len): charge the routed request's OWN decode work with its TRUE output length instead of NÌ_out. Violates INV-9; never deployable.
+	EDPPCXferSizeAware      bool             // --edpp-c-xfer-size-aware: EDPP computes c_xfer per request from KV size (mirrors the DES KV-transfer executor), instead of the flat EDPPCXferUs. Deployable (input-only).
 
 	// E/P/D disaggregation configuration (GAP-4, issue #1264).
 	// When EncodeInstances == 0 (default), the encode stage is disabled and the
@@ -116,10 +126,10 @@ type DeploymentConfig struct {
 
 	// Phase 1C: Model autoscaler pipeline (issue #692).
 	// Zero value is safe: ModelAutoscalerIntervalUs=0 disables the autoscaler entirely (INV-6).
-	ModelAutoscalerIntervalUs      float64   `yaml:"model_autoscaler_interval_us,omitempty"`       // tick interval in μs; 0 = autoscaler disabled
+	ModelAutoscalerIntervalUs      float64   `yaml:"model_autoscaler_interval_us,omitempty"`       // tick interval in Î¼s; 0 = autoscaler disabled
 	HPAScrapeDelay                 DelaySpec `yaml:"hpa_scrape_delay,omitempty"`                   // HPA scrape lag: time from WVA metric emission to HPA acting; zero = same-tick actuation; Mean/Stddev in seconds
-	ScaleUpStabilizationWindowUs   float64   `yaml:"scale_up_stabilization_window_us,omitempty"`   // HPA scale-up stabilization window in μs; 0 = act on first signal (HPA default)
-	ScaleDownStabilizationWindowUs float64   `yaml:"scale_down_stabilization_window_us,omitempty"` // HPA scale-down stabilization window in μs; 0 = no stabilization (pass immediately). Set to 300,000,000 (= 5 minutes) to match the Kubernetes HPA default.
+	ScaleUpStabilizationWindowUs   float64   `yaml:"scale_up_stabilization_window_us,omitempty"`   // HPA scale-up stabilization window in Î¼s; 0 = act on first signal (HPA default)
+	ScaleDownStabilizationWindowUs float64   `yaml:"scale_down_stabilization_window_us,omitempty"` // HPA scale-down stabilization window in Î¼s; 0 = no stabilization (pass immediately). Set to 300,000,000 (= 5 minutes) to match the Kubernetes HPA default.
 	// AutoscalerAnalyzerConfig holds V2SaturationAnalyzer thresholds.
 	// Zero values are safe: NewClusterSimulator applies WVA reference defaults
 	// (KvCacheThreshold=0.8, ScaleUpThreshold=0.8, ScaleDownBoundary=0.4, AvgInputTokens=512).
@@ -136,7 +146,7 @@ type DeploymentConfig struct {
 	GAIEKVThreshold float64 // KV cache utilization threshold (default 0.8)
 
 	// Phase 1B-2a: per-tenant fair-share budgets (issue #811).
-	// Key: TenantID string. Value: fraction of total cluster capacity (0.0–1.0).
+	// Key: TenantID string. Value: fraction of total cluster capacity (0.0â1.0).
 	// Zero value is safe: nil = no enforcement (all tenants unlimited).
 	TenantBudgets map[string]float64 `yaml:"tenant_budgets,omitempty"`
 
@@ -146,7 +156,7 @@ type DeploymentConfig struct {
 	FlowControlEnabled              bool             `yaml:"flow_control_enabled,omitempty"`
 	FlowControlDetector             string           `yaml:"flow_control_detector,omitempty"`                // "never" (default), "utilization", "concurrency"
 	FlowControlDispatchOrder        string           `yaml:"flow_control_dispatch_order,omitempty"`          // "fifo" (default), "priority", "slo-deadline"
-	FlowControlSLOTargets           map[string]int64 `yaml:"flow_control_slo_targets,omitempty"`             // SLO class → TTFT target µs for slo-deadline ordering
+	FlowControlSLOTargets           map[string]int64 `yaml:"flow_control_slo_targets,omitempty"`             // SLO class â TTFT target Âµs for slo-deadline ordering
 	FlowControlMaxQueueDepth        int              `yaml:"flow_control_max_queue_depth,omitempty"`         // 0 = unlimited
 	FlowControlQueueDepthThreshold  float64          `yaml:"flow_control_queue_depth_threshold,omitempty"`   // for utilization detector
 	FlowControlKVCacheUtilThreshold float64          `yaml:"flow_control_kv_cache_util_threshold,omitempty"` // for utilization detector
@@ -156,7 +166,7 @@ type DeploymentConfig struct {
 	FlowControlFairnessPolicy       string           `yaml:"flow_control_fairness_policy,omitempty"`         // "global-strict" (default), "round-robin"
 	FlowControlRequestTTL           int64            `yaml:"flow_control_request_ttl,omitempty"`             // microseconds; 0 = disabled (default). GIE parity: DefaultRequestTTL.
 	FlowControlQueueShedding        bool             `yaml:"flow_control_queue_shedding,omitempty"`          // BLIS-extra: cross-band shedding on full queue (not in llm-d). Default false.
-	FlowControlDispatchTickInterval int64            `yaml:"flow_control_dispatch_tick_interval,omitempty"`  // µs between periodic dispatch ticks (default 1000 = 1ms, llm-d parity). 0 = use default.
+	FlowControlDispatchTickInterval int64            `yaml:"flow_control_dispatch_tick_interval,omitempty"`  // Âµs between periodic dispatch ticks (default 1000 = 1ms, llm-d parity). 0 = use default.
 	FlowControlInFlightEviction     bool             `yaml:"flow_control_in_flight_eviction,omitempty"`      // BLIS-extra: evict sheddable in-flight requests when saturated (not in llm-d). Default false.
 
 	// Issue #893: per-GPU-type hardware calibration for roofline and trained-physics backends.
@@ -168,7 +178,7 @@ type DeploymentConfig struct {
 	// Zero value (nil) is safe: no override, backward-compatible with all existing callers.
 	HWConfigByGPU map[string]sim.HardwareCalib `yaml:"hw_config_by_gpu,omitempty"`
 
-	// per-GPU-type θ_i for the EDPP decider; nil = homogeneous
+	// per-GPU-type Î¸_i for the EDPP decider; nil = homogeneous
 	EDPPCoeffsByGPU map[string]sim.EDPPCoeffs `yaml:"edpp_coeffs_by_gpu,omitempty"`
 }
 
@@ -193,7 +203,7 @@ func (d DeploymentConfig) EffectivePrefillTP() int {
 // resolveConfigForRole returns the SimConfig appropriate for an instance in the given pool role.
 // For PoolRolePrefill: applies PrefillOverrides to the global SimConfig.
 // For PoolRoleDecode: applies DecodeOverrides to the global SimConfig.
-// For PoolRolePrefillDecode (shared-role): applies DecodeOverrides — "decode wins"
+// For PoolRolePrefillDecode (shared-role): applies DecodeOverrides â "decode wins"
 // precedence per issue #1276 D-2 (matches the spirit of llm-d's allowsNoLabel=true
 // decode default; a shared pod is decode-capable in every deployment, and picking
 // decode avoids oversizing TP for pods that also do prefill).

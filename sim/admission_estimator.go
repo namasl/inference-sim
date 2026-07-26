@@ -9,10 +9,30 @@ import (
 // RunningReqState is one running decode request's state for the roll-forward
 // estimator. TrueRemaining is the oracle remaining step count (-1 when the
 // oracle is not populated); StepsDone is decode steps completed; KVBlocks held.
+//
+// The SLOClass/ArrivalUs/FirstTokenUs/TTFTSet fields are DEPLOYABLE per-co-resident
+// SLO-deadline inputs (input-derived, INV-9-safe) read by the value-at-risk drift
+// oracle (sim/edpp_var.go): they let g() evaluate a co-resident's composite-good
+// (TTFT met, ITL, E2E ≤ deadline) at a projected completion. They are zero-valued
+// unless admission detail is enabled, and the admission-delay estimators
+// (waiting/little/fluid/rollforward) never read them, so populating them is
+// byte-identical for every existing path (INV-6).
 type RunningReqState struct {
 	StepsDone     int64
 	KVBlocks      int64
 	TrueRemaining int64
+
+	SLOClass     string // co-resident SLO class (drives its τ_ttft/τ_itl/τ_e2e resolution); "" = default
+	ArrivalUs    int64  // co-resident arrival instant (µs); E2E deadline = ArrivalUs + τ_e2e(class)
+	FirstTokenUs int64  // realized first-token instant (µs); 0 when TTFTSet is false
+	TTFTSet      bool   // true once the co-resident has produced its first token (realized TTFT is fixed)
+
+	// OracleOutputLen is the total output length of a still-prefilling co-resident, populated only
+	// in oracle mode (len(OutputTokens)), -1 otherwise. The value-at-risk oracle uses it to project
+	// a collocated occupant's decode phase (its ITL/E2E risk once the deciding request joins its
+	// batch). The deployable rule ignores it and uses the censored per-class N̂_out instead
+	// (INV-9-safe). Decode co-residents carry their remaining output in TrueRemaining and leave this -1.
+	OracleOutputLen int64
 }
 
 // AdmissionContext bundles everything an admission-delay estimator may read for

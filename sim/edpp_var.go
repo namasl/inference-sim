@@ -71,11 +71,20 @@ type varDecodeCoResident struct {
 	slo          varSLO
 }
 
-// varPrefillCoResident is one prefill-pool co-resident (disaggregated placement only).
-// remPrefillTokens is its remaining prompt tokens — deployable (known input length), never
-// oracle. Its VaR flip is TTFT-side (first-token pushed by the deciding request's prefill).
+// varPrefillCoResident is one prefilling co-resident. remPrefillTokens is its remaining prompt
+// tokens — deployable (known input length), never oracle — and sets its first-token horizon.
+//
+// remDecodeSteps is its remaining DECODE steps once it reaches its first token. It is the
+// collocated occupant's decode-phase horizon: a local placement makes R join this occupant's
+// decode batch (B→B+1), so every one of these steps runs at the re-timed per-iter time, which is
+// the occupant's inter-token and end-to-end risk. Source mirrors the decode co-resident: the
+// oracle output length (OracleOutputLen) or, deployable, the censored per-class N̂_out (INV-9-safe,
+// no output-length read). It is ≤ 0 when unknown, and then only the first-token risk is priced —
+// which recovers the earlier TTFT-only behavior. The prefill-POOL term (varPrefillDisagg) leaves
+// it unset because R never joins a pool occupant's decode batch, so only its first token is at risk.
 type varPrefillCoResident struct {
 	remPrefillTokens int64
+	remDecodeSteps   int64
 	arrivalUs        int64
 	slo              varSLO
 }
@@ -294,13 +303,17 @@ func varPrefillTTFTContribution(k varPrefillCoResident, cb, cp float64, kernel v
 	}
 }
 
-// varCollocPrefillLocal sums the first-token value-at-risk imposed on the DECODE instance's
-// collocated prefill occupants by a LOCAL placement. Such an occupant (placed here by a prior
-// collocate decision) has not produced its first token yet; RunningDecodeState skips it, so the
-// decode-side VaR terms miss it. It needs remIters = ⌈remPrefillTokens / chunk⌉ more decode-batch
-// iterations to reach its first token, and R's co-scheduled prefill then B+1 join re-times those
-// iterations exactly like a decode co-resident's remaining steps — so the same cBase→cLocal
-// completion model applies. Deployable: remPrefillTokens is known input length (INV-9-safe).
+// varCollocPrefillLocal sums the value-at-risk imposed on the DECODE instance's collocated prefill
+// occupants by a LOCAL placement. Such an occupant (placed here by a prior collocate decision) has
+// not produced its first token yet, so RunningDecodeState skips it and the decode-side VaR terms
+// miss it. A local placement harms it twice. It needs remPf = ⌈remPrefillTokens / chunk⌉ more
+// batch iterations to reach its first token, and R's co-scheduled prefill slows those (first-token
+// risk). Then R joins the decode batch (B→B+1) and slows its remDecodeSteps decode steps too
+// (inter-token and end-to-end risk). We project the occupant's first-token completion over remPf
+// iterations and its full completion over remPf + remDecodeSteps iterations, both with the same
+// cBase→cLocal model, and price the full good — first token, inter-token, and end-to-end. When the
+// decode horizon is unknown (remDecodeSteps ≤ 0) only the first-token risk is priced. Deployable:
+// remPrefillTokens is known input length and remDecodeSteps is a censored estimate (INV-9-safe).
 func varCollocPrefillLocal(nowUs float64, ks []varPrefillCoResident, rt varReTiming, chunk, nChunks float64, kernel varKernel) float64 {
 	if chunk < 1 {
 		chunk = 1
@@ -310,10 +323,16 @@ func varCollocPrefillLocal(nowUs float64, ks []varPrefillCoResident, rt varReTim
 		if k.remPrefillTokens < 0 {
 			continue
 		}
-		remIters := int64(math.Ceil(float64(k.remPrefillTokens) / chunk))
-		cb := rt.cBase(nowUs, remIters)
-		cp := rt.cLocal(nowUs, remIters, nChunks)
-		sum += varPrefillTTFTContribution(k, cb, cp, kernel)
+		remPf := int64(math.Ceil(float64(k.remPrefillTokens) / chunk))
+		ftB := rt.cBase(nowUs, remPf)
+		ftP := rt.cLocal(nowUs, remPf, nChunks)
+		eB, eP := ftB, ftP
+		if k.remDecodeSteps > 0 {
+			total := remPf + k.remDecodeSteps
+			eB = rt.cBase(nowUs, total)
+			eP = rt.cLocal(nowUs, total, nChunks)
+		}
+		sum += varCollocContribution(k, ftB, ftP, eB, eP, kernel)
 	}
 	return sum
 }
@@ -331,12 +350,99 @@ func varCollocPrefillDisagg(nowUs float64, ks []varPrefillCoResident, rt varReTi
 		if k.remPrefillTokens < 0 {
 			continue
 		}
-		remIters := int64(math.Ceil(float64(k.remPrefillTokens) / chunk))
-		cb := rt.cBase(nowUs, remIters)
-		cp := rt.cDisagg(nowUs, remIters, arrivalSteps)
-		sum += varPrefillTTFTContribution(k, cb, cp, kernel)
+		remPf := int64(math.Ceil(float64(k.remPrefillTokens) / chunk))
+		ftB := rt.cBase(nowUs, remPf)
+		ftP := rt.cDisagg(nowUs, remPf, arrivalSteps)
+		eB, eP := ftB, ftP
+		if k.remDecodeSteps > 0 {
+			total := remPf + k.remDecodeSteps
+			eB = rt.cBase(nowUs, total)
+			eP = rt.cDisagg(nowUs, total, arrivalSteps)
+		}
+		sum += varCollocContribution(k, ftB, ftP, eB, eP, kernel)
 	}
 	return sum
+}
+
+// varCollocContribution scores one collocated occupant's composite value-at-risk under the active
+// kernel, given its baseline/placed first-token completions (ftB, ftP) and baseline/placed full
+// completions (eB, eP), all µs. It generalizes varPrefillTTFTContribution from a first-token-only
+// flip to the full good: when the occupant has no known decode horizon (eB==ftB, eP==ftP and
+// tauE2E/tauITL disabled) every kernel reduces to the earlier TTFT-only arithmetic exactly.
+func varCollocContribution(k varPrefillCoResident, ftB, ftP, eB, eP float64, kernel varKernel) float64 {
+	switch kernel {
+	case varKernelUtil:
+		return gCollocUtil(k, ftB, eB) - gCollocUtil(k, ftP, eP)
+	case varKernelHazard:
+		return collocHazard(k, ftB, ftP, eB, eP)
+	default: // varKernelFlip
+		return gCollocFlip(k, ftB, eB) - gCollocFlip(k, ftP, eP)
+	}
+}
+
+// gCollocFlip is kernel A's composite-good indicator for a collocated occupant reaching its first
+// token at ftUs and completing at eUs (both µs): 1 iff its first token meets τ_ttft (LIVE — the
+// placement can still move it, unlike a decoding co-resident) AND its mean inter-token time over
+// the decode phase meets τ_itl AND it completes within τ_e2e, else 0. A zero threshold disables
+// that conjunct. The mean ITL is the decode duration (eUs − ftUs) over remDecodeSteps.
+func gCollocFlip(k varPrefillCoResident, ftUs, eUs float64) float64 {
+	if k.slo.tauTTFTUs > 0 && ftUs > float64(k.arrivalUs)+k.slo.tauTTFTUs {
+		return 0
+	}
+	if k.slo.tauE2EUs > 0 && eUs > float64(k.arrivalUs)+k.slo.tauE2EUs {
+		return 0
+	}
+	if k.slo.tauITLUs > 0 && k.remDecodeSteps > 0 {
+		meanITL := (eUs - ftUs) / float64(k.remDecodeSteps)
+		if meanITL > k.slo.tauITLUs {
+			return 0
+		}
+	}
+	return 1
+}
+
+// gCollocUtil is kernel B's saturating slack utility for a collocated occupant: the product of its
+// first-token slack utility σ((arrival+τ_ttft − ftUs)/scale) and its end-to-end slack utility
+// σ((arrival+τ_e2e − eUs)/scale). Both live for a prefilling occupant. The product mirrors
+// gDecodeUtil (the E2E factor) with the extra first-token factor a decoding co-resident lacks
+// because its first token is already realized; when τ_e2e is disabled it reduces to the first-token
+// utility alone. scale is τ_ttft, the same natural latency unit gDecodeUtil uses.
+func gCollocUtil(k varPrefillCoResident, ftUs, eUs float64) float64 {
+	scale := k.slo.tauTTFTUs
+	if scale <= 0 {
+		scale = 1
+	}
+	u := 1.0
+	if k.slo.tauTTFTUs > 0 {
+		u *= sigmoid((float64(k.arrivalUs) + k.slo.tauTTFTUs - ftUs) / scale)
+	}
+	if k.slo.tauE2EUs > 0 {
+		u *= sigmoid((float64(k.arrivalUs) + k.slo.tauE2EUs - eUs) / scale)
+	}
+	return u
+}
+
+// collocHazard is kernel C's deadline-slack hazard for a collocated occupant: the first-token
+// hazard (slack at ftB, band τ_ttft) times the first-token delay ftP−ftB, plus the end-to-end
+// hazard (slack at eB) times the end-to-end delay eP−eB when a decode horizon is known. Mirrors
+// hazardWeight on both the first-token and end-to-end targets. Both delays are non-negative and
+// local ≥ disagg, so the asymmetry law is preserved.
+func collocHazard(k varPrefillCoResident, ftB, ftP, eB, eP float64) float64 {
+	h := collocHazardTerm(float64(k.arrivalUs)+k.slo.tauTTFTUs, ftB, ftP, k.slo.tauTTFTUs)
+	if k.slo.tauE2EUs > 0 && k.remDecodeSteps > 0 {
+		h += collocHazardTerm(float64(k.arrivalUs)+k.slo.tauE2EUs, eB, eP, k.slo.tauTTFTUs)
+	}
+	return h
+}
+
+// collocHazardTerm is a Cauchy-like hazard 1/(1+x²) at slack (deadline−cB)/band, times the delay
+// cP−cB. Shared by the first-token and end-to-end hazards so both use byte-identical arithmetic.
+func collocHazardTerm(deadline, cB, cP, band float64) float64 {
+	if band <= 0 {
+		band = 1
+	}
+	x := (deadline - cB) / band
+	return (1.0 / (1.0 + x*x)) * (cP - cB)
 }
 
 // --- decider-bound assembly (reduced + joint) -------------------------------------------
@@ -394,8 +500,21 @@ func (d *EDPPDecider) varPrefillInputs(running []RunningReqState) []varPrefillCo
 	}
 	out := make([]varPrefillCoResident, 0, len(running))
 	for _, r := range running {
+		// Decode-phase horizon for the collocated-occupant term: how many decode steps this
+		// occupant will run once it reaches its first token. It has produced no output yet, so
+		// the deployable estimate is the full censored per-class N̂_out (no StepsDone to subtract,
+		// INV-9-safe); the oracle uses its true output length. ≤ 0 leaves the decode phase unpriced
+		// (first-token risk only) and is what the prefill-POOL term relies on. The oracle path is
+		// gated to admissionDetailOracle-populated states (OracleOutputLen ≥ 0 only then).
+		remDec := int64(0)
+		if d.varDeployable {
+			remDec = int64(math.Max(d.nHatFor(r.SLOClass).mean(), 1))
+		} else if r.OracleOutputLen > 0 {
+			remDec = r.OracleOutputLen
+		}
 		out = append(out, varPrefillCoResident{
 			remPrefillTokens: r.TrueRemaining,
+			remDecodeSteps:   remDec,
 			arrivalUs:        r.ArrivalUs,
 			slo:              d.varSLOFor(r.SLOClass),
 		})
@@ -531,6 +650,55 @@ func (d *EDPPDecider) varJointCandidateExternality(
 	prefill := d.varPrefillInputs(ps.RunningPrefill)
 	v += varPrefillDisagg(nowUs, prefill, tIterP, float64(chunkP), rPrefillUs, kernel)
 	return v
+}
+
+// goodSelf scores the ARRIVING request R's OWN smoothed goodput under a candidate placement. It is
+// the reward half of the goodput-objective diagnostic (VarGoodputObjective). The rule then charges
+// VaR − good: the goodput this placement DESTROYS among co-residents minus the goodput it EARNS for
+// R, which is −Δgood, the negative per-slot goodput change the drift-plus-penalty rule minimizes.
+//
+// R arrives at the decision instant, so its TTFT measured from arrival equals tHatFromNow, its
+// projected time-to-first-token. R then decodes nOut steps, each at tIterAfter (the B+1 re-timed
+// decode per-iter time it experiences once it joins the batch), so its mean inter-token time is
+// tIterAfter and its end-to-end latency from arrival is tHatFromNow + nOut·tIterAfter. nOut is R's
+// decode length — the censored N̂_out, or R's TRUE output length under the --edpp-oracle-output-len
+// upper-bound flag (an INV-9 violation confined to the diagnostic).
+//
+// The kernels mirror the co-resident good indicators. flip is the hard composite of gDecodeFlip /
+// gCollocFlip (1 iff TTFT, ITL, and E2E all meet target, a zero threshold disabling its conjunct).
+// util is the slack-utility product of gCollocUtil (first-token × end-to-end, no ITL factor, matching
+// the co-resident util kernel). hazard has no natural absolute-good level, so its reward half reuses
+// the util product. Pure (INV-6): identical inputs yield identical output.
+func goodSelf(slo varSLO, tHatFromNow, tIterAfter, nOut float64, kernel varKernel) float64 {
+	ttft := tHatFromNow
+	e2e := tHatFromNow + nOut*tIterAfter
+	meanITL := tIterAfter
+	switch kernel {
+	case varKernelUtil, varKernelHazard:
+		scale := slo.tauTTFTUs
+		if scale <= 0 {
+			scale = 1
+		}
+		u := 1.0
+		if slo.tauTTFTUs > 0 {
+			u *= sigmoid((slo.tauTTFTUs - ttft) / scale)
+		}
+		if slo.tauE2EUs > 0 {
+			u *= sigmoid((slo.tauE2EUs - e2e) / scale)
+		}
+		return u
+	default: // varKernelFlip
+		if slo.tauTTFTUs > 0 && ttft > slo.tauTTFTUs {
+			return 0
+		}
+		if slo.tauITLUs > 0 && meanITL > slo.tauITLUs {
+			return 0
+		}
+		if slo.tauE2EUs > 0 && e2e > slo.tauE2EUs {
+			return 0
+		}
+		return 1
+	}
 }
 
 func sigmoid(x float64) float64 { return 1.0 / (1.0 + math.Exp(-x)) }

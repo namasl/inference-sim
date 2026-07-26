@@ -730,11 +730,12 @@ best rule in every regime and never craters. Worst-case regret across the grid:
 | least-ttft | 0.61 | heterogeneous |
 | kairos* (SOTA) | 0.61 | heterogeneous |
 | dpp | 0.38 | decode/mixed |
-| **dpVaR (deploy)** | **0.054** | — never |
+| **dpVaR (deploy)** | **0.042** | — never |
 
-Two claims, layered by defensibility. **(a) Inside Kairos's own design envelope** (homogeneous
-archetypes only): dpVaR worst-case regret **0.054 vs Kairos 0.117**, a 2× edge on their home turf.
-**(b) Including heterogeneity**: 0.054 vs 0.610 (11×) — but Kairos *assumes homogeneous hardware*, so
+(Worst-case regret updated 0.054→0.042 on 2026-07-25 when the collocated-prefill externality became the
+default rule; see F23.) Two claims, layered by defensibility. **(a) Inside Kairos's own design envelope**
+(homogeneous archetypes only): dpVaR worst-case regret **0.042 vs Kairos 0.117**, a ~2.8× edge on their
+home turf. **(b) Including heterogeneity**: 0.042 vs 0.610 (~14.5×) — but Kairos *assumes homogeneous hardware*, so
 that cell is outside its envelope. The honest framing is therefore **not** "we beat Kairos" but: *every
 published rule has a regime where it collapses, and the one that breaks Kairos and least-ttft is
 hardware heterogeneity — which no published P/D routing rule addresses.* That is the operational value:
@@ -773,12 +774,15 @@ per-N best static split, while dpp holds **0.00** and dpVaR **0.05**. dpVaR's ma
 with N and reaches **0.57 at N=5**. (See F21 for the table.)
 
 **Topology matrix.** Sixteen accelerators, provisioned as 1P3D / 2P2D / 3P1D, homogeneous hardware, four
-archetypes. Worst-case regret per topology: dpVaR **0.025 / 0.004 / 0.003** — it holds its 1P2D headline
-on every shape, because the congestion term still cancels on matched instances and binds on mismatched
-ones under the one shared weight. Kairos, near-optimal on decode-heavy 1P3D (0.007), collapses on
-prefill-heavy 3P1D (0.59), so its exposure follows provisioning as well as workload. Fixing the rule and
-reading goodput across the three provisionings, dpVaR holds the per-provisioning best in all 16 cells —
-the online answer to TaiChi's offline, minutes-scale P/D reconfiguration. (See F22.)
+archetypes, **ten seeds** (re-run 2026-07-25 to average out the seed-42 3P1D pathology; see F23). Worst-case
+regret per topology: dpVaR **0.033 / 0.015 / 0.006** — it holds its 1P2D headline (0.042) on every shape,
+because the congestion term still cancels on matched instances and binds on mismatched ones under the one
+shared weight. Kairos, near-optimal on decode-heavy 1P3D (0.004), collapses on prefill-heavy 3P1D (0.58),
+so its exposure follows provisioning as well as workload. The collocated-prefill externality does its work
+on the collocation-heavy 3P1D shape, where it cuts dpVaR's worst-case regret from 0.072 (ablation) to 0.006.
+Fixing the rule and reading goodput across the three provisionings, dpVaR tracks the per-provisioning best
+within a few points in all 16 cells — the online answer to TaiChi's offline, minutes-scale P/D
+reconfiguration. (See F22, F23.)
 
 **Naming caveat.** The fleet uses `--decode-instances` (decode-only pods that prefill locally on
 collocation); the paper calls them "mixed (M)" and the published tab:grid uses the same setup, so the
@@ -786,8 +790,8 @@ paper subsection uses M-notation. True mixed pods would be `--prefill-decode-ins
 
 **What to look for when reproducing (E14).** Ratio sweep: `c1` ratio ≈ N for each generated coeff file;
 least-ttft/Kairos monotonically decaying and dpVaR/dpp on the best-static-split line; dpVaR worst-case
-regret ≈0.05. Topology: dpVaR worst-case regret ≤0.03 on all three shapes; Kairos worst-case regret rising
-sharply from 1P3D to 3P1D. Refute: dpVaR craters on any (topology, archetype, seed) a fixed rule owns, or
+regret ≈0.05. Topology: dpVaR worst-case regret ≤0.033 on all three shapes (ten seeds); Kairos worst-case
+regret rising sharply from 1P3D to 3P1D. Refute: dpVaR craters on any (topology, archetype, seed) a fixed rule owns, or
 its ratio-sweep regret exceeds dpp's at any N below the overload band.
 
 ## 5. Findings

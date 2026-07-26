@@ -52,6 +52,15 @@ python scripts/calibration/fit_coeffs.py D1.csv D2.csv D3.csv D4.csv P1.csv P2.c
 `coeffs.json` holds `alpha, alpha_p, c0, c1, c_pf, c_attn`, R², row counts, and
 collinearity diagnostics (`cond_*` should be well under 30).
 
+> **Provenance of the frozen file.** The commands above use `qwen/qwen3-14b` as a
+> worked example, but the committed `coeffs-llama70b-h100-tp4.json` was fit from
+> `meta-llama/llama-3.3-70b-instruct --hardware H100 --tp 4` (its `source_csvs`
+> point at a since-deleted `/tmp/llama70/*.csv` set). `repro_llama70b.sh` is the
+> exact Llama-70B instantiation of this procedure; because the calibration runs
+> are deterministic, it regenerates all six coefficients **bit-exactly** — the
+> trust-check that the frozen file is reproducible. Run:
+> `bash scripts/calibration/repro_llama70b.sh` (prints `CHECKPOINT: PASS`).
+
 ## 4. Validate the additive model across all three regimes
 
 One mixed run biased to each regime; regime = **marginal** prefill share

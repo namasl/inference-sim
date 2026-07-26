@@ -152,7 +152,7 @@ for N in $RATIOS; do
     # lt-joint: least-TTFT over the full joint action set (hardware-aware least-TTFT).
     lj=$(run "lj_${N}_$s" "$BUNDLE" "$s" --pd-decider edpp "${EC[@]}" --edpp-tau-ttft 60s --edpp-tau-itl 500ms --edpp-rule least-ttft --edpp-joint); LJ+=("$lj"); emit "$N" lt-joint "$s" "$lj"
     dp=$(run "dp_${N}_$s" "$BUNDLE" "$s" --pd-decider edpp "${EC[@]}" --edpp-tau-ttft 60s --edpp-tau-itl 500ms --edpp-joint);          DP+=("$dp"); emit "$N" dpp "$s" "$dp"
-    vv=$(run "vv_${N}_$s" "$BUNDLE" "$s" --pd-decider edpp "${EC[@]}" --edpp-tau-ttft 60s --edpp-tau-itl 500ms --edpp-tau-e2e 8s --edpp-rule var --edpp-var-metric util --edpp-joint --edpp-var-congestion --edpp-var-normalize --edpp-var-congestion-weight 1 --edpp-var-deployable); VV+=("$vv"); emit "$N" dpVaR "$s" "$vv"
+    vv=$(run "vv_${N}_$s" "$BUNDLE" "$s" --pd-decider edpp "${EC[@]}" --edpp-tau-ttft 60s --edpp-tau-itl 500ms --edpp-tau-e2e 8s --edpp-rule var --edpp-var-metric util --edpp-joint --edpp-var-congestion --edpp-var-normalize --edpp-var-congestion-weight 1 --edpp-var-deployable --edpp-var-goodput); VV+=("$vv"); emit "$N" dpVaR "$s" "$vv"
     o=$(oracle_run "oe_${N}_$s" "$BUNDLE" "$s");                                                                     O+=("$o");  emit "$N" optimum "$s" "$o"
   done
   m(){ python3 -c "import sys;xs=[float(x) for x in sys.argv[1:] if x not in ('NA','')];print('%.3f'%(sum(xs)/len(xs)) if xs else 'NA')" "$@"; }

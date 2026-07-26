@@ -102,7 +102,7 @@ for topo in $TOPOS; do
       # lt-joint: least-TTFT over the full joint action set (hardware-aware least-TTFT).
       lj=$(hrun lj "$P" "$Dn" --pd-decider edpp "${EC[@]}" --edpp-tau-ttft "${SLO_TTFT}ms" --edpp-rule least-ttft --edpp-joint --seed $s); LJ+=("$lj"); emit "$LBL" "$P" "$Dn" "$NAME" "$R" lt-joint "$s" "$lj"
       dp=$(hrun dp "$P" "$Dn" --pd-decider edpp "${EC[@]}" --edpp-tau-ttft "${SLO_TTFT}ms" --edpp-joint --seed $s); DP+=("$dp"); emit "$LBL" "$P" "$Dn" "$NAME" "$R" dpp "$s" "$dp"
-      vv=$(hrun vv "$P" "$Dn" --pd-decider edpp "${EC[@]}" --edpp-tau-ttft "${SLO_TTFT}ms" --edpp-tau-e2e "${SLO_E2E}ms" --edpp-rule var --edpp-var-metric util --edpp-joint --edpp-var-congestion --edpp-var-normalize --edpp-var-congestion-weight 1 --edpp-var-deployable --seed $s); VV+=("$vv"); emit "$LBL" "$P" "$Dn" "$NAME" "$R" dpVaR "$s" "$vv"
+      vv=$(hrun vv "$P" "$Dn" --pd-decider edpp "${EC[@]}" --edpp-tau-ttft "${SLO_TTFT}ms" --edpp-tau-e2e "${SLO_E2E}ms" --edpp-rule var --edpp-var-metric util --edpp-joint --edpp-var-congestion --edpp-var-normalize --edpp-var-congestion-weight 1 --edpp-var-deployable --edpp-var-goodput --seed $s); VV+=("$vv"); emit "$LBL" "$P" "$Dn" "$NAME" "$R" dpVaR "$s" "$vv"
     done
     printf "%-14s %-5s| %-8s %-8s %-8s %-8s %-8s %-9s %-8s %-8s\n" "$NAME" "$R" \
       "$(m "${N[@]}")" "$(m "${A[@]}")" "$(m "${PX[@]}")" "$(m "${K[@]}")" "$(m "${L[@]}")" "$(m "${LJ[@]}")" "$(m "${DP[@]}")" "$(m "${VV[@]}")" >&2

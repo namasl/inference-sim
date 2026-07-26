@@ -30,13 +30,15 @@ import matplotlib.pyplot as plt
 
 PALETTE = {
     "never": "#CC79A7", "always": "#999999", "prefix": "#999999",
-    "kairos": "#E69F00", "least-ttft": "#D55E00", "dpp": "#0072B2", "dpVaR": "#009E73",
+    "kairos": "#E69F00", "least-ttft": "#D55E00", "lt-joint": "#56B4E9",
+    "dpp": "#0072B2", "dpVaR": "#009E73",
 }
 LABEL = {
     "never": "never", "always": "always", "prefix": "prefix-thr.", "kairos": "Kairos",
-    "least-ttft": "least-TTFT", "dpp": "drift+penalty", "dpVaR": "drift+VaR",
+    "least-ttft": "least-TTFT", "lt-joint": "least-TTFT-joint",
+    "dpp": "drift+penalty", "dpVaR": "drift+VaR",
 }
-ARMS = ["never", "always", "prefix", "kairos", "least-ttft", "dpp", "dpVaR"]
+ARMS = ["never", "always", "prefix", "kairos", "least-ttft", "lt-joint", "dpp", "dpVaR"]
 # provisioning order: prefill-lean -> decode-lean (by P:D ratio).
 TOPO_ORDER = ["1P3D", "2P2D", "3P1D"]
 

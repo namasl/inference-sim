@@ -1,12 +1,10 @@
 package cmd
 
 import (
-	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"regexp"
-	"strings"
 	"testing"
 )
 
@@ -15,18 +13,18 @@ import (
 // produced real metrics (not just "didn't crash").
 var edppRuleCompletedRE = regexp.MustCompile(`"completed_requests":\s*\d+`)
 
-// TestEDPPRule_LeastTTFT_AcceptedAndJointRejected is the durable behavioral
-// guard on the --edpp-rule CLI wiring (cmd/root.go): the flag must (1) be
-// accepted and thread through to a completed run under the reduced EDPP path,
-// and (2) be rejected at the CLI boundary (R3) when combined with
-// --edpp-joint, since least-ttft is a reduced-path baseline that bypasses the
-// joint argmin machinery entirely.
+// TestEDPPRule_LeastTTFT_AcceptedReducedAndJoint is the durable behavioral
+// guard on the --edpp-rule CLI wiring (cmd/root.go): --edpp-rule least-ttft must
+// be accepted and thread through to a completed run both (1) on the reduced EDPP
+// path and (2) combined with --edpp-joint, which selects the least-TTFT-joint arm
+// (hardware-aware least-TTFT over the full action set). The combination was once
+// rejected because the joint path silently ignored the rule; now it is honored.
 //
-// Both scenarios re-exec `blis run` as a child process
-// (BLIS_EDPPRULE_CHILD=1) because logrus.Fatalf calls os.Exit, which would
-// kill the whole test binary if invoked in-process (matching
+// Both scenarios re-exec `blis run` as a child process (BLIS_EDPPRULE_CHILD=1)
+// because a config error would call logrus.Fatalf / os.Exit, which would kill the
+// whole test binary if invoked in-process (matching
 // TestCoeffsByGPU_RunCmdLiteralWiring_* in edppcoeffs_bundle_wiring_test.go).
-func TestEDPPRule_LeastTTFT_AcceptedAndJointRejected(t *testing.T) {
+func TestEDPPRule_LeastTTFT_AcceptedReducedAndJoint(t *testing.T) {
 	if os.Getenv("BLIS_EDPPRULE_CHILD") == "1" {
 		runEDPPRuleChild(t)
 		return
@@ -35,45 +33,29 @@ func TestEDPPRule_LeastTTFT_AcceptedAndJointRejected(t *testing.T) {
 		t.Skipf("frozen coeffs file absent (%s), skipping", frozenH100CoeffsPath)
 	}
 
-	// Case 1: --edpp-rule least-ttft alone completes and produces metrics.
-	out, err := runEDPPRuleChildProcess(t, "accept")
-	if err != nil {
-		t.Fatalf("--pd-decider edpp --edpp-rule least-ttft run failed (expected success): %v\noutput:\n%s", err, out)
-	}
-	if !edppRuleCompletedRE.Match(out) {
-		t.Fatalf("run produced no completed_requests metrics in stdout:\n%s", out)
-	}
-
-	// Case 2: --edpp-rule least-ttft + --edpp-joint together must fail (R3: CLI -> Fatalf).
-	out, err = runEDPPRuleChildProcess(t, "reject")
-	if err == nil {
-		t.Fatalf("expected non-zero exit for --edpp-rule least-ttft --edpp-joint, got exit 0; output:\n%s", out)
-	}
-	var exitErr *exec.ExitError
-	if !errors.As(err, &exitErr) {
-		t.Fatalf("unexpected error type for reject scenario: %v", err)
-	}
-	if exitErr.ExitCode() != 1 {
-		t.Fatalf("reject scenario: expected exit code 1 (logrus.Fatalf), got %d; output:\n%s", exitErr.ExitCode(), out)
-	}
-	const wantMsg = "cannot be combined with --edpp-joint"
-	if !strings.Contains(string(out), wantMsg) {
-		t.Errorf("reject scenario: fatal message should contain %q, got:\n%s", wantMsg, out)
+	for _, scenario := range []string{"reduced", "joint"} {
+		out, err := runEDPPRuleChildProcess(t, scenario)
+		if err != nil {
+			t.Fatalf("--edpp-rule least-ttft (%s) run failed (expected success): %v\noutput:\n%s", scenario, err, out)
+		}
+		if !edppRuleCompletedRE.Match(out) {
+			t.Fatalf("%s: run produced no completed_requests metrics in stdout:\n%s", scenario, out)
+		}
 	}
 }
 
 // runEDPPRuleChildProcess re-execs this test in a child process for the given
-// scenario ("accept" | "reject") and returns the child's combined output and
+// scenario ("reduced" | "joint") and returns the child's combined output and
 // exit error (nil on success).
 func runEDPPRuleChildProcess(t *testing.T, scenario string) ([]byte, error) {
 	t.Helper()
-	cmd := exec.Command(os.Args[0], "-test.run=TestEDPPRule_LeastTTFT_AcceptedAndJointRejected")
+	cmd := exec.Command(os.Args[0], "-test.run=TestEDPPRule_LeastTTFT_AcceptedReducedAndJoint")
 	cmd.Env = append(os.Environ(), "BLIS_EDPPRULE_CHILD=1", "BLIS_EDPPRULE_SCENARIO="+scenario)
 	return cmd.CombinedOutput()
 }
 
 // runEDPPRuleChild is the child-process body: it builds a tiny 1P2D EDPP
-// config with --edpp-rule least-ttft (plus --edpp-joint in the "reject"
+// config with --edpp-rule least-ttft (plus --edpp-joint in the "joint"
 // scenario) and executes the real runCmd.
 func runEDPPRuleChild(t *testing.T) {
 	scenario := os.Getenv("BLIS_EDPPRULE_SCENARIO")
@@ -108,7 +90,7 @@ func runEDPPRuleChild(t *testing.T) {
 		"--edpp-tau-itl", "50ms",
 		"--edpp-rule", "least-ttft",
 	}
-	if scenario == "reject" {
+	if scenario == "joint" {
 		args = append(args, "--edpp-joint")
 	}
 

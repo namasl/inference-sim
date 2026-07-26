@@ -257,7 +257,17 @@ Example:
 			logrus.Fatalf("--pd-decider=%q has no effect because --prefill-instances=0 (disaggregation is disabled); set --prefill-instances > 0 and --decode-instances > 0, or omit --pd-decider", pdDecider)
 		}
 		if edppRule == "least-ttft" && edppJoint {
-			logrus.Fatalf("--edpp-rule least-ttft is a reduced-path baseline and cannot be combined with --edpp-joint")
+			logrus.Infof("--edpp-rule least-ttft --edpp-joint: least-TTFT-joint arm — scores each candidate's own forward TTFT under its θ_i over the full (decode, prefill) action set, no drift/z/VaR (the fair hardware-aware least-TTFT).")
+		}
+		if edppRule == "var" {
+			if edppVarDeployable {
+				logrus.Infof("--edpp-rule var --edpp-var-deployable: DEPLOYABLE value-at-risk — co-resident remaining is estimated from the per-class N̂_out (INV-9-safe, reads no hidden output length).")
+			} else {
+				logrus.Warnf("--edpp-rule var is a DIAGNOSTIC ORACLE: it reads co-residents' TRUE remaining output length to price the value-at-risk externality (violates INV-9). Results are an UPPER BOUND, not an achievable policy. Add --edpp-var-deployable for the INV-9-safe estimate.")
+			}
+			if edppVarCollocPrefill {
+				logrus.Infof("--edpp-var-colloc-prefill: also pricing the first-token VaR of collocated prefill occupants on the decode instance (deployable, INV-9-safe).")
+			}
 		}
 		if edppOracleOutputLen {
 			logrus.Warnf("--edpp-oracle-output-len is a DIAGNOSTIC oracle: it charges each routed request's own decode work with its TRUE output length (violates INV-9). Results are an UPPER BOUND, not an achievable policy.")
@@ -496,6 +506,16 @@ Example:
 			EDPPTAdmEstimator:               edppTAdmEstimator,
 			EDPPJoint:                       edppJoint,
 			EDPPRule:                        edppRule,
+			EDPPVarMetric:                   edppVarMetric,
+			EDPPVarKeepCongestion:           edppVarCongestion,
+			EDPPVarCongestionWeight:         edppVarCongestionWeight,
+			EDPPVarNormalize:                edppVarNormalize,
+			EDPPVarDeployable:               edppVarDeployable,
+			EDPPVarCollocPrefill:            edppVarCollocPrefill,
+			EDPPVarGoodputObjective:         edppVarGoodput,
+			EDPPKairosBeta:                  edppKairosBeta,
+			EDPPTauE2EUs:                    edppTauE2E.Microseconds(),
+			EDPPTauE2EByClassUs:             parseEDPPClassTargets(edppTauE2EClasses, "edpp-tau-e2e-classes"),
 			EDPPOracleOutputLen:             edppOracleOutputLen,
 			EDPPCXferSizeAware:              edppCXferSizeAware,
 			EDPPJointTrace:                  edppJointTracePath != "",

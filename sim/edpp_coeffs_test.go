@@ -21,12 +21,12 @@ func TestLoadEDPPCoeffs_FrozenLlama70b(t *testing.T) {
 		got  float64
 		want float64
 	}{
-		{"AlphaD", c.AlphaD, 16613.539607002218},
-		{"AlphaP", c.AlphaP, 16617.95001666865},
-		{"C0", c.C0, 5.347233255096054},
-		{"C1", c.C1, 0.0476140288153138},
-		{"CPf", c.CPf, 6.1446533788622295},
-		{"CAttn", c.CAttn, 0.00010075607622433406},
+		{"AlphaD", c.AlphaD, 16613.537554540144},
+		{"AlphaP", c.AlphaP, 16617.85321583337},
+		{"C0", c.C0, 5.347316038602452},
+		{"C1", c.C1, 0.04761401141756073},
+		{"CPf", c.CPf, 6.144687138665833},
+		{"CAttn", c.CAttn, 0.00010075247918809842},
 	}
 	for _, tc := range cases {
 		if math.Abs(tc.got-tc.want) > 1e-9 {

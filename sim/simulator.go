@@ -210,10 +210,11 @@ func (sim *Simulator) RunningDecodeState() []RunningReqState {
 			KVBlocks:      (req.ProgressIndex + blockSize - 1) / blockSize,
 			TrueRemaining: trueRemaining,
 			// Deployable per-co-resident SLO-deadline inputs (INV-9-safe) for the VaR oracle.
-			SLOClass:     req.SLOClass,
-			ArrivalUs:    req.ArrivalTime,
-			FirstTokenUs: req.FirstTokenTime,
-			TTFTSet:      req.TTFTSet,
+			SLOClass:        req.SLOClass,
+			ArrivalUs:       req.ArrivalTime,
+			FirstTokenUs:    req.FirstTokenTime,
+			TTFTSet:         req.TTFTSet,
+			OracleOutputLen: -1, // decode co-residents carry remaining output in TrueRemaining
 		})
 	}
 	return out
@@ -246,6 +247,13 @@ func (sim *Simulator) RunningPrefillState() []RunningReqState {
 		// remaining (depends on hidden o_r), this is deployable-legitimate, so it is NOT
 		// oracle-gated: populated whenever admission detail is on, and never censored.
 		trueRemaining := inLen - req.ProgressIndex
+		// Oracle-only: the occupant's total output length, so the VaR oracle can project its
+		// decode phase (the ITL/E2E risk once R joins its batch). -1 when the oracle is off; the
+		// deployable rule uses the censored per-class N̂_out instead and never reads this.
+		oracleOutputLen := int64(-1)
+		if sim.admissionDetailOracle {
+			oracleOutputLen = int64(len(req.OutputTokens))
+		}
 		out = append(out, RunningReqState{
 			StepsDone:     req.ProgressIndex,
 			KVBlocks:      (req.ProgressIndex + blockSize - 1) / blockSize,
@@ -253,8 +261,9 @@ func (sim *Simulator) RunningPrefillState() []RunningReqState {
 			// Deployable per-co-resident SLO-deadline inputs (INV-9-safe) for the VaR oracle.
 			// A prefill occupant has not produced its first token (TTFTSet=false); its VaR
 			// flip is TTFT-side, keyed on ArrivalUs + τ_ttft.
-			SLOClass:  req.SLOClass,
-			ArrivalUs: req.ArrivalTime,
+			SLOClass:        req.SLOClass,
+			ArrivalUs:       req.ArrivalTime,
+			OracleOutputLen: oracleOutputLen,
 		})
 	}
 	return out

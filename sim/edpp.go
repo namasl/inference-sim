@@ -64,29 +64,39 @@ import (
 // the request's own class: a stricter class reads the same server backlog as more
 // threatening, and its realized-SLO feedback accumulates in its own virtual queue.
 type EDPPConfig struct {
-	TauTTFTUs         int64                 // default τ_ttft: time-average TTFT SLO target (µs)
-	TauITLUs          int64                 // default τ_itl: time-average ITL SLO target (µs)
-	TauRefUs          int64                 // fixed reference τ for the transfer-penalty normalization (µs); makes the penalty scale 1/τ_ttft² like the other terms. Independent of the operating τ_ttft.
-	TauTTFTByClassUs  map[string]int64      // per-class τ_ttft overrides (µs); nil = use default for all
-	TauITLByClassUs   map[string]int64      // per-class τ_itl overrides (µs); nil = use default for all
-	V                 float64               // penalty/stability tradeoff knob (Neely's V); larger ⇒ fewer offloads
-	CXferUs           int64                 // c_xfer: KV-transfer cost paid when routing P (µs)
-	NomPrefillTokens  int                   // S_nom: nominal prefill chunk for the fixed prefill normalizer
-	NomDecodeCtx      int                   // L_nom: nominal decode context for the fixed decode normalizer
-	BlockSize         int                   // token block size for the prefix-cache a_p computation
-	ChunkTokens       int                   // per-step prefill token budget (max_num_batched_tokens); caps δ_pf-chunk. 0 = no cap (whole prefill counts as one chunk)
-	Coeffs            EDPPCoeffs            // frozen E3 latency-law coefficients (design §1.1); required
-	CoeffsByGPU       map[string]EDPPCoeffs // per-GPU-type θ_i overrides; nil ⇒ use Coeffs for every candidate (homogeneous)
-	TraceEnabled      bool                  // when true, Decide attaches an EDPPDecisionTrace (intermediate rule terms) to each decision. Off ⇒ zero allocation.
-	TAdmEstimator     string                // admission-delay estimator name ("" ⇒ waiting, the current formula)
-	Joint             bool                  // when true, Decide enumerates all (decode, prefill) candidates and picks the drift-plus-penalty argmin (joint P/D routing, --edpp-joint); false ⇒ the reduced fixed-d local-vs-disagg rule.
-	JointTraceEnabled bool                  // when true (joint mode only), decideJoint attaches an EDPPJointDecisionTrace comparing the scorer's (d,p) pick to the joint argmin. Off ⇒ zero allocation, no shadow prefill scorer run.
-	Rule              string                // reduced-path decision rule: "" / "dpp" (drift-plus-penalty, default) or "least-ttft" (disaggregate iff ttftP < ttftD; bypasses the drift/z/V machinery). Design 2026-07-15.
-	OracleOutputLen   bool                  // DIAGNOSTIC / UPPER-BOUND ONLY (--edpp-oracle-output-len): substitute the routed request's TRUE output length (len(req.OutputTokens)) for the per-class N̂_out estimate when charging its OWN decode work (joint W_d and the qdWork backlog bookkeeping). Violates INV-9 by design; never a deployable policy. Co-resident remaining stays estimated/censored. Used to test whether output-length estimation error explains the overload collapse (control for the value-vs-work-currency hypothesis).
-	CXferSizeAware    bool                  // --edpp-c-xfer-size-aware: compute c_xfer per request from KV size (XferBaseUs + ⌈a_r/blockSize⌉·blockSize·KVBytesPerTokenPerGPU / bandwidth), mirroring the DES KV-transfer executor, instead of the flat CXferUs. Off ⇒ byte-identical to the flat-c_xfer behavior. Deployable (input-only, oracle-safe).
-	KVBytesPerTokenPerGPU float64           // per-GPU KV bytes per token (from ModelConfig + prefill TP); used only when CXferSizeAware
-	XferBandwidthGBps float64               // inter-instance KV-transfer bandwidth (GB/s), matching the DES executor; used only when CXferSizeAware
-	XferBaseUs        float64               // KV-transfer base latency (µs), matching the DES executor; used only when CXferSizeAware
+	TauTTFTUs             int64                 // default τ_ttft: time-average TTFT SLO target (µs)
+	TauITLUs              int64                 // default τ_itl: time-average ITL SLO target (µs)
+	TauRefUs              int64                 // fixed reference τ for the transfer-penalty normalization (µs); makes the penalty scale 1/τ_ttft² like the other terms. Independent of the operating τ_ttft.
+	TauTTFTByClassUs      map[string]int64      // per-class τ_ttft overrides (µs); nil = use default for all
+	TauITLByClassUs       map[string]int64      // per-class τ_itl overrides (µs); nil = use default for all
+	TauE2EUs              int64                 // default τ_e2e: end-to-end SLO deadline budget (µs); used ONLY by the VaR drift oracle (Rule=="var") to evaluate a co-resident's E2E composite-good (deadline = arrival + τ_e2e). 0 ⇒ E2E conjunct disabled in g(). Not read by dpp/least-ttft.
+	TauE2EByClassUs       map[string]int64      // per-class τ_e2e overrides (µs); nil = use default for all
+	V                     float64               // penalty/stability tradeoff knob (Neely's V); larger ⇒ fewer offloads
+	CXferUs               int64                 // c_xfer: KV-transfer cost paid when routing P (µs)
+	NomPrefillTokens      int                   // S_nom: nominal prefill chunk for the fixed prefill normalizer
+	NomDecodeCtx          int                   // L_nom: nominal decode context for the fixed decode normalizer
+	BlockSize             int                   // token block size for the prefix-cache a_p computation
+	ChunkTokens           int                   // per-step prefill token budget (max_num_batched_tokens); caps δ_pf-chunk. 0 = no cap (whole prefill counts as one chunk)
+	Coeffs                EDPPCoeffs            // frozen E3 latency-law coefficients (design §1.1); required
+	CoeffsByGPU           map[string]EDPPCoeffs // per-GPU-type θ_i overrides; nil ⇒ use Coeffs for every candidate (homogeneous)
+	TraceEnabled          bool                  // when true, Decide attaches an EDPPDecisionTrace (intermediate rule terms) to each decision. Off ⇒ zero allocation.
+	TAdmEstimator         string                // admission-delay estimator name ("" ⇒ waiting, the current formula)
+	Joint                 bool                  // when true, Decide enumerates all (decode, prefill) candidates and picks the drift-plus-penalty argmin (joint P/D routing, --edpp-joint); false ⇒ the reduced fixed-d local-vs-disagg rule.
+	JointTraceEnabled     bool                  // when true (joint mode only), decideJoint attaches an EDPPJointDecisionTrace comparing the scorer's (d,p) pick to the joint argmin. Off ⇒ zero allocation, no shadow prefill scorer run.
+	Rule                  string                // reduced-path decision rule: "" / "dpp" (drift-plus-penalty, default) | "least-ttft" (disaggregate iff ttftP < ttftD; bypasses the drift/z/V machinery, design 2026-07-15) | "var" (replace the work-currency balance term with a value-at-risk externality; DIAGNOSTIC ORACLE, design 2026-07-21).
+	VarMetric             string                // VaR scoring kernel when Rule=="var": "flip" (A, binary composite-good flip count; default), "util" (B, saturating slack utility), "hazard" (C, deadline-slack hazard × delay). Ignored unless Rule=="var".
+	VarKeepCongestion     bool                  // when Rule=="var": KEEP the Lyapunov work-congestion drift term and ADD the VaR externality (drift-plus-VaR), instead of replacing it. The congestion term feels a node saturating (capacity + heterogeneity); VaR supplies the SLO externality. false ⇒ pure VaR (externality replaces congestion). Ignored unless Rule=="var".
+	VarCongestionWeight   float64               // drift-plus-VaR balance: cost = VarCongestionWeight·congestion + VaR (the two terms live on different scales, so this makes them commensurate). 0 ⇒ 1.0. Used only when Rule=="var" and VarKeepCongestion.
+	VarNormalize          bool                  // drift-plus-VaR auto-normalization (joint path): per-decision min-max normalize congestion and VaR across candidates to [0,1] before combining, so VarCongestionWeight is a scale-free relative weight (default ≈1) instead of an absolute scale. A zero-spread guard makes a symmetric congestion term (identical hardware) cancel automatically. Used only when Rule=="var" and VarKeepCongestion.
+	KairosBeta            float64               // Kairos baseline (Rule=="kairos") TBT safety margin β: a deflected prefill chunk must keep the decode step within β·τ_itl. 0 ⇒ 1.0. See sim/edpp_kairos.go (arXiv:2607.02043).
+	VarDeployable         bool                  // DEPLOYABLE VaR (Rule=="var"): estimate each decode co-resident's remaining steps from the censored per-class N̂_out (max(N̂_out − StepsDone, 1)) instead of the ORACLE true remaining. INV-9-safe (no output-length read). Turns the diagnostic ceiling into a runnable policy; measures the oracle→deployable gap.
+	VarCollocPrefill      bool                  // DEPLOYABLE VaR extra (Rule=="var"): also price the first-token (TTFT) value-at-risk of collocated prefill occupants ON the decode instance. These are requests a prior collocate decision placed there that are still pre-first-token, which RunningDecode skips so the decode-side terms miss them. Reads only remaining prompt tokens (known input, INV-9-safe). On by default so the rule prices this externality; set false to ablate.
+	VarGoodputObjective   bool                  // DIAGNOSTIC (Rule=="var" && VarKeepCongestion, --edpp-var-goodput): reframe the objective from "minimize transfer cost" to "maximize goodput". The rule charges VaR − good_r (the goodput destroyed among co-residents minus the goodput EARNED for the arriving request) and DROPS the standalone transfer penalty (its effect already flows through the request's own projected TTFT). good_r uses the request's decode length via reqNHatOut — the censored N̂_out, or the TRUE output length when OracleOutputLen is also set (an INV-9 upper bound). Off ⇒ byte-identical to the current rule (INV-6). Tests whether the goodput reframing beats the transfer-cost objective.
+	OracleOutputLen       bool                  // DIAGNOSTIC / UPPER-BOUND ONLY (--edpp-oracle-output-len): substitute the routed request's TRUE output length (len(req.OutputTokens)) for the per-class N̂_out estimate when charging its OWN decode work (joint W_d and the qdWork backlog bookkeeping). Violates INV-9 by design; never a deployable policy. Co-resident remaining stays estimated/censored. Used to test whether output-length estimation error explains the overload collapse (control for the value-vs-work-currency hypothesis).
+	CXferSizeAware        bool                  // --edpp-c-xfer-size-aware: compute c_xfer per request from KV size (XferBaseUs + ⌈a_r/blockSize⌉·blockSize·KVBytesPerTokenPerGPU / bandwidth), mirroring the DES KV-transfer executor, instead of the flat CXferUs. Off ⇒ byte-identical to the flat-c_xfer behavior. Deployable (input-only, oracle-safe).
+	KVBytesPerTokenPerGPU float64               // per-GPU KV bytes per token (from ModelConfig + prefill TP); used only when CXferSizeAware
+	XferBandwidthGBps     float64               // inter-instance KV-transfer bandwidth (GB/s), matching the DES executor; used only when CXferSizeAware
+	XferBaseUs            float64               // KV-transfer base latency (µs), matching the DES executor; used only when CXferSizeAware
 }
 
 // EDPPJointDecisionTrace records, for one joint (--edpp-joint) decision, the scorer's
@@ -194,9 +204,18 @@ func (c EDPPConfig) validate() {
 		}
 	}
 	switch c.Rule {
-	case "", "dpp", "least-ttft":
+	case "", "dpp", "least-ttft", "kairos":
+	case "var":
+		if _, ok := parseVarKernel(c.VarMetric); !ok {
+			panic(fmt.Sprintf("EDPPConfig: Rule==\"var\" requires VarMetric in {flip,util,hazard}, got %q", c.VarMetric))
+		}
 	default:
-		panic(fmt.Sprintf("EDPPConfig: Rule must be \"\", \"dpp\", or \"least-ttft\", got %q", c.Rule))
+		panic(fmt.Sprintf("EDPPConfig: Rule must be \"\", \"dpp\", \"least-ttft\", \"var\", or \"kairos\", got %q", c.Rule))
+	}
+	for cls, v := range c.TauE2EByClassUs {
+		if v <= 0 {
+			panic(fmt.Sprintf("EDPPConfig: TauE2EByClassUs[%q] must be > 0, got %d", cls, v))
+		}
 	}
 }
 
@@ -313,8 +332,40 @@ type EDPPDecider struct {
 	joint bool
 
 	// rule selects the reduced-path decision: "" / "dpp" => lhs > rhs (drift-plus-penalty);
-	// "least-ttft" => ttftP < ttftD. Estimation is identical; only the final comparison differs.
+	// "least-ttft" => ttftP < ttftD; "var" => lhs_var (value-at-risk externality) > rhs.
+	// Estimation is identical; only the LHS/comparison differs.
 	rule string
+
+	// varMetric is the VaR scoring kernel (A/B/C) used when rule == "var". Parsed once at
+	// construction from cfg.VarMetric (validated). Meaningless (zero value) for other rules.
+	varMetric varKernel
+
+	// varKeepCongestion selects drift-plus-VaR when rule == "var": keep the work-congestion
+	// drift term and ADD the VaR externality, rather than replacing congestion with VaR.
+	varKeepCongestion bool
+
+	// varCongestionWeight scales the congestion term in drift-plus-VaR so it is commensurate
+	// with the VaR externality (they live on different scales). Defaults to 1.0.
+	varCongestionWeight float64
+
+	// varNormalize enables per-decision min-max normalization of the congestion and VaR terms
+	// (joint path) so varCongestionWeight is a scale-free relative weight. See EDPPConfig.VarNormalize.
+	varNormalize bool
+
+	// varDeployable estimates co-resident remaining steps from the censored per-class N̂_out
+	// instead of the oracle true remaining (INV-9-safe). See EDPPConfig.VarDeployable.
+	varDeployable bool
+
+	// varCollocPrefill also prices the first-token VaR of collocated prefill occupants on the
+	// decode instance (deployable, INV-9-safe). See EDPPConfig.VarCollocPrefill.
+	varCollocPrefill bool
+
+	// varGoodputObjective reframes the objective to goodput: charge VaR − good_r and drop the
+	// standalone transfer penalty (diagnostic). See EDPPConfig.VarGoodputObjective.
+	varGoodputObjective bool
+
+	// kairosBeta is the TBT safety margin for the Kairos baseline (rule == "kairos").
+	kairosBeta float64
 
 	// Pluggable admission-delay estimator (default "waiting" reproduces QWork/Mu).
 	tadmEstimator AdmissionDelayEstimator
@@ -381,20 +432,41 @@ func NewEDPPDecider(cfg EDPPConfig, model LatencyModel, cacheQuery map[string]fu
 	}
 	cfg.TauTTFTByClassUs = copyClassTargets(cfg.TauTTFTByClassUs)
 	cfg.TauITLByClassUs = copyClassTargets(cfg.TauITLByClassUs)
+	cfg.TauE2EByClassUs = copyClassTargets(cfg.TauE2EByClassUs)
+
+	// VarMetric is validated in cfg.validate() only when Rule=="var"; parse defensively
+	// (unknown ⇒ varKernelFlip, unreachable past validation) so the field is always well-defined.
+	varMetric, _ := parseVarKernel(cfg.VarMetric)
+	varCongestionWeight := cfg.VarCongestionWeight
+	if varCongestionWeight <= 0 {
+		varCongestionWeight = 1.0
+	}
+	kairosBeta := cfg.KairosBeta
+	if kairosBeta <= 0 {
+		kairosBeta = 1.0
+	}
 
 	d := &EDPPDecider{
-		cfg:              cfg,
-		model:            model,
-		cacheQuery:       cacheQuery,
-		prefillSnapshots: prefillSnapshots,
-		joint:            cfg.Joint,
-		rule:             cfg.Rule,
-		zByClass:         make(map[string]*edppClassState),
-		coeffs:           cfg.Coeffs,
-		coeffsByGPU:      cfg.CoeffsByGPU,
-		pending:          make(map[string]edppPendingWork),
-		qByInstance:      make(map[string]*edppInstWork),
-		nHatOut:          make(map[string]*edppRunningMean),
+		cfg:                 cfg,
+		model:               model,
+		cacheQuery:          cacheQuery,
+		prefillSnapshots:    prefillSnapshots,
+		joint:               cfg.Joint,
+		rule:                cfg.Rule,
+		varMetric:           varMetric,
+		varKeepCongestion:   cfg.VarKeepCongestion,
+		varCongestionWeight: varCongestionWeight,
+		varNormalize:        cfg.VarNormalize,
+		varDeployable:       cfg.VarDeployable,
+		varCollocPrefill:    cfg.VarCollocPrefill,
+		varGoodputObjective: cfg.VarGoodputObjective,
+		kairosBeta:          kairosBeta,
+		zByClass:            make(map[string]*edppClassState),
+		coeffs:              cfg.Coeffs,
+		coeffsByGPU:         cfg.CoeffsByGPU,
+		pending:             make(map[string]edppPendingWork),
+		qByInstance:         make(map[string]*edppInstWork),
+		nHatOut:             make(map[string]*edppRunningMean),
 
 		awaitingFirstToken: make(map[string]*edppAwaiting),
 	}
@@ -450,6 +522,18 @@ func (d *EDPPDecider) targetsFor(class string) (tauTTFTUs, tauITLUs int64) {
 	return
 }
 
+// e2eFor resolves the E2E SLO deadline budget (µs) for a class, mirroring targetsFor:
+// the per-class override if present, else the default TauE2EUs. Used only by the VaR
+// oracle (Rule=="var") to compute a co-resident's absolute E2E deadline = arrival + τ_e2e.
+// Returns 0 when no E2E target is configured (⇒ the E2E conjunct is disabled in g()).
+func (d *EDPPDecider) e2eFor(class string) int64 {
+	tauE2EUs := d.cfg.TauE2EUs
+	if v, ok := d.cfg.TauE2EByClassUs[class]; ok {
+		tauE2EUs = v
+	}
+	return tauE2EUs
+}
+
 // coeffsFor returns the per-GPU-type θ_i for gpuType, or the global coeffs when
 // no override exists (nil map, unmapped type, or empty gpuType). This is the single
 // selection point for per-instance heterogeneous coefficients; with no coeffs_by_gpu
@@ -490,6 +574,13 @@ func (d *EDPPDecider) Decide(req *Request, state *RouterState) DisaggregationDec
 	// read. state.Clock is the current sim time; nil state (unit tests) ⇒ skip.
 	if state != nil {
 		d.creditAwaiting(state.Clock)
+	}
+
+	// Kairos baseline (--edpp-rule kairos, arXiv:2607.02043): load-aware prefill deflection.
+	// It picks its own decode node (the deflection target), so it branches ahead of both the
+	// joint and reduced paths. Baseline only — not our rule. See sim/edpp_kairos.go.
+	if d.rule == "kairos" {
+		return d.decideKairos(req, state)
 	}
 
 	// Joint P/D routing (--edpp-joint): enumerate all (decode, prefill) candidates and
@@ -640,8 +731,28 @@ func (d *EDPPDecider) Decide(req *Request, state *RouterState) DisaggregationDec
 	rhs := transferTerm + ttftTerm + itlTerm
 
 	disagg := lhs > rhs
-	if d.rule == "least-ttft" {
+	switch d.rule {
+	case "least-ttft":
 		disagg = ttftP < ttftD // bypass drift/z/V; decide purely on predicted TTFT (ttftP already includes c_xfer)
+	case "var":
+		// Value-at-risk: replace ONLY the work-currency balance term with the value-currency
+		// externality lhs_var = VaR_local − VaR_disagg (goodput destroyed among co-residents);
+		// the transfer/TTFT/ITL self terms in rhs are unchanged. Reuse `lhs` so the trace's LHS
+		// field reflects the value the decision actually used (BalanceTermD/P stay informational).
+		var nowUs float64
+		if state != nil {
+			nowUs = float64(state.Clock)
+		}
+		varLHS := d.varReducedLHS(req, nowUs, decSnap, prefillSnaps, thetaD, bDec, kv, sPf, chunk, nChunks, ttftP, sPfPrefill)
+		if d.varKeepCongestion {
+			// drift-plus-VaR: the work-congestion drift (current lhs = balanceTermD − balanceTermP)
+			// PLUS the value-currency externality. Congestion feels a node's backlog; VaR the SLO cost.
+			// The weight makes the two commensurate (they live on different scales).
+			lhs = d.varCongestionWeight*lhs + varLHS
+		} else {
+			lhs = varLHS // pure VaR: the externality replaces the work-currency balance term
+		}
+		disagg = lhs > rhs
 	}
 	dec := DisaggregationDecision{Disaggregate: disagg}
 	if d.cfg.TraceEnabled {
@@ -825,9 +936,13 @@ func (d *EDPPDecider) decideJoint(req *Request, state *RouterState) Disaggregati
 	// Candidate-invariant terms shared by every (d,·) cost evaluation this decision.
 	// wd (W_d) and mDec (m_dec = δ̄_dec) are now computed per candidate in
 	// jointCandidateCost under θ_i (they discriminate fast vs slow decode nodes).
+	var nowUs float64
+	if state != nil {
+		nowUs = float64(state.Clock)
+	}
 	ec := &jointEvalCtx{
 		req: req, n: n, zTTFT: zTTFT, zITL: zITL,
-		reqKVNeed: reqKVNeed, nHatOut: nHatOut,
+		reqKVNeed: reqKVNeed, nHatOut: nHatOut, nowUs: nowUs,
 	}
 
 	var best *cand
@@ -838,13 +953,29 @@ func (d *EDPPDecider) decideJoint(req *Request, state *RouterState) Disaggregati
 		}
 	}
 
-	for _, ds := range decodeSnaps {
-		// --- local: prefill+decode co-resident on d ---
-		consider(cand{dID: ds.ID, local: true, J: d.jointCandidateCost(ec, ds, nil)})
-		// --- disagg: decode on d, prefill on each prefill node p ---
-		for _, ps := range prefillSnaps {
-			psCopy := ps
-			consider(cand{dID: ds.ID, pID: ps.ID, local: false, J: d.jointCandidateCost(ec, ds, &psCopy)})
+	// drift-plus-VaR with auto-normalization: the congestion and VaR terms live on different
+	// scales, so a fixed weight is an absolute scale (see VarNormalize). The normalized path
+	// min-max normalizes both across the candidate set (two passes) so the weight is relative.
+	if d.rule == "var" && d.varKeepCongestion && d.varNormalize {
+		for _, c := range d.jointNormalizedCandidates(ec, decodeSnaps, prefillSnaps) {
+			consider(c)
+		}
+	} else {
+		// least-TTFT-joint scores each candidate's own forward TTFT (hardware-aware, no drift/z/
+		// VaR); every other rule keeps the drift-plus-penalty objective. The argmin loop, local-
+		// before-disagg ordering, and tie-break are shared.
+		costFn := d.jointCandidateCost
+		if d.rule == "least-ttft" {
+			costFn = d.jointCandidateTTFT
+		}
+		for _, ds := range decodeSnaps {
+			// --- local: prefill+decode co-resident on d ---
+			consider(cand{dID: ds.ID, local: true, J: costFn(ec, ds, nil)})
+			// --- disagg: decode on d, prefill on each prefill node p ---
+			for _, ps := range prefillSnaps {
+				psCopy := ps
+				consider(cand{dID: ds.ID, pID: ps.ID, local: false, J: costFn(ec, ds, &psCopy)})
+			}
 		}
 	}
 
@@ -884,6 +1015,7 @@ type jointEvalCtx struct {
 	zITL      float64
 	reqKVNeed int64
 	nHatOut   float64 // per-class realized output-length estimate; wd/mDec are now per-candidate (θ_i)
+	nowUs     float64 // decision instant (µs), state.Clock; used only by the VaR rule's completion model
 }
 
 // jointCandidateCost evaluates the normalized joint objective J(d, ·) for one candidate:
@@ -892,6 +1024,18 @@ type jointEvalCtx struct {
 // enumeration and the scorer-slice shadow evaluation share one code path. The decode-side
 // terms depend only on ds and are recomputed per call with identical operands (byte-identical
 // float result, INV-6).
+// jointSelfGood returns the arriving request's OWN smoothed goodput under a candidate
+// (goodput-objective diagnostic, VarGoodputObjective). tHat is the candidate's projected
+// time-to-first-token (tHatLocal or tHatDisagg — the same value the self term divides by τ_ttft),
+// and tIterAfter is the B+1 re-timed decode per-iter time the VaR completion model uses for the
+// batch the request joins. The prefill chunk does not affect tIterAfter (only the overlap term),
+// so it is passed as 0. Decode always happens on ds, so ds's θ_i sets tIterAfter for both local
+// and disagg. Mirrors jointCandidateCost's operands (byte-identical arithmetic, INV-6).
+func (d *EDPPDecider) jointSelfGood(ec *jointEvalCtx, thetaD EDPPCoeffs, ds RoutingSnapshot, tHat float64) float64 {
+	rt := d.varReTimingFor(ec.req, thetaD, ds.BatchSize, ds.KvTokensInUse, ds.ResidentPrefillTokens, 0)
+	return goodSelf(d.varSLOFor(ec.req.SLOClass), tHat, rt.tIterAfter, ec.nHatOut, d.varMetric)
+}
+
 func (d *EDPPDecider) jointCandidateCost(ec *jointEvalCtx, ds RoutingSnapshot, ps *RoutingSnapshot) float64 {
 	n := ec.n
 	// Decode-side θ_i: the physics of the decode node ds (fast vs slow ranks correctly).
@@ -930,8 +1074,21 @@ func (d *EDPPDecider) jointCandidateCost(ec *jointEvalCtx, ds RoutingSnapshot, p
 		// prefill work Wp (projection AND attention over context). Wp replaces the projection-only
 		// nChunks·deltaPf so the estimate keeps the quadratic attention cost (matches the executor).
 		tHatLocal := tAdmD + nChunksLoc*tIterD + wpLoc // ABSOLUTE T̂_local(d)
-		return jDecodeBacklog +
-			qd*(wpLoc/n.wStarD) +
+		// balance = the work-currency backlog contribution, or (Rule=="var") the value-currency
+		// externality VaR_local on ds's decode co-residents. Self terms below are unchanged.
+		balance := jDecodeBacklog + qd*(wpLoc/n.wStarD)
+		if d.rule == "var" {
+			v := d.varJointCandidateExternality(ec.req, ec.nowUs, ds, nil)
+			if d.varGoodputObjective {
+				v -= d.jointSelfGood(ec, thetaD, ds, tHatLocal) // goodput objective: VaR − good_r (−Δgood)
+			}
+			if d.varKeepCongestion {
+				balance = d.varCongestionWeight*balance + v // drift-plus-VaR: weighted congestion + value externality
+			} else {
+				balance = v // pure VaR: the externality replaces the work-currency backlog
+			}
+		}
+		return balance +
 			ec.zTTFT*(tHatLocal/n.tauTTFT) +
 			jDecodeITL + // base decode-step ITL marginal m_dec (per-candidate θ_i)
 			ec.zITL*(deltaPfLoc/n.tauITL) // prefill-on-decode ITL inflation lands on local only
@@ -959,11 +1116,210 @@ func (d *EDPPDecider) jointCandidateCost(ec *jointEvalCtx, ds RoutingSnapshot, p
 	// T̂_disagg: admission + prefill-pool iteration overhead + the request's OWN prefill work Wp
 	// (projection AND attention, replacing the projection-only nChunks·deltaPf) + transfer time.
 	tHatDisagg := tAdmP + nChunksP*tIterP + wpP + cXferUs // ABSOLUTE T̂_disagg(d,p)
-	return jDecodeBacklog +
-		qp*(wpP/n.wStarP) +
+	// balance = the work-currency backlog contribution, or (Rule=="var") the value-currency
+	// externality VaR_disagg on ds's decode co-residents + *ps's prefill co-residents.
+	balance := jDecodeBacklog + qp*(wpP/n.wStarP)
+	if d.rule == "var" {
+		v := d.varJointCandidateExternality(ec.req, ec.nowUs, ds, ps)
+		if d.varGoodputObjective {
+			v -= d.jointSelfGood(ec, thetaD, ds, tHatDisagg) // goodput objective: VaR − good_r (−Δgood)
+		}
+		if d.varKeepCongestion {
+			balance = d.varCongestionWeight*balance + v // drift-plus-VaR: weighted congestion + value externality
+		} else {
+			balance = v // pure VaR: the externality replaces the work-currency backlog
+		}
+	}
+	// The KV-transfer penalty is dropped under the goodput objective: its effect already flows
+	// through the request's own projected TTFT (cXfer is inside tHatDisagg above), so charging it
+	// again as a standalone term double-prices the transfer. Pricing it separately is the eq. (16)
+	// "minimize transfer cost" residue the goodput reframing removes.
+	xfer := 0.0
+	if !(d.rule == "var" && d.varGoodputObjective) {
+		xfer = d.transferPenalty(n, cXferUs) // disagg pays the KV-transfer penalty; no local ITL inflation
+	}
+	return balance +
 		ec.zTTFT*(tHatDisagg/n.tauTTFT) +
 		jDecodeITL + // base decode-step ITL marginal m_dec (same as local: decode is on d)
-		d.transferPenalty(n, cXferUs) // disagg pays the KV-transfer penalty; no local ITL inflation
+		xfer
+}
+
+// jointCandidateTTFT is the least-TTFT-joint objective (Rule=="least-ttft" && Joint): the
+// deciding request's OWN forward time-to-first-token for one candidate, local (ps == nil) or
+// disagg (decode on ds, prefill on *ps). It carries no backlog/balance drift, no SLO virtual
+// queues, no VaR externality, and no transfer penalty beyond the transfer latency already inside
+// the disagg TTFT. Each side uses its candidate's θ_i, so the arm is hardware-aware by
+// construction (the fair least-TTFT the reviewer asks for). The arithmetic reproduces exactly
+// jointCandidateCost's tHatLocal/tHatDisagg and the reduced rule's ttftD/ttftP (INV-6), so
+// restricted to a single decode instance it matches the reduced least-ttft decision.
+func (d *EDPPDecider) jointCandidateTTFT(ec *jointEvalCtx, ds RoutingSnapshot, ps *RoutingSnapshot) float64 {
+	thetaD := d.coeffsFor(ds.GPUType)
+	bDec, kv, sPfD := ds.BatchSize, ds.KvTokensInUse, ds.ResidentPrefillTokens
+	tIterD := thetaD.tIterDecode(bDec, kv, sPfD)
+
+	if ps == nil {
+		// --- local: prefill+decode co-resident on d ⇒ prefill uses the decode θ_i ---
+		_, qdRaw := d.instWorkRaw(ds.ID)
+		decodeCtx := AdmissionContext{
+			QWork: qdRaw, Mu: thetaD.muDecode(bDec, kv, sPfD),
+			BatchSize: ds.BatchSize, MaxBatchSize: int(ds.MaxBatchSize),
+			FreeKVBlocks: ds.FreeKVBlocks, ReqKVNeed: ec.reqKVNeed,
+			TIter: tIterD, QueueDepth: ds.QueueDepth,
+			AdmissionRate: admissionRateFromSnapshot(ds), RemainingStepsEst: d.decodeRemStepsEst(ds, ec.req.SLOClass),
+			Running: censorOracleRemaining(ds.RunningDecode),
+		}
+		tAdmD := d.tadmEstimator.EstimateTAdm(decodeCtx)
+		apLoc := d.apForInstance(ec.req, ds.ID)
+		nChunksLoc, _ := d.chunkTerms(thetaD, apLoc)
+		wpLoc := thetaD.Wp(maxInt(apLoc, 0), len(ec.req.InputTokens))
+		return tAdmD + nChunksLoc*tIterD + wpLoc // T̂_local(d)
+	}
+
+	// --- disagg: decode on d, prefill on node *ps ⇒ prefill uses the prefill node's θ_i ---
+	thetaP := d.coeffsFor(ps.GPUType)
+	apP := d.apForInstance(ec.req, ps.ID)
+	nChunksP, _ := d.chunkTerms(thetaP, apP)
+	wpP := thetaP.Wp(maxInt(apP, 0), len(ec.req.InputTokens))
+	qpRaw, _ := d.instWorkRaw(ps.ID)
+	sPfP := ps.ResidentPrefillTokens
+	tIterP := thetaP.tIterPrefill(sPfP)
+	prefillCtx := AdmissionContext{
+		QWork: qpRaw, Mu: thetaP.muPrefill(sPfP),
+		BatchSize: ps.BatchSize, MaxBatchSize: int(ps.MaxBatchSize),
+		FreeKVBlocks: ps.FreeKVBlocks, ReqKVNeed: ec.reqKVNeed,
+		TIter: tIterP, QueueDepth: ps.QueueDepth,
+		AdmissionRate: admissionRateFromSnapshot(*ps), RemainingStepsEst: d.prefillRemStepsEst(*ps),
+		Running: ps.RunningPrefill,
+	}
+	tAdmP := d.tadmEstimator.EstimateTAdm(prefillCtx)
+	cXferUs := d.cXferUsFor(ec.req)
+	return tAdmP + nChunksP*tIterP + wpP + cXferUs // T̂_disagg(d,p)
+}
+
+// jointVaRComponents evaluates one joint candidate for the AUTO-NORMALIZED drift-plus-VaR path,
+// returning the three pieces separately so decideJoint's first pass can min-max normalize the
+// congestion and VaR terms across candidates before combining them:
+//
+//   - cong: the work-currency congestion drift (decode backlog + prefill-work load)
+//   - vv:   the value-at-risk externality (goodput destroyed among co-residents)
+//   - self: the z-weighted TTFT/ITL self terms and the transfer penalty (kept as-is)
+//
+// It mirrors jointCandidateCost's arithmetic. It runs ONLY on the normalized dpVaR path, so it
+// has no golden to match; the un-normalized paths are untouched (byte-identical, INV-6).
+func (d *EDPPDecider) jointVaRComponents(ec *jointEvalCtx, ds RoutingSnapshot, ps *RoutingSnapshot) (cong, vv, self float64) {
+	n := ec.n
+	thetaD := d.coeffsFor(ds.GPUType)
+	bDec, kv, sPfD := ds.BatchSize, ds.KvTokensInUse, ds.ResidentPrefillTokens
+	tIterD := thetaD.tIterDecode(bDec, kv, sPfD)
+	wd := thetaD.Wd(len(ec.req.InputTokens), ec.nHatOut)
+	mDec := thetaD.deltaBarDecode(float64(len(ec.req.InputTokens)) + ec.nHatOut/2)
+	jDecodeITL := ec.zITL * (mDec / n.tauITL)
+	_, qdRaw := d.instWorkRaw(ds.ID)
+	qd := qdRaw / n.wStarD
+	decodeCtx := AdmissionContext{
+		QWork: qdRaw, Mu: thetaD.muDecode(bDec, kv, sPfD),
+		BatchSize: ds.BatchSize, MaxBatchSize: int(ds.MaxBatchSize),
+		FreeKVBlocks: ds.FreeKVBlocks, ReqKVNeed: ec.reqKVNeed,
+		TIter: tIterD, QueueDepth: ds.QueueDepth,
+		AdmissionRate: admissionRateFromSnapshot(ds), RemainingStepsEst: d.decodeRemStepsEst(ds, ec.req.SLOClass),
+		Running: censorOracleRemaining(ds.RunningDecode),
+	}
+	tAdmD := d.tadmEstimator.EstimateTAdm(decodeCtx)
+	jDecodeBacklog := qd * (wd / n.wStarD)
+
+	if ps == nil {
+		apLoc := d.apForInstance(ec.req, ds.ID)
+		nChunksLoc, deltaPfLoc := d.chunkTerms(thetaD, apLoc)
+		wpLoc := thetaD.Wp(maxInt(apLoc, 0), len(ec.req.InputTokens))
+		tHatLocal := tAdmD + nChunksLoc*tIterD + wpLoc
+		cong = jDecodeBacklog + qd*(wpLoc/n.wStarD)
+		vv = d.varJointCandidateExternality(ec.req, ec.nowUs, ds, nil)
+		if d.varGoodputObjective {
+			vv -= d.jointSelfGood(ec, thetaD, ds, tHatLocal) // normalize VaR − good_r as one penalty
+		}
+		self = ec.zTTFT*(tHatLocal/n.tauTTFT) + jDecodeITL + ec.zITL*(deltaPfLoc/n.tauITL)
+		return cong, vv, self
+	}
+
+	thetaP := d.coeffsFor(ps.GPUType)
+	apP := d.apForInstance(ec.req, ps.ID)
+	nChunksP, _ := d.chunkTerms(thetaP, apP)
+	wpP := thetaP.Wp(maxInt(apP, 0), len(ec.req.InputTokens))
+	qpRaw, _ := d.instWorkRaw(ps.ID)
+	qp := qpRaw / n.wStarP
+	sPfP := ps.ResidentPrefillTokens
+	tIterP := thetaP.tIterPrefill(sPfP)
+	prefillCtx := AdmissionContext{
+		QWork: qpRaw, Mu: thetaP.muPrefill(sPfP),
+		BatchSize: ps.BatchSize, MaxBatchSize: int(ps.MaxBatchSize),
+		FreeKVBlocks: ps.FreeKVBlocks, ReqKVNeed: ec.reqKVNeed,
+		TIter: tIterP, QueueDepth: ps.QueueDepth,
+		AdmissionRate: admissionRateFromSnapshot(*ps), RemainingStepsEst: d.prefillRemStepsEst(*ps),
+		Running: ps.RunningPrefill,
+	}
+	tAdmP := d.tadmEstimator.EstimateTAdm(prefillCtx)
+	cXferUs := d.cXferUsFor(ec.req)
+	tHatDisagg := tAdmP + nChunksP*tIterP + wpP + cXferUs
+	cong = jDecodeBacklog + qp*(wpP/n.wStarP)
+	vv = d.varJointCandidateExternality(ec.req, ec.nowUs, ds, ps)
+	xfer := d.transferPenalty(n, cXferUs)
+	if d.varGoodputObjective {
+		vv -= d.jointSelfGood(ec, thetaD, ds, tHatDisagg) // normalize VaR − good_r as one penalty
+		xfer = 0                                          // goodput objective: transfer cost flows through tHatDisagg's z_TTFT term only
+	}
+	self = ec.zTTFT*(tHatDisagg/n.tauTTFT) + jDecodeITL + xfer
+	return cong, vv, self
+}
+
+// jointNormalizedCandidates enumerates the joint candidates for the auto-normalized dpVaR path
+// (two passes): first it computes each candidate's (congestion, VaR, self) via jointVaRComponents
+// and finds the min/max of the congestion and VaR terms across the set; then it builds each
+// candidate's objective J = w·norm(congestion) + norm(VaR) + self, where norm(x) = (x−min)/(max−min)
+// with a zero-spread guard that maps a term with no cross-candidate spread to 0. On identical
+// hardware the congestion term has no spread, so it cancels automatically and VaR decides; on
+// heterogeneous hardware it has spread, so it reins in over-routing. Enumeration order (decode
+// snapshots ascending, local before disagg) matches the un-normalized path (INV-6).
+func (d *EDPPDecider) jointNormalizedCandidates(ec *jointEvalCtx, decodeSnaps, prefillSnaps []RoutingSnapshot) []cand {
+	type comp struct {
+		dID, pID       string
+		local          bool
+		cong, vv, self float64
+	}
+	comps := make([]comp, 0, len(decodeSnaps)*(len(prefillSnaps)+1))
+	for _, ds := range decodeSnaps {
+		c, v, s := d.jointVaRComponents(ec, ds, nil)
+		comps = append(comps, comp{dID: ds.ID, local: true, cong: c, vv: v, self: s})
+		for _, ps := range prefillSnaps {
+			psCopy := ps
+			c, v, s := d.jointVaRComponents(ec, ds, &psCopy)
+			comps = append(comps, comp{dID: ds.ID, pID: ps.ID, local: false, cong: c, vv: v, self: s})
+		}
+	}
+	if len(comps) == 0 {
+		return nil
+	}
+	congMin, congMax := comps[0].cong, comps[0].cong
+	varMin, varMax := comps[0].vv, comps[0].vv
+	for _, c := range comps[1:] {
+		congMin, congMax = math.Min(congMin, c.cong), math.Max(congMax, c.cong)
+		varMin, varMax = math.Min(varMin, c.vv), math.Max(varMax, c.vv)
+	}
+	// norm maps x to [0,1] across the candidate set; a zero (near-zero) spread ⇒ the term does
+	// not discriminate this decision, so it contributes 0 (e.g. symmetric congestion on identical
+	// hardware cancels automatically).
+	const spreadEps = 1e-12
+	norm := func(x, lo, hi float64) float64 {
+		if hi-lo <= spreadEps {
+			return 0
+		}
+		return (x - lo) / (hi - lo)
+	}
+	out := make([]cand, 0, len(comps))
+	for _, c := range comps {
+		j := d.varCongestionWeight*norm(c.cong, congMin, congMax) + norm(c.vv, varMin, varMax) + c.self
+		out = append(out, cand{dID: c.dID, pID: c.pID, local: c.local, J: j})
+	}
+	return out
 }
 
 // buildJointTrace assembles the scorer-vs-joint divergence record for a committed joint
@@ -994,9 +1350,16 @@ func (d *EDPPDecider) buildJointTrace(ec *jointEvalCtx, state *RouterState, deco
 		scorerDSnap = decodeSnaps[0] // decodeSnaps is non-empty here (best != nil)
 	}
 
+	// Score the scorer's slice with the SAME objective the argmin used, so J_joint (best.J) and
+	// J_scorer share a scale and the J_joint <= J_scorer invariant holds under least-TTFT too.
+	costFn := d.jointCandidateCost
+	if d.rule == "least-ttft" {
+		costFn = d.jointCandidateTTFT
+	}
+
 	if best.local {
 		tr.AgreeP = true // both prefill nodes empty ⇒ trivially agree
-		tr.JScorer = d.jointCandidateCost(ec, scorerDSnap, nil)
+		tr.JScorer = costFn(ec, scorerDSnap, nil)
 		return tr
 	}
 
@@ -1006,11 +1369,11 @@ func (d *EDPPDecider) buildJointTrace(ec *jointEvalCtx, state *RouterState, deco
 	}
 	tr.AgreeP = tr.ScorerP == tr.JointP
 	if sp, ok := findSnapshotByID(prefillSnaps, tr.ScorerP); ok {
-		tr.JScorer = d.jointCandidateCost(ec, scorerDSnap, &sp)
+		tr.JScorer = costFn(ec, scorerDSnap, &sp)
 	} else {
 		// No usable shadow prefill pick ⇒ score the scorer's local slice (still an
 		// enumerated candidate, so the J_joint <= J_scorer invariant is preserved).
-		tr.JScorer = d.jointCandidateCost(ec, scorerDSnap, nil)
+		tr.JScorer = costFn(ec, scorerDSnap, nil)
 	}
 	return tr
 }

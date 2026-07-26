@@ -453,25 +453,35 @@ func NewClusterSimulator(config DeploymentConfig, requests []*sim.Request, onReq
 				}
 			}
 			cs.disaggregationDecider = sim.NewEDPPDecider(sim.EDPPConfig{
-				TauTTFTUs:         config.EDPPTauTTFTUs,
-				TauITLUs:          config.EDPPTauITLUs,
-				TauRefUs:          config.EDPPTauRefUs,
-				TauTTFTByClassUs:  config.EDPPTauTTFTByClassUs,
-				TauITLByClassUs:   config.EDPPTauITLByClassUs,
-				V:                 config.EDPPV,
-				CXferUs:           config.EDPPCXferUs,
-				NomPrefillTokens:  config.EDPPNomPrefillTokens,
-				NomDecodeCtx:      config.EDPPNomDecodeCtx,
-				BlockSize:         int(config.BlockSizeTokens),
-				ChunkTokens:       int(config.BatchConfig.MaxScheduledTokens),
-				TraceEnabled:      trace.TraceLevel(config.TraceLevel) == trace.TraceLevelDecisions,
-				Coeffs:            config.EDPPCoeffs,
-				CoeffsByGPU:       config.EDPPCoeffsByGPU,
-				TAdmEstimator:     config.EDPPTAdmEstimator,
-				Joint:             config.EDPPJoint,
-				Rule:              config.EDPPRule,
-				JointTraceEnabled: config.EDPPJoint && config.EDPPJointTrace,
-				OracleOutputLen:   config.EDPPOracleOutputLen,
+				TauTTFTUs:             config.EDPPTauTTFTUs,
+				TauITLUs:              config.EDPPTauITLUs,
+				TauRefUs:              config.EDPPTauRefUs,
+				TauTTFTByClassUs:      config.EDPPTauTTFTByClassUs,
+				TauITLByClassUs:       config.EDPPTauITLByClassUs,
+				TauE2EUs:              config.EDPPTauE2EUs,
+				TauE2EByClassUs:       config.EDPPTauE2EByClassUs,
+				V:                     config.EDPPV,
+				CXferUs:               config.EDPPCXferUs,
+				NomPrefillTokens:      config.EDPPNomPrefillTokens,
+				NomDecodeCtx:          config.EDPPNomDecodeCtx,
+				BlockSize:             int(config.BlockSizeTokens),
+				ChunkTokens:           int(config.BatchConfig.MaxScheduledTokens),
+				TraceEnabled:          trace.TraceLevel(config.TraceLevel) == trace.TraceLevelDecisions,
+				Coeffs:                config.EDPPCoeffs,
+				CoeffsByGPU:           config.EDPPCoeffsByGPU,
+				TAdmEstimator:         config.EDPPTAdmEstimator,
+				Joint:                 config.EDPPJoint,
+				Rule:                  config.EDPPRule,
+				VarMetric:             config.EDPPVarMetric,
+				VarKeepCongestion:     config.EDPPVarKeepCongestion,
+				VarCongestionWeight:   config.EDPPVarCongestionWeight,
+				VarNormalize:          config.EDPPVarNormalize,
+				VarDeployable:         config.EDPPVarDeployable,
+				VarCollocPrefill:      config.EDPPVarCollocPrefill,
+				VarGoodputObjective:   config.EDPPVarGoodputObjective,
+				KairosBeta:            config.EDPPKairosBeta,
+				JointTraceEnabled:     config.EDPPJoint && config.EDPPJointTrace,
+				OracleOutputLen:       config.EDPPOracleOutputLen,
 				CXferSizeAware:        config.EDPPCXferSizeAware,
 				KVBytesPerTokenPerGPU: edppKVBytesPerTok,
 				XferBandwidthGBps:     config.PDTransferBandwidthGBps,
@@ -675,6 +685,19 @@ func NewClusterSimulator(config DeploymentConfig, requests []*sim.Request, onReq
 					cs.feedFirstToken(req, tick)
 				}
 			}
+		}
+	}
+
+	// VaR drift rule (--edpp-rule var, design 2026-07-21): the value-at-risk externality needs
+	// each decode co-resident's state (StepsDone, arrival, first-token, class), which populates
+	// only when per-instance admission detail is on. Enable it. The ORACLE flavor additionally
+	// populates the un-censored true remaining steps (a gated INV-9 violation, loud CLI warning);
+	// the DEPLOYABLE flavor (--edpp-var-deployable) leaves TrueRemaining censored and estimates
+	// remaining from the per-class N̂_out instead (INV-9-safe).
+	if config.EDPPRule == "var" {
+		oracle := !config.EDPPVarDeployable
+		for _, inst := range cs.instances {
+			inst.sim.SetAdmissionDetail(oracle)
 		}
 	}
 

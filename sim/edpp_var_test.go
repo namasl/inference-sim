@@ -261,6 +261,77 @@ func TestCollocPrefill_CensoredSkipped(t *testing.T) {
 	}
 }
 
+// collocOccupantFull is a mid-prefill occupant with a known decode horizon and full SLOs, so the
+// decode-phase (ITL/E2E) risk of a local placement — R joining its batch (B→B+1) — is priced, not
+// just its first token. remDec is its remaining decode steps once it reaches its first token.
+func collocOccupantFull(remPrefillTokens, remDec, arrivalUs int64, tauTTFT, tauITL, tauE2E float64) varPrefillCoResident {
+	return varPrefillCoResident{
+		remPrefillTokens: remPrefillTokens,
+		remDecodeSteps:   remDec,
+		arrivalUs:        arrivalUs,
+		slo:              varSLO{tauTTFTUs: tauTTFT, tauITLUs: tauITL, tauE2EUs: tauE2E},
+	}
+}
+
+// TestCollocPrefill_PricesE2EFromBatchJoin is the core of the full-good extension. A local
+// placement makes R join a mid-prefill occupant's decode batch, so the occupant's decode steps run
+// at the re-timed per-iter time (tIterAfter 80 > tIter0 40) and it can miss its E2E deadline even
+// though its first token is comfortably met. chunk 5 ⇒ remPf=⌈10/5⌉=2; with remDec=3, total=5.
+// Baseline E2E = 5·40 = 200; placed E2E = 2·60 + 3·80 = 360. With τ_e2e = 300 the occupant is good
+// before (200 ≤ 300) and bad after (360 > 300) ⇒ one flip. τ_ttft = 1000 keeps the first token met
+// both ways (80, 120), so a TTFT-only term would have scored zero — the flip comes entirely from
+// the decode phase the earlier model dropped.
+func TestCollocPrefill_PricesE2EFromBatchJoin(t *testing.T) {
+	rt := standardRT()
+	now := 0.0
+	chunk, nChunks := 5.0, 2.0
+	ks := []varPrefillCoResident{collocOccupantFull(10, 3, 0, 1000, 0, 300)}
+
+	if got := varCollocPrefillLocal(now, ks, rt, chunk, nChunks, varKernelFlip); got != 1 {
+		t.Fatalf("colloc E2E flip VaR_local = %v, want 1 (decode-phase E2E miss from the B+1 join)", got)
+	}
+	// The util kernel must also register the decode-phase loss (its E2E slack utility drops).
+	if got := varCollocPrefillLocal(now, ks, rt, chunk, nChunks, varKernelUtil); got <= 1e-9 {
+		t.Fatalf("colloc util VaR_local = %v, want > 0 (E2E slack utility drops on the batch join)", got)
+	}
+}
+
+// TestCollocPrefill_PricesITLFromBatchJoin locks the inter-token conjunct. Same geometry: baseline
+// mean ITL over the decode phase = (200−80)/3 = 40 = tIter0; placed = (360−120)/3 = 80 = tIterAfter.
+// With τ_itl = 50 the occupant meets ITL before (40 ≤ 50) and misses after (80 > 50) ⇒ one flip,
+// with τ_ttft and τ_e2e loose so the flip is ITL-driven alone.
+func TestCollocPrefill_PricesITLFromBatchJoin(t *testing.T) {
+	rt := standardRT()
+	now := 0.0
+	chunk, nChunks := 5.0, 2.0
+	ks := []varPrefillCoResident{collocOccupantFull(10, 3, 0, 1000, 50, 100000)}
+
+	if got := varCollocPrefillLocal(now, ks, rt, chunk, nChunks, varKernelFlip); got != 1 {
+		t.Fatalf("colloc ITL flip VaR_local = %v, want 1 (mean-ITL miss from the B+1 join)", got)
+	}
+}
+
+// TestCollocPrefill_UnknownDecodeReducesToTTFTOnly guards the reduction: with no decode horizon
+// (remDecodeSteps ≤ 0) and no ITL/E2E targets, every kernel returns exactly the earlier
+// first-token-only contribution (varPrefillTTFTContribution). This is the byte-identical fallback
+// the prefill-pool term and oracle-off runs rely on.
+func TestCollocPrefill_UnknownDecodeReducesToTTFTOnly(t *testing.T) {
+	rt := standardRT()
+	now := 0.0
+	nChunks := 2.0
+	k := collocOccupant(10, 0, 100) // remDecodeSteps 0, τ_itl/τ_e2e 0
+	remPf := int64(2)
+	ftB := rt.cBase(now, remPf)
+	ftP := rt.cLocal(now, remPf, nChunks)
+	for _, kern := range []varKernel{varKernelFlip, varKernelUtil, varKernelHazard} {
+		got := varCollocContribution(k, ftB, ftP, ftB, ftP, kern)
+		want := varPrefillTTFTContribution(k, ftB, ftP, kern)
+		if math.Abs(got-want) > 1e-12 {
+			t.Errorf("kernel %v: full-good contribution %v != TTFT-only %v (reduction broken)", kern, got, want)
+		}
+	}
+}
+
 // TestVarReTiming_FullReTiming verifies the "full B+1 re-timing" completion model: the
 // after-join per-iter time recomputes tIterDecode with batch B+1 and KV grown by R's full
 // input length (Δkv_R), not a marginal add. Uses concrete coefficients so the arithmetic is

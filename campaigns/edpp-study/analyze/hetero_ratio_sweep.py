@@ -29,15 +29,17 @@ PALETTE = {
     "prefix":     "#999999",  # coincides with always (see paper)
     "kairos":     "#E69F00",  # orange
     "least-ttft": "#D55E00",  # vermilion
+    "lt-joint":   "#56B4E9",  # sky blue (hardware-aware least-TTFT)
     "dpp":        "#0072B2",  # blue
     "dpVaR":      "#009E73",  # bluish green (our rule)
 }
 LABEL = {
     "always": "always", "prefix": "prefix-thr.", "kairos": "Kairos",
-    "least-ttft": "least-TTFT", "dpp": "drift+penalty", "dpVaR": "drift+VaR",
+    "least-ttft": "least-TTFT", "lt-joint": "least-TTFT-joint",
+    "dpp": "drift+penalty", "dpVaR": "drift+VaR",
 }
 # draw order (behind -> front); our rule + its foil on top.
-ORDER = ["always", "prefix", "kairos", "least-ttft", "dpp", "dpVaR"]
+ORDER = ["always", "prefix", "kairos", "least-ttft", "lt-joint", "dpp", "dpVaR"]
 
 
 def load(path):
@@ -92,7 +94,7 @@ def main():
         lw = 2.4 if arm in ("dpVaR", "dpp") else 1.6
         axr.plot(Ns, reg, marker="o", ms=5, lw=lw, color=c, zorder=3)
         # direct-label the key contrast series at the right edge
-        if arm in ("least-ttft", "dpVaR"):
+        if arm in ("least-ttft", "lt-joint", "dpVaR"):
             axr.annotate(LABEL[arm], xy=(Ns[-1], reg[-1]), xytext=(4, 0),
                          textcoords="offset points", va="center", fontsize=8,
                          color=c, fontweight="bold")

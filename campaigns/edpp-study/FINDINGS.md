@@ -1656,3 +1656,49 @@ with the global `d.coeffs`, so per-instance prefill-θ heterogeneity needs `--ed
 
 Scope: σ=0.4, 3 seeds, one model/TP, homogeneous multi-topology (heterogeneity ratio is a separate axis,
 F21), coefficients fit to the simulator's own latency model.
+
+## F23 — collocated-prefill externality folded into the default rule; headline corrects to 0.042, topology re-run at 10 seeds (2026-07-25)
+
+Decision: be true to the physics. The drift-plus-VaR rule now prices the first-token (TTFT) risk of
+collocated mid-prefill occupants on the candidate decode instance by default. A request an earlier
+collocated placement left mid-prefill lives in `decSnap.RunningPrefill`, and the decode-side VaR terms
+skipped it, so a new collocate placement could delay that occupant's first token without the rule charging
+for it. The term that prices it (`--edpp-var-colloc-prefill`, `varCollocPrefillLocal/Disagg`, INV-9-safe)
+was default-off; it is now default-on. The paper's published Algorithm 1 already computed this re-timing
+(`ω_j = min(n_c, remaining_j)`), so the flip aligns the default rule with the printed algorithm. The flag
+survives as an ablation switch (`--edpp-var-colloc-prefill=false`). This SUPERSEDES the F19/F20 headline
+(0.054 → 0.042) and the F22 topology row (3-seed 0.025/0.004/0.003 → 10-seed 0.033/0.015/0.006).
+
+**Only the `var`+`joint` arm can move** (the flag reads only under `--edpp-rule var`). Non-var arms
+reproduce bit-exactly, so every delta below is attributable to the term (verified: the colloc-OFF ablation
+reproduces the old dpVaR baselines exactly).
+
+**1P2D grid (3-seed, faithful):** dpVaR row moves balanced 0.946→**0.958**, prefill-lean 0.853→**0.858**,
+prefill-bound 0.964→**0.957**; decode (0.724) and heterogeneous (0.900) unchanged. Worst-case regret
+**0.054 → 0.042** (balanced). Kairos comparison: homogeneous-only 0.117 vs **0.042** (~2.8×); including
+heterogeneity 0.61 vs 0.042 (~14.5×, envelope caveat unchanged). On prefill-lean dpVaR now edges Kairos
+0.858 vs 0.856, a two-thousandth margin inside the seed spread — reported as a near-tie, not a lead.
+
+**hetero_ratio_sweep:** 0.000 delta at every N (worst-case regret 0.049 unchanged). That config has no
+mid-prefill collocation pressure, so the term is inert — a good null check.
+
+**Topology matrix RE-RUN AT 10 SEEDS** (seeds 42 7 123 1 2 3 99 256 512 1024) to average out the seed-42
+3P1D pathology the reviewer flagged (paper line 615). Framing-A worst-case regret per topology:
+
+| topology | faithful (ON) | ablation (colloc-OFF) |
+|---|---|---|
+| 1P3D | 0.033 | 0.033 |
+| 2P2D | 0.015 | 0.015 |
+| 3P1D | **0.006** | **0.072** |
+
+The term's effect is concentrated exactly where collocation is heaviest. On 3P1D, three prefill feeders
+pour into one decode instance, so that instance carries many mid-prefill occupants, and pricing their
+first-token risk cuts worst-case regret 12× (0.072 → 0.006). On 1P3D there is no such pressure (three
+decode instances, little collocation) and the two are byte-identical. Physically sensible, and it makes the
+topology robustness claim rest on the term rather than in spite of it.
+
+Paper updated: tab:grid dpVaR column, tab:regret (0.042), tab:topo (10-seed 0.033/0.015/0.006),
+pd_provisioning.png (ten-seed means), and all prose (factor of nine vs dpp, ~2.8× / ~14.5× vs Kairos,
+limitations note states three seeds for the main grid and ten for the topology matrix). PDF builds clean,
+18 pages. Harness: default binary for ON; `sed 's/--edpp-var-deployable/& --edpp-var-colloc-prefill=false/'`
+on the repro scripts for the OFF ablation. ON data in `out/topo_matrix_10s/`, OFF in `out/topo_matrix_10s_off/`.
