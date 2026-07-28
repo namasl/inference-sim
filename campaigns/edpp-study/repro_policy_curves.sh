@@ -16,7 +16,7 @@ MODEL="${MODEL:-meta-llama/llama-3.3-70b-instruct}"
 COEF="${COEFFS:-scripts/calibration/coeffs-llama70b-h100-tp4.json}"
 D=campaigns/edpp-study/specs/policy_curves
 OUT="${OUT:-campaigns/edpp-study/out/policy_curves}"
-SEED="${SEED:-42}"
+SEEDS="${SEEDS:-42 7 123}"
 mkdir -p "$D" "$OUT"
 [[ -x ./blis ]] || go build -o blis main.go
 
@@ -65,11 +65,11 @@ T_HET="--num-instances 3 --prefill-instances 1 --decode-instances 2 --decode-rou
 
 # SLOs per cell (grid-v2 derivation: 5x/5x/3x of rate-0.2 baseline p99s; cells.txt values).
 slo_of(){ case $1 in
-  decode)        echo "259 84 68320" ;;
-  mixed)         echo "428 84 12537" ;;
-  prefill_lean)  echo "1198 89 7202" ;;
-  prefill_bound) echo "2144 91 2788" ;;
-  hetero)        echo "259 84 6208" ;;
+  decode)        echo "259 67 68320" ;;
+  mixed)         echo "428 68 12537" ;;
+  prefill_lean)  echo "1198 71 7202" ;;
+  prefill_bound) echo "2144 73 2788" ;;
+  hetero)        echo "259 67 6208" ;;
 esac; }
 
 rates_of(){ case $1 in
@@ -77,7 +77,7 @@ rates_of(){ case $1 in
   mixed)         echo "6 8.4 10 12 14 16" ;;
   prefill_lean)  echo "6 8.4 10 12 14 16" ;;
   prefill_bound) echo "3 4 5.6 7 8 10" ;;
-  hetero)        echo "2 3 4.2 5 6 8" ;;
+  hetero)        echo "2 3 4.2 5 6 8 10 12 14" ;;
 esac; }
 
 wl_of(){ case $1 in
@@ -91,19 +91,18 @@ esac; }
 # policy flag sets (grid-v2 arm definitions; floored normalization = deployed default)
 arm_flags(){ local a=$1 T=$2 I=$3 E=$4
   local EC="--edpp-coeffs $COEF --edpp-tadm-estimator rollforward --edpp-c-xfer-size-aware --edpp-tau-itl ${I}ms"
-  local VVF="--pd-decider edpp $EC --edpp-rule var --edpp-var-metric util --edpp-joint --edpp-var-congestion --edpp-var-normalize --edpp-var-congestion-weight 1 --edpp-var-deployable --edpp-tau-ttft ${T}ms --edpp-tau-e2e ${E}ms"
+  # dpvar = THE paper's rule: congestion + SLO deficits + the goodput penalty
+  # R(a) = VaR(a) - good_r(a) (--edpp-var-goodput), deployable N-hat_out, floored norm.
+  local VVF="--pd-decider edpp $EC --edpp-rule var --edpp-var-metric util --edpp-joint --edpp-var-congestion --edpp-var-normalize --edpp-var-congestion-weight 1 --edpp-var-deployable --edpp-var-goodput --edpp-tau-ttft ${T}ms --edpp-tau-e2e ${E}ms"
   case $a in
     never)      echo "--pd-decider never" ;;
     always)     echo "--pd-decider always" ;;
     kairos)     echo "--pd-decider edpp $EC --edpp-tau-ttft ${T}ms --edpp-rule kairos --kairos-beta 0.5" ;;
-    least-ttft) echo "--pd-decider edpp $EC --edpp-tau-ttft ${T}ms --edpp-rule least-ttft" ;;
     lt-joint)   echo "--pd-decider edpp $EC --edpp-tau-ttft ${T}ms --edpp-rule least-ttft --edpp-joint" ;;
-    dpp)        echo "--pd-decider edpp $EC --edpp-tau-ttft ${T}ms --edpp-joint" ;;
     dpvar)      echo "$VVF" ;;
-    gp-dep)     echo "$VVF --edpp-var-goodput" ;;
   esac; }
 
-ARMS="never always kairos least-ttft lt-joint dpp dpvar gp-dep"
+ARMS="never always kairos lt-joint dpvar"
 CELLS="${CELLS:-decode mixed prefill_lean prefill_bound hetero}"
 
 for cell in $CELLS; do
@@ -112,25 +111,27 @@ for cell in $CELLS; do
   SLO="--slo-ttft standard=${T}ms --slo-itl standard=${I}ms --slo-e2e standard=${E}ms"
   for R in $(rates_of $cell); do
     N=$(python3 -c "import math;print(max(int(math.ceil($R*max(120, 10*$E/1000.0))), 600))")
-    WF="$D/w_${cell}_${R}.yaml"; spec "$IN" "$O" "$R" "$N" "$SEED" "$WF"
     TOPO="$T_1P2M"; [[ "$cell" == hetero ]] && TOPO="$T_HET"
+    for SEED in $SEEDS; do
+    WF="$D/w_${cell}_${R}_${SEED}.yaml"; spec "$IN" "$O" "$R" "$N" "$SEED" "$WF"
     for a in $ARMS; do
-      MP="$OUT/${cell}_${a}_${R}.json"
+      MP="$OUT/${cell}_${a}_${R}_${SEED}.json"
       if [[ ! -s "$MP" ]]; then
         ./blis run --model "$MODEL" --workload-spec "$WF" ${TOPO} ${SLO} $(arm_flags $a $T $I $E) --seed "$SEED" --metrics-path "$MP" >/dev/null 2>&1 || true
       fi
       [[ -s "$MP" ]] && echo "$cell,$a,1P2M,$R,$SEED,$(row $MP)" | sed "s/1P2M/$([[ $cell == hetero ]] && echo 1P2M-het || echo 1P2M)/" >> "$CSV"
-      echo "done $cell $a rate=$R" >&2
+      echo "done $cell $a rate=$R seed=$SEED" >&2
     done
     # aggregated reference (homogeneous cells only; hetero agg reference = fast-only fleet question, separate)
     if [[ "$cell" != hetero ]]; then
-      MP="$OUT/${cell}_agg3m_${R}.json"
+      MP="$OUT/${cell}_agg3m_${R}_${SEED}.json"
       if [[ ! -s "$MP" ]]; then
         ./blis run --model "$MODEL" --workload-spec "$WF" ${T_AGG3M} ${SLO} --seed "$SEED" --metrics-path "$MP" >/dev/null 2>&1 || true
       fi
       [[ -s "$MP" ]] && echo "$cell,never@3M,AGG3M,$R,$SEED,$(row $MP)" >> "$CSV"
-      echo "done $cell never@3M rate=$R" >&2
+      echo "done $cell never@3M rate=$R seed=$SEED" >&2
     fi
+    done
   done
 done
 echo "curves -> $CSV"

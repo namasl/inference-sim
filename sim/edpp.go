@@ -1059,7 +1059,12 @@ func (d *EDPPDecider) jointCandidateCost(ec *jointEvalCtx, ds RoutingSnapshot, p
 	mDec := thetaD.deltaBarDecode(float64(len(ec.req.InputTokens)) + ec.nHatOut/2)
 	jDecodeITL := ec.zITL * (mDec / n.tauITL)
 	_, qdRaw := d.instWorkRaw(ds.ID)
-	qd := qdRaw / n.wStarD
+	// W*_i is PER-INSTANCE (paper: W*_i = mu_nom,i * tau_ttft). The placed work wd is already
+	// evaluated under this candidate's theta_i, so dividing every candidate by one shared W* would
+	// charge a slow instance ~N x more for an identical request even when it is idle, and the rule
+	// herds onto the fast instance. Both the backlog and the placed work use this instance's W*_i.
+	wStarD := thetaD.muDNom(n.tauITL) * n.tauTTFT
+	qd := qdRaw / wStarD
 	decodeCtx := AdmissionContext{
 		QWork: qdRaw, Mu: thetaD.muDecode(bDec, kv, sPfD),
 		BatchSize: ds.BatchSize, MaxBatchSize: int(ds.MaxBatchSize),
@@ -1073,7 +1078,7 @@ func (d *EDPPDecider) jointCandidateCost(ec *jointEvalCtx, ds RoutingSnapshot, p
 	// Decode backlog term (same for local and disagg on this d — cancels within a d,
 	// distinguishes across d): q_d·(W_d/W*_d). The per-candidate W_d makes the fast node's
 	// smaller demand lower its J.
-	jDecodeBacklog := qd * (wd / n.wStarD)
+	jDecodeBacklog := qd * (wd / wStarD)
 
 	if ps == nil {
 		// --- local: prefill+decode co-resident on d ⇒ prefill uses the decode θ_i ---
@@ -1086,7 +1091,7 @@ func (d *EDPPDecider) jointCandidateCost(ec *jointEvalCtx, ds RoutingSnapshot, p
 		tHatLocal := tAdmD + nChunksLoc*tIterD + wpLoc // ABSOLUTE T̂_local(d)
 		// balance = the work-currency backlog contribution, or (Rule=="var") the value-currency
 		// externality VaR_local on ds's decode co-residents. Self terms below are unchanged.
-		balance := jDecodeBacklog + qd*(wpLoc/n.wStarD)
+		balance := jDecodeBacklog + qd*(wpLoc/wStarD)
 		if d.rule == "var" {
 			v := d.varJointCandidateExternality(ec.req, ec.nowUs, ds, nil)
 			if d.varGoodputObjective {
@@ -1110,7 +1115,8 @@ func (d *EDPPDecider) jointCandidateCost(ec *jointEvalCtx, ds RoutingSnapshot, p
 	nChunksP, _ := d.chunkTerms(thetaP, apP)
 	wpP := thetaP.Wp(maxInt(apP, 0), len(ec.req.InputTokens))
 	qpRaw, _ := d.instWorkRaw(ps.ID)
-	qp := qpRaw / n.wStarP
+	wStarP := thetaP.muPNom(d.cfg.NomPrefillTokens) * n.tauTTFT // per-instance W*_i, prefill side
+	qp := qpRaw / wStarP
 	sPfP := ps.ResidentPrefillTokens
 	tIterP := thetaP.tIterPrefill(sPfP)
 	prefillCtx := AdmissionContext{
@@ -1128,7 +1134,7 @@ func (d *EDPPDecider) jointCandidateCost(ec *jointEvalCtx, ds RoutingSnapshot, p
 	tHatDisagg := tAdmP + nChunksP*tIterP + wpP + cXferUs // ABSOLUTE T̂_disagg(d,p)
 	// balance = the work-currency backlog contribution, or (Rule=="var") the value-currency
 	// externality VaR_disagg on ds's decode co-residents + *ps's prefill co-residents.
-	balance := jDecodeBacklog + qp*(wpP/n.wStarP)
+	balance := jDecodeBacklog + qp*(wpP/wStarP)
 	if d.rule == "var" {
 		v := d.varJointCandidateExternality(ec.req, ec.nowUs, ds, ps)
 		if d.varGoodputObjective {
@@ -1225,7 +1231,12 @@ func (d *EDPPDecider) jointVaRComponents(ec *jointEvalCtx, ds RoutingSnapshot, p
 	mDec := thetaD.deltaBarDecode(float64(len(ec.req.InputTokens)) + ec.nHatOut/2)
 	jDecodeITL := ec.zITL * (mDec / n.tauITL)
 	_, qdRaw := d.instWorkRaw(ds.ID)
-	qd := qdRaw / n.wStarD
+	// W*_i is PER-INSTANCE (paper: W*_i = mu_nom,i * tau_ttft). The placed work wd is already
+	// evaluated under this candidate's theta_i, so dividing every candidate by one shared W* would
+	// charge a slow instance ~N x more for an identical request even when it is idle, and the rule
+	// herds onto the fast instance. Both the backlog and the placed work use this instance's W*_i.
+	wStarD := thetaD.muDNom(n.tauITL) * n.tauTTFT
+	qd := qdRaw / wStarD
 	decodeCtx := AdmissionContext{
 		QWork: qdRaw, Mu: thetaD.muDecode(bDec, kv, sPfD),
 		BatchSize: ds.BatchSize, MaxBatchSize: int(ds.MaxBatchSize),
@@ -1235,14 +1246,14 @@ func (d *EDPPDecider) jointVaRComponents(ec *jointEvalCtx, ds RoutingSnapshot, p
 		Running: censorOracleRemaining(ds.RunningDecode),
 	}
 	tAdmD := d.tadmEstimator.EstimateTAdm(decodeCtx)
-	jDecodeBacklog := qd * (wd / n.wStarD)
+	jDecodeBacklog := qd * (wd / wStarD)
 
 	if ps == nil {
 		apLoc := d.apForInstance(ec.req, ds.ID)
 		nChunksLoc, deltaPfLoc := d.chunkTerms(thetaD, apLoc)
 		wpLoc := thetaD.Wp(maxInt(apLoc, 0), len(ec.req.InputTokens))
 		tHatLocal := tAdmD + nChunksLoc*tIterD + wpLoc
-		cong = jDecodeBacklog + qd*(wpLoc/n.wStarD)
+		cong = jDecodeBacklog + qd*(wpLoc/wStarD)
 		vv = d.varJointCandidateExternality(ec.req, ec.nowUs, ds, nil)
 		if d.varGoodputObjective {
 			vv -= d.jointSelfGood(ec, thetaD, ds, tHatLocal) // normalize VaR − good_r as one penalty
@@ -1256,7 +1267,8 @@ func (d *EDPPDecider) jointVaRComponents(ec *jointEvalCtx, ds RoutingSnapshot, p
 	nChunksP, _ := d.chunkTerms(thetaP, apP)
 	wpP := thetaP.Wp(maxInt(apP, 0), len(ec.req.InputTokens))
 	qpRaw, _ := d.instWorkRaw(ps.ID)
-	qp := qpRaw / n.wStarP
+	wStarP := thetaP.muPNom(d.cfg.NomPrefillTokens) * n.tauTTFT // per-instance W*_i, prefill side
+	qp := qpRaw / wStarP
 	sPfP := ps.ResidentPrefillTokens
 	tIterP := thetaP.tIterPrefill(sPfP)
 	prefillCtx := AdmissionContext{
@@ -1270,7 +1282,7 @@ func (d *EDPPDecider) jointVaRComponents(ec *jointEvalCtx, ds RoutingSnapshot, p
 	tAdmP := d.tadmEstimator.EstimateTAdm(prefillCtx)
 	cXferUs := d.cXferUsFor(ec.req)
 	tHatDisagg := tAdmP + nChunksP*tIterP + wpP + cXferUs
-	cong = jDecodeBacklog + qp*(wpP/n.wStarP)
+	cong = jDecodeBacklog + qp*(wpP/wStarP)
 	vv = d.varJointCandidateExternality(ec.req, ec.nowUs, ds, ps)
 	xfer := d.transferPenalty(n, cXferUs)
 	if d.varGoodputObjective {

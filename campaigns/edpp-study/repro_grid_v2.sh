@@ -6,15 +6,24 @@
 #      (rate sweep, achieved/offered >= 0.95 criterion, slo-methodology-research.md),
 #      and the grid runs at 0.7x knee (operational) and 1.0x knee (stress).
 #   2. SLOs ARE DERIVED UNIFORMLY, NO FLOORS. Baseline probe at rate 0.2 with no
-#      contention; targets = 5x TTFT p99, 5x ITL p99, 3x E2E p99 (Method A,
+#      contention; targets = 5x TTFT p99, 4x ITL p99, 3x E2E p99 (Method A,
 #      Splitwise/Sarathi-style slowdown multiples). ITL is derived, not asserted.
 #   3. STEADY-STATE HORIZONS. num_requests = rate x max(120 s, 10 x E2E SLO),
 #      so goodput is horizon-stable (checked: n vs 2n within seed noise).
 #   4. ONE SCORER CONFIG EVERYWHERE: --decode-routing-scorers queue-depth:1,
 #      batch cap 16, on the heterogeneous cell too.
 #   5. HETERO WORKLOAD RESEEDS PER SEED (spec seed = $s, not fixed 42).
-#   6. Floor A/B arms (vv/vgo at floor 1e-6) run alongside, so the
-#      floor-vs-goodput fork is decided on live-signal data.
+#   6. FINAL ARM SET (2026-07-28, agreed with the paper's policy list): never,
+#      always, kairos, lt-joint, dpvar. Everything is JOINT except the two static
+#      corners and Kairos, which must pick a decode instance somehow and use the
+#      load-balancing (queue-depth) scorer. Deliberately NOT included:
+#        - least-TTFT (non-joint): its result is a property of whichever scorer we
+#          pair with it, and the paper does not argue about scorers.
+#        - prefix-threshold: numerically identical to always in every cell here.
+#        - drift-plus-penalty: not a policy the paper claims.
+#        - the output-length ORACLE arm: never deployable (INV-9), removed to
+#          avoid any chance of an oracle number reaching a table.
+#      Every arm below is deployable: no arm reads a realized output length.
 #
 # Knee/baseline numbers are filled in from the Phase-B sweep before running.
 # Usage: bash campaigns/edpp-study/repro_grid_v2.sh
@@ -24,7 +33,7 @@ MODEL="${MODEL:-meta-llama/llama-3.3-70b-instruct}"
 COEF="${COEFFS:-scripts/calibration/coeffs-llama70b-h100-tp4.json}"
 D=campaigns/edpp-study/specs/grid_v2
 OUT="${OUT:-campaigns/edpp-study/out/grid_v2}"
-SEEDS="${SEEDS:-42 7 123}"
+SEEDS="${SEEDS:-42 7 123 5 11}"
 KBETAS="${KBETAS:-0.25 0.5 1.0}"
 mkdir -p "$D" "$OUT"
 [[ -x ./blis ]] || go build -o blis main.go
@@ -74,8 +83,12 @@ run_cell(){ # name in out topo_kind rate slo_ttft_ms slo_itl_ms slo_e2e_ms n loa
   local TOPO=("${HTOPO[@]}"); [[ "$TK" == hetero ]] && TOPO=("${XTOPO[@]}")
   local SLO=(--slo-ttft "standard=${T}ms" --slo-itl "standard=${I}ms" --slo-e2e "standard=${E}ms")
   local EC=(--edpp-coeffs "$COEF" --edpp-tadm-estimator rollforward --edpp-c-xfer-size-aware --edpp-tau-itl "${I}ms")
-  local VVF=(--pd-decider edpp "${EC[@]}" --edpp-rule var --edpp-var-metric util --edpp-joint --edpp-var-congestion --edpp-var-normalize --edpp-var-congestion-weight 1 --edpp-var-deployable --edpp-tau-ttft "${T}ms" --edpp-tau-e2e "${E}ms")
-  declare -a NV=() A=() P=() K=() L=() LJ=() DP=() VV=() VG=() VGO=() VVNF=() VGONF=()
+  # dpvar = THE paper's rule: congestion + SLO deficits + the goodput penalty
+  # R(a) = VaR(a) - good_r(a) (--edpp-var-goodput), deployable N-hat_out, floored
+  # normalization. This is exactly eq:penalty / eq:kv, so the evaluated rule and the
+  # derived rule are the same object.
+  local VVF=(--pd-decider edpp "${EC[@]}" --edpp-rule var --edpp-var-metric util --edpp-joint --edpp-var-congestion --edpp-var-normalize --edpp-var-congestion-weight 1 --edpp-var-deployable --edpp-var-goodput --edpp-tau-ttft "${T}ms" --edpp-tau-e2e "${E}ms")
+  declare -a NV=() A=() K=() LJ=() VV=()
   for s in $SEEDS; do
     # per-cell/load/seed spec path: chunked invocations of this script must not
     # race each other's workload files (the audit-session parallel run did).
@@ -84,34 +97,25 @@ run_cell(){ # name in out topo_kind rate slo_ttft_ms slo_itl_ms slo_e2e_ms n loa
     r(){ local tag=$1; shift; ./blis run --model "$MODEL" --workload-spec "$WF" "${TOPO[@]}" "${SLO[@]}" "$@" --seed "$s" --metrics-path "$OUT/${NAME}_${LT}_${tag}_$s.json" >/dev/null 2>&1 || true; gp "$OUT/${NAME}_${LT}_${tag}_$s.json"; }
     NV+=("$(r nv --pd-decider never)")
     A+=("$(r a --pd-decider always)")
-    P+=("$(r p --pd-decider prefix-threshold --pd-prefix-threshold 16)")
     kb=(); for bb in $KBETAS; do kb+=("$(r k$bb --pd-decider edpp "${EC[@]}" --edpp-tau-ttft "${T}ms" --edpp-rule kairos --kairos-beta $bb)"); done
     K+=("$(mx "${kb[@]}")")
-    L+=("$(r l --pd-decider edpp "${EC[@]}" --edpp-tau-ttft "${T}ms" --edpp-rule least-ttft)")
     LJ+=("$(r lj --pd-decider edpp "${EC[@]}" --edpp-tau-ttft "${T}ms" --edpp-rule least-ttft --edpp-joint)")
-    DP+=("$(r dp --pd-decider edpp "${EC[@]}" --edpp-tau-ttft "${T}ms" --edpp-joint)")
-    VV+=("$(r vv "${VVF[@]}")")
-    VG+=("$(r vg "${VVF[@]}" --edpp-var-goodput --edpp-oracle-output-len)")
-    VGO+=("$(r vgo "${VVF[@]}" --edpp-var-goodput)")
-    VVNF+=("$(r vvnf "${VVF[@]}" --edpp-var-normalize-floor-scale 0.000001)")
-    VGONF+=("$(r vgonf "${VVF[@]}" --edpp-var-goodput --edpp-var-normalize-floor-scale 0.000001)")
+    VV+=("$(r dpvar "${VVF[@]}")")
   done
-  printf "%-13s %-4s %-6s| %-6s %-6s %-6s %-6s %-6s %-6s %-6s %-6s %-6s %-6s %-6s %-6s\n" \
-    "$NAME" "$LT" "$R" "$(mean "${NV[@]}")" "$(mean "${A[@]}")" "$(mean "${P[@]}")" "$(mean "${K[@]}")" \
-    "$(mean "${L[@]}")" "$(mean "${LJ[@]}")" "$(mean "${DP[@]}")" "$(mean "${VV[@]}")" "$(mean "${VG[@]}")" "$(mean "${VGO[@]}")" "$(mean "${VVNF[@]}")" "$(mean "${VGONF[@]}")"
-  printf "%-13s %-4s %-6s| %-6s %-6s %-6s %-6s %-6s %-6s %-6s %-6s %-6s %-6s %-6s %-6s (min)\n" \
-    "" "" "" "$(mn "${NV[@]}")" "$(mn "${A[@]}")" "$(mn "${P[@]}")" "$(mn "${K[@]}")" \
-    "$(mn "${L[@]}")" "$(mn "${LJ[@]}")" "$(mn "${DP[@]}")" "$(mn "${VV[@]}")" "$(mn "${VG[@]}")" "$(mn "${VGO[@]}")" "$(mn "${VVNF[@]}")" "$(mn "${VGONF[@]}")"
+  printf "%-13s %-4s %-6s| %-7s %-7s %-7s %-7s %-7s\n" \
+    "$NAME" "$LT" "$R" "$(mean "${NV[@]}")" "$(mean "${A[@]}")" "$(mean "${K[@]}")" "$(mean "${LJ[@]}")" "$(mean "${VV[@]}")"
+  printf "%-13s %-4s %-6s| %-7s %-7s %-7s %-7s %-7s (worst seed)\n" \
+    "" "" "" "$(mn "${NV[@]}")" "$(mn "${A[@]}")" "$(mn "${K[@]}")" "$(mn "${LJ[@]}")" "$(mn "${VV[@]}")"
 }
 
-printf "%-13s %-4s %-6s| %-6s %-6s %-6s %-6s %-6s %-6s %-6s %-6s %-6s %-6s %-6s %-6s\n" \
-  "cell" "load" "rate" "never" "always" "pfx16" "kairos" "leastT" "ltJ" "dpp" "vv" "gp+orc" "gp-dep" "vv-nf" "gpd-nf"
+printf "%-13s %-4s %-6s| %-7s %-7s %-7s %-7s %-7s\n" \
+  "cell" "load" "rate" "never" "always" "kairos*" "lt-joint" "dpvar"
 
 while read -r NAME IN O TK KNEE BT BI BE; do
   [[ "$NAME" =~ ^# ]] && continue
   for LOAD in 0.7 1.0; do
     R=$(python3 -c "print(round($KNEE*$LOAD,2))")
-    T=$(python3 -c "print(round(5*$BT))"); I=$(python3 -c "print(round(5*$BI))"); E=$(python3 -c "print(round(3*$BE))")
+    T=$(python3 -c "print(round(5*$BT))"); I=$(python3 -c "print(round(4*$BI))"); E=$(python3 -c "print(round(3*$BE))")
     N=$(python3 -c "import math;print(max(int(math.ceil($R*max(120, 10*$E/1000.0))), 600))")
     run_cell "$NAME" "$IN" "$O" "$TK" "$R" "$T" "$I" "$E" "$N" "$LOAD"
   done

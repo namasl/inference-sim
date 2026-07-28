@@ -247,3 +247,50 @@ func floatNear(a, b, tol float64) bool {
 	}
 	return d <= tol
 }
+
+// TestCongestionNormalizer_IsPerInstance verifies the LAW that the congestion term
+// normalizes each candidate's backlog and placed work by THAT instance's reference work
+// W*_i = mu_nom,i * tau_ttft (paper eq:kv), not by a single fleet-wide W*.
+//
+// Why this is a law and not a value check: the placed work W_d is already evaluated under
+// each candidate's own theta_i, so a shared normalizer makes the congestion term scale with
+// hardware speed rather than with congestion. The fixture isolates the normalizer: the two
+// hardware profiles share C0/C1/CPf/CAttn (so the placed work W_d is IDENTICAL on both) and
+// differ only in the per-iteration baseline alpha, which is what mu_nom -- and hence W*_i --
+// is built from. Both instances carry the same seeded backlog. Under a shared W* the two
+// congestion terms are therefore identical; under per-instance W*_i they must differ.
+func TestCongestionNormalizer_IsPerInstance(t *testing.T) {
+	congFor := func(gpu string, alpha float64) float64 {
+		cfg := defaultTestEDPPConfig()
+		cfg.Joint = true
+		cfg.Rule = "var"
+		cfg.VarMetric = "flip"
+		cfg.VarKeepCongestion = true
+		cfg.VarNormalize = true
+		// Same work coefficients, different per-iteration baseline: W_d is identical on both,
+		// only mu_nom (and so W*_i) differs. alpha_d and alpha_p are the same physical baseline,
+		// so the config guard requires them to track each other.
+		cfg.CoeffsByGPU = map[string]EDPPCoeffs{
+			gpu: {AlphaD: alpha, AlphaP: alpha, C0: cfg.Coeffs.C0, C1: cfg.Coeffs.C1, CPf: cfg.Coeffs.CPf, CAttn: cfg.Coeffs.CAttn},
+		}
+		prefill := func() []RoutingSnapshot { return []RoutingSnapshot{{ID: "P0"}} }
+		d := NewEDPPDecider(cfg, newTestAffineModel(), coldCacheQuery("M0", "P0"), prefill)
+		// Seed an identical decode backlog on the candidate so q_d != 0 (with an empty
+		// backlog the congestion term is identically zero and the law is untestable).
+		d.OnRoute(reqBatch("bg", 20000), "bg", false, 20000, "M0", "")
+		ec := jointEvalCtxFor(d, reqBatch("r1", 200), 128)
+		cong, _, _ := d.jointVaRComponents(ec, RoutingSnapshot{ID: "M0", GPUType: gpu}, nil)
+		return cong
+	}
+
+	base := congFor("HW", 1000)    // baseline alpha
+	slower := congFor("HW", 20000) // same work coefficients, 20x per-iteration baseline
+
+	if math.Abs(base) < 1e-12 {
+		t.Fatalf("fixture produced a zero congestion term; the law cannot be exercised")
+	}
+	if math.Abs(slower-base) <= 1e-12*math.Max(1, math.Abs(base)) {
+		t.Fatalf("congestion term ignored theta_i: alpha 1000 -> %v, alpha 20000 -> %v; the "+
+			"normalizer must be the per-instance W*_i = mu_nom,i * tau_ttft, not a shared W*", base, slower)
+	}
+}
