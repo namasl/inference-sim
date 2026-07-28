@@ -2103,6 +2103,16 @@ var runCmd = &cobra.Command{
 		// Wall-clock timing on stderr (BC-6); stdout remains deterministic (BC-7)
 		logrus.Infof("Simulation wall-clock time: %.3fs", time.Since(startTime).Seconds())
 
+		// SLO-deficit virtual-queue occupancy (diagnostic, stderr only so stdout stays
+		// deterministic). z = Z/tau, the normalized form the rule multiplies into its
+		// objective. frac_active near zero means the time-average SLO constraint never
+		// bound and the placement was decided by the congestion and goodput terms alone.
+		if st, ok := cs.EDPPDeficitStats(); ok {
+			logrus.Infof("EDPP_DEFICIT decisions=%d mean_z_ttft=%.6g frac_active_z_ttft=%.4f max_z_ttft=%.6g "+
+				"mean_z_itl=%.6g frac_active_z_itl=%.4f max_z_itl=%.6g awaiting_at_end=%d",
+				st.Decisions, st.MeanZT, st.FracActiveZT, st.MaxZT, st.MeanZI, st.FracActiveZI, st.MaxZI, st.AwaitingAtEnd)
+		}
+
 		// Resolve goodput SLO targets early so the trace export and aggregate metrics
 		// see the same merged map (#1413, BC-1). Run has no trace header; precedence
 		// here is CLI > workload spec.

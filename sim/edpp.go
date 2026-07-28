@@ -369,6 +369,13 @@ type EDPPDecider struct {
 	// standalone transfer penalty (diagnostic). See EDPPConfig.VarGoodputObjective.
 	varGoodputObjective bool
 
+	// deficit accumulates the per-decision occupancy of the two SLO-deficit virtual queues,
+	// sampled at every Decide call in their NORMALIZED form (z = Z/τ, the form the rule
+	// actually multiplies into its objective). It answers a question the goodput metric
+	// cannot: do the time-average SLO constraints ever bind, or is the rule driven entirely
+	// by the congestion and goodput terms? Pure instrumentation; never read by the rule.
+	deficit edppDeficitAccum
+
 	// kairosBeta is the TBT safety margin for the Kairos baseline (rule == "kairos").
 	kairosBeta float64
 
@@ -728,6 +735,7 @@ func (d *EDPPDecider) Decide(req *Request, state *RouterState) DisaggregationDec
 		zTTFT = z.zTTFT / n.tauTTFT
 		zITL = z.zITL / n.tauITL
 	}
+	d.sampleDeficit(zTTFT, zITL)
 
 	// E14, with the ITL term in collapsed closed form (§5.2/§9.2):
 	//   z_itl·(ITL_P − ITL_D)/τ_itl = − z_itl·(c_pf·chunk)/τ_itl
@@ -918,6 +926,63 @@ func (d *EDPPDecider) reqKVNeed(req *Request) int64 {
 // decode nodes. Restricted to the scorer's single d it reproduces the reduced local-vs-
 // disagg decision (§5.5; see TestJoint_ReducesToScorerSliceMatchesReduced).
 //
+// edppDeficitAccum tallies normalized deficit-queue occupancy across decisions.
+type edppDeficitAccum struct {
+	n                    int
+	sumZT, sumZI         float64
+	nonzeroZT, nonzeroZI int
+	maxZT, maxZI         float64
+}
+
+// EDPPDeficitStats reports how much the two SLO-deficit virtual queues actually bound the
+// rule over a run. All z values are normalized (z = Z/τ), matching the form the objective
+// multiplies. MeanZT/MeanZI are time averages over decisions; FracActiveZT/FracActiveZI are
+// the fractions of decisions on which the queue was non-empty. A run with FracActive ≈ 0 had
+// a dormant time-average constraint: the placement was decided by the other terms.
+type EDPPDeficitStats struct {
+	Decisions                  int
+	MeanZT, MeanZI             float64
+	FracActiveZT, FracActiveZI float64
+	MaxZT, MaxZI               float64
+	// AwaitingAtEnd is how many requests were still registered as awaiting a first token
+	// when the run ended. A value far above the in-flight count means the awaiting map is
+	// leaking records, each of which keeps accruing lateness into z_ttft forever.
+	AwaitingAtEnd int
+}
+
+// DeficitQueueStats returns the accumulated deficit-queue occupancy for this run.
+func (d *EDPPDecider) DeficitQueueStats() EDPPDeficitStats {
+	a := d.deficit
+	st := EDPPDeficitStats{Decisions: a.n, MaxZT: a.maxZT, MaxZI: a.maxZI, AwaitingAtEnd: len(d.awaitingFirstToken)}
+	if a.n > 0 {
+		st.MeanZT = a.sumZT / float64(a.n)
+		st.MeanZI = a.sumZI / float64(a.n)
+		st.FracActiveZT = float64(a.nonzeroZT) / float64(a.n)
+		st.FracActiveZI = float64(a.nonzeroZI) / float64(a.n)
+	}
+	return st
+}
+
+// sampleDeficit records one decision's normalized deficit-queue occupancy.
+func (d *EDPPDecider) sampleDeficit(zT, zI float64) {
+	a := &d.deficit
+	a.n++
+	a.sumZT += zT
+	a.sumZI += zI
+	if zT > 0 {
+		a.nonzeroZT++
+		if zT > a.maxZT {
+			a.maxZT = zT
+		}
+	}
+	if zI > 0 {
+		a.nonzeroZI++
+		if zI > a.maxZI {
+			a.maxZI = zI
+		}
+	}
+}
+
 // Determinism (INV-6): decode and prefill snapshots are iterated in ascending instance-ID
 // order, local is considered before disagg, and a strictly-lower J (by more than 1e-12)
 // is required to replace the incumbent — so ties resolve to the lowest-index, local-first
@@ -932,6 +997,7 @@ func (d *EDPPDecider) decideJoint(req *Request, state *RouterState) Disaggregati
 		zTTFT = z.zTTFT / n.tauTTFT
 		zITL = z.zITL / n.tauITL
 	}
+	d.sampleDeficit(zTTFT, zITL)
 
 	// Deterministic candidate ordering (INV-6): sort snapshots by instance ID.
 	decodeSnaps := sortedSnapshotsByID(stateSnapshots(state))

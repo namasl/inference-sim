@@ -1510,16 +1510,39 @@ func (cs *ClusterSimulator) recordAdmissionTime(req *sim.Request, tick int64) {
 }
 
 // feedFirstToken trues up an SLO-feedback decider's TTFT virtual queue when a request
-// produces its first token (tick = absolute first-token time). The conservation key is
-// resolved the same way as completion (edppConservationKey): a non-disaggregated request
-// and a decode sub-request map to the key OnRoute used. For a PD request the first-token
-// hook also fires on the prefill sub-request, but that resolves to its own ID — a key the
-// decider never tracked (OnRoute used the parent ID) — so it harmlessly no-ops.
+// produces its first token (tick = absolute first-token time), keyed on whatever OnRoute
+// registered — the parent ID for a PD request, the request ID otherwise (firstTokenKey).
+//
+// Resolving the PREFILL sub-request to its parent is load-bearing, not cosmetic. A PD
+// request's first token is produced on the prefill side, so if that event does not reach
+// the decider under the parent key the parent's awaiting-record is never trued up and never
+// deleted: every later credit pass keeps adding (now − arrival − τ) for a request that has
+// already finished, and the TTFT deficit queue integrates phantom lateness without bound.
+// OnFirstToken is idempotent (a second call finds no record), so mapping both sub-request
+// kinds to the parent is safe whichever one fires first.
 func (cs *ClusterSimulator) feedFirstToken(req *sim.Request, tick int64) {
 	if cs.sloFeedback == nil {
 		return
 	}
-	cs.sloFeedback.OnFirstToken(cs.edppConservationKey(req), tick)
+	cs.sloFeedback.OnFirstToken(cs.firstTokenKey(req), tick)
+}
+
+// firstTokenKey resolves req to the key OnRoute registered for the TTFT virtual queue.
+// A decode sub-request resolves through edppConservationKey; a prefill sub-request is
+// resolved here via the pending-prefill index, falling back to a scan of the parent index.
+func (cs *ClusterSimulator) firstTokenKey(req *sim.Request) string {
+	if k := cs.edppConservationKey(req); k != req.ID {
+		return k // decode sub-request, already resolved to its parent
+	}
+	if pid, ok := cs.pendingPrefillCompletions[req.ID]; ok {
+		return pid
+	}
+	for pid, parent := range cs.parentRequests {
+		if parent != nil && parent.PrefillSubReqID == req.ID {
+			return pid
+		}
+	}
+	return req.ID
 }
 
 func (c *ClusterSimulator) detectPrefillCompletions(inst *InstanceSimulator) {
@@ -2774,4 +2797,15 @@ func (cs *ClusterSimulator) buildWorkTraceRecordsFrom(byInst map[string]map[stri
 	}
 	sort.Slice(recs, func(i, j int) bool { return recs[i].RequestID < recs[j].RequestID })
 	return recs
+}
+
+// EDPPDeficitStats reports the SLO-deficit virtual-queue occupancy accumulated by the EDPP
+// decider over this run, when EDPP is the active PD decider. The second return is false for
+// every other decider. Pure instrumentation: it answers whether the rule's time-average SLO
+// constraints ever bound, which the goodput metric alone cannot show.
+func (cs *ClusterSimulator) EDPPDeficitStats() (sim.EDPPDeficitStats, bool) {
+	if d, ok := cs.disaggregationDecider.(*sim.EDPPDecider); ok && d != nil {
+		return d.DeficitQueueStats(), true
+	}
+	return sim.EDPPDeficitStats{}, false
 }
