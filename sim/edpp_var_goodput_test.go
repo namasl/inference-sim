@@ -1,6 +1,9 @@
 package sim
 
-import "testing"
+import (
+	"math"
+	"testing"
+)
 
 // goodSelf is the reward half of the goodput-objective diagnostic: the arriving request R's own
 // smoothed goodput under a candidate placement. These tests pin the laws it must satisfy, not its
@@ -116,6 +119,45 @@ func jointEvalCtxFor(d *EDPPDecider, req *Request, nHatOut float64) *jointEvalCt
 	return &jointEvalCtx{
 		req: req, n: d.normFor(req.SLOClass),
 		reqKVNeed: d.reqKVNeed(req), nHatOut: nHatOut, nowUs: 0,
+	}
+}
+
+// The normalization spread floor ε₀ (varNormFloor) is one arriving request's work on the nominal
+// decode instance in reference units, scaled by VarNormalizeFloorScale. Three laws pin the wiring
+// independent of the exact work numbers: it is strictly positive so it guards the min-max division,
+// it is linear in the scale so the sensitivity sweep moves it predictably, and an absent scale (0)
+// resolves to the unit default. It stays positive even with no decode snapshots.
+func TestVarNormFloor_PositiveLinearAndDefaulted(t *testing.T) {
+	mk := func(scale float64) *EDPPDecider {
+		cfg := defaultTestEDPPConfig()
+		cfg.Joint = true
+		cfg.Rule = "var"
+		cfg.VarMetric = "flip"
+		cfg.VarKeepCongestion = true
+		cfg.VarNormalize = true
+		cfg.VarNormalizeFloorScale = scale
+		prefill := func() []RoutingSnapshot { return []RoutingSnapshot{{ID: "P0"}} }
+		return NewEDPPDecider(cfg, newTestAffineModel(), coldCacheQuery("M0", "P0"), prefill)
+	}
+	req := reqBatch("r1", 200)
+	snaps := []RoutingSnapshot{{ID: "M0"}}
+	floorFor := func(scale float64) float64 {
+		d := mk(scale)
+		return d.varNormFloor(jointEvalCtxFor(d, req, 128), snaps)
+	}
+	f1 := floorFor(1)
+	if !(f1 > 0) {
+		t.Fatalf("floor must be positive (it guards the division), got %v", f1)
+	}
+	if f2 := floorFor(2); math.Abs(f2-2*f1) > 1e-9*math.Max(1, f1) {
+		t.Fatalf("floor must be linear in scale: f(1)=%v f(2)=%v", f1, f2)
+	}
+	if f0 := floorFor(0); f0 != f1 {
+		t.Fatalf("absent scale (0) must resolve to the unit default: f(0)=%v f(1)=%v", f0, f1)
+	}
+	d := mk(1)
+	if g := d.varNormFloor(jointEvalCtxFor(d, req, 128), nil); !(g > 0) {
+		t.Fatalf("floor with no decode snapshots must stay positive, got %v", g)
 	}
 }
 

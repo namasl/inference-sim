@@ -453,39 +453,40 @@ func NewClusterSimulator(config DeploymentConfig, requests []*sim.Request, onReq
 				}
 			}
 			cs.disaggregationDecider = sim.NewEDPPDecider(sim.EDPPConfig{
-				TauTTFTUs:             config.EDPPTauTTFTUs,
-				TauITLUs:              config.EDPPTauITLUs,
-				TauRefUs:              config.EDPPTauRefUs,
-				TauTTFTByClassUs:      config.EDPPTauTTFTByClassUs,
-				TauITLByClassUs:       config.EDPPTauITLByClassUs,
-				TauE2EUs:              config.EDPPTauE2EUs,
-				TauE2EByClassUs:       config.EDPPTauE2EByClassUs,
-				V:                     config.EDPPV,
-				CXferUs:               config.EDPPCXferUs,
-				NomPrefillTokens:      config.EDPPNomPrefillTokens,
-				NomDecodeCtx:          config.EDPPNomDecodeCtx,
-				BlockSize:             int(config.BlockSizeTokens),
-				ChunkTokens:           int(config.BatchConfig.MaxScheduledTokens),
-				TraceEnabled:          trace.TraceLevel(config.TraceLevel) == trace.TraceLevelDecisions,
-				Coeffs:                config.EDPPCoeffs,
-				CoeffsByGPU:           config.EDPPCoeffsByGPU,
-				TAdmEstimator:         config.EDPPTAdmEstimator,
-				Joint:                 config.EDPPJoint,
-				Rule:                  config.EDPPRule,
-				VarMetric:             config.EDPPVarMetric,
-				VarKeepCongestion:     config.EDPPVarKeepCongestion,
-				VarCongestionWeight:   config.EDPPVarCongestionWeight,
-				VarNormalize:          config.EDPPVarNormalize,
-				VarDeployable:         config.EDPPVarDeployable,
-				VarCollocPrefill:      config.EDPPVarCollocPrefill,
-				VarGoodputObjective:   config.EDPPVarGoodputObjective,
-				KairosBeta:            config.EDPPKairosBeta,
-				JointTraceEnabled:     config.EDPPJoint && config.EDPPJointTrace,
-				OracleOutputLen:       config.EDPPOracleOutputLen,
-				CXferSizeAware:        config.EDPPCXferSizeAware,
-				KVBytesPerTokenPerGPU: edppKVBytesPerTok,
-				XferBandwidthGBps:     config.PDTransferBandwidthGBps,
-				XferBaseUs:            config.PDTransferBaseLatencyMs * 1000.0,
+				TauTTFTUs:              config.EDPPTauTTFTUs,
+				TauITLUs:               config.EDPPTauITLUs,
+				TauRefUs:               config.EDPPTauRefUs,
+				TauTTFTByClassUs:       config.EDPPTauTTFTByClassUs,
+				TauITLByClassUs:        config.EDPPTauITLByClassUs,
+				TauE2EUs:               config.EDPPTauE2EUs,
+				TauE2EByClassUs:        config.EDPPTauE2EByClassUs,
+				V:                      config.EDPPV,
+				CXferUs:                config.EDPPCXferUs,
+				NomPrefillTokens:       config.EDPPNomPrefillTokens,
+				NomDecodeCtx:           config.EDPPNomDecodeCtx,
+				BlockSize:              int(config.BlockSizeTokens),
+				ChunkTokens:            int(config.BatchConfig.MaxScheduledTokens),
+				TraceEnabled:           trace.TraceLevel(config.TraceLevel) == trace.TraceLevelDecisions,
+				Coeffs:                 config.EDPPCoeffs,
+				CoeffsByGPU:            config.EDPPCoeffsByGPU,
+				TAdmEstimator:          config.EDPPTAdmEstimator,
+				Joint:                  config.EDPPJoint,
+				Rule:                   config.EDPPRule,
+				VarMetric:              config.EDPPVarMetric,
+				VarKeepCongestion:      config.EDPPVarKeepCongestion,
+				VarCongestionWeight:    config.EDPPVarCongestionWeight,
+				VarNormalize:           config.EDPPVarNormalize,
+				VarNormalizeFloorScale: config.EDPPVarNormalizeFloorScale,
+				VarDeployable:          config.EDPPVarDeployable,
+				VarCollocPrefill:       config.EDPPVarCollocPrefill,
+				VarGoodputObjective:    config.EDPPVarGoodputObjective,
+				KairosBeta:             config.EDPPKairosBeta,
+				JointTraceEnabled:      config.EDPPJoint && config.EDPPJointTrace,
+				OracleOutputLen:        config.EDPPOracleOutputLen,
+				CXferSizeAware:         config.EDPPCXferSizeAware,
+				KVBytesPerTokenPerGPU:  edppKVBytesPerTok,
+				XferBandwidthGBps:      config.PDTransferBandwidthGBps,
+				XferBaseUs:             config.PDTransferBaseLatencyMs * 1000.0,
 			}, lm, cs.cacheQueryFn, prefillSnapshots)
 			// Inject the shadow prefill scorer used ONLY to populate the joint divergence
 			// trace's scorer_p (logging-only). It runs a DEDICATED-RNG copy of the prefill
@@ -1460,8 +1461,16 @@ func (cs *ClusterSimulator) BuildPDOutcomeRecords(m *sim.Metrics) []trace.PDOutc
 		}
 		ttft, itl, e2e, done := realized(id)
 		enq := cs.localEnqueueTimes[id] // routing/enqueue instant (0 if unrecorded)
+		// Local records carry class/size/instance from the request metrics, so the
+		// trace supports per-instance placement analysis for collocated requests too
+		// (a collocated request prefills and decodes on its one serving instance).
+		class, in, inst := "", 0, ""
+		if rm, ok := m.Requests[id]; ok {
+			class, in, inst = rm.SLOClass, rm.NumPrefillTokens, rm.HandledBy
+		}
 		recs = append(recs, trace.PDOutcomeRecord{
-			RequestID: id, Disaggregated: false,
+			RequestID: id, SLOClass: class, InputTokens: in, Disaggregated: false,
+			PrefillInstance: inst, DecodeInstance: inst,
 			LocalEnqueue: enq, LocalSchedule: admit, LocalTAdm: tadm(enq, admit),
 			RealizedTTFT: ttft, RealizedMeanITL: itl, RealizedE2E: e2e, Completed: done,
 		})

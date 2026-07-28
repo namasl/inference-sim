@@ -143,42 +143,43 @@ var (
 	gpuMemoryUtilization    float64
 
 	// PD disaggregation config
-	prefillInstances        int           // Number of instances dedicated to prefill
-	decodeInstances         int           // Number of instances dedicated to decode
-	prefillDecodeInstances  int           // Number of shared-role instances (both prefill and decode), issue #1276
-	pdDecider               string        // Disaggregation decider name
-	pdTransferBandwidth     float64       // Inter-instance KV transfer bandwidth in GB/s
-	pdTransferBaseLatency   float64       // Inter-instance KV transfer base latency in ms
-	pdTransferContention    bool          // Enable fair-share bandwidth contention model
-	pdPrefixThreshold       int           // Non-cached token threshold for prefix-threshold decider
-	pdPlanPath              string        // Path to fixed-plan CSV (counterfactual-regret harness); overrides --pd-decider
-	edppTauTTFT             time.Duration // EDPP τ_ttft: time-average TTFT SLO target
-	edppTauRef              time.Duration // EDPP τ_ref: fixed reference for the transfer-penalty normalization
-	edppTauITL              time.Duration // EDPP τ_itl: time-average ITL SLO target
-	edppV                   float64       // EDPP V: penalty/stability tradeoff knob
-	edppCXfer               time.Duration // EDPP c_xfer: assumed KV-transfer cost when routing P
-	edppNomPrefillTokens    int           // EDPP nominal prefill chunk for the fixed prefill normalizer
-	edppNomDecodeCtx        int           // EDPP nominal decode context for the fixed decode normalizer
-	edppTauTTFTClasses      string        // EDPP per-class τ_ttft overrides ("critical=100ms,batch=10s")
-	edppTauITLClasses       string        // EDPP per-class τ_itl overrides ("critical=20ms,batch=500ms")
-	edppCoeffsPath          string        // path to frozen EDPP E3 coefficients JSON
-	edppTAdmEstimator       string        // EDPP admission-delay estimator that drives routing ("" ⇒ waiting)
-	edppJoint               bool          // EDPP joint (decode, prefill) argmin routing (--edpp-joint)
-	edppOracleOutputLen     bool          // EDPP diagnostic oracle: charge routed request's own decode work with TRUE output length (--edpp-oracle-output-len); upper-bound only, violates INV-9
-	edppCXferSizeAware      bool          // EDPP size-aware c_xfer: compute transfer cost per request from KV size (--edpp-c-xfer-size-aware), mirroring the DES executor, instead of the flat --edpp-c-xfer
-	edppRule                string        // EDPP reduced-path decision rule (--edpp-rule): dpp (default) | least-ttft | var
-	edppVarMetric           string        // EDPP VaR scoring kernel (--edpp-var-metric): flip (default) | util | hazard; used only with --edpp-rule var
-	edppVarCongestion       bool          // EDPP drift-plus-VaR (--edpp-var-congestion): keep the congestion drift AND add the VaR externality; used only with --edpp-rule var
-	edppVarCongestionWeight float64       // EDPP drift-plus-VaR congestion weight (--edpp-var-congestion-weight): scales congestion vs VaR; used only with --edpp-rule var --edpp-var-congestion
-	edppVarNormalize        bool          // EDPP drift-plus-VaR auto-normalization (--edpp-var-normalize): per-decision min-max normalize congestion vs VaR so the weight is scale-free (≈1)
-	edppVarDeployable       bool          // EDPP DEPLOYABLE VaR (--edpp-var-deployable): estimate co-resident remaining from censored N̂_out instead of the oracle true remaining (INV-9-safe)
-	edppVarCollocPrefill    bool          // EDPP DEPLOYABLE VaR extra (--edpp-var-colloc-prefill): also price the first-token VaR of collocated prefill occupants on the decode instance (INV-9-safe; default ON — the rule prices this externality; set =false to ablate)
-	edppVarGoodput          bool          // EDPP goodput-objective diagnostic (--edpp-var-goodput): charge VaR − good_r and drop the standalone transfer penalty; upper bound with --edpp-oracle-output-len
-	edppKairosBeta          float64       // Kairos baseline TBT safety margin (--kairos-beta); used only with --edpp-rule kairos
-	edppTauE2E              time.Duration // EDPP default τ_e2e for the VaR E2E composite (--edpp-tau-e2e); 0 ⇒ E2E conjunct disabled
-	edppTauE2EClasses       string        // EDPP per-class τ_e2e overrides (--edpp-tau-e2e-classes, "critical=5s,batch=60s")
-	prefillRoutingScorers   string        // Scorer weights for prefill pool routing
-	decodeRoutingScorers    string        // Scorer weights for decode pool routing
+	prefillInstances           int           // Number of instances dedicated to prefill
+	decodeInstances            int           // Number of instances dedicated to decode
+	prefillDecodeInstances     int           // Number of shared-role instances (both prefill and decode), issue #1276
+	pdDecider                  string        // Disaggregation decider name
+	pdTransferBandwidth        float64       // Inter-instance KV transfer bandwidth in GB/s
+	pdTransferBaseLatency      float64       // Inter-instance KV transfer base latency in ms
+	pdTransferContention       bool          // Enable fair-share bandwidth contention model
+	pdPrefixThreshold          int           // Non-cached token threshold for prefix-threshold decider
+	pdPlanPath                 string        // Path to fixed-plan CSV (counterfactual-regret harness); overrides --pd-decider
+	edppTauTTFT                time.Duration // EDPP τ_ttft: time-average TTFT SLO target
+	edppTauRef                 time.Duration // EDPP τ_ref: fixed reference for the transfer-penalty normalization
+	edppTauITL                 time.Duration // EDPP τ_itl: time-average ITL SLO target
+	edppV                      float64       // EDPP V: penalty/stability tradeoff knob
+	edppCXfer                  time.Duration // EDPP c_xfer: assumed KV-transfer cost when routing P
+	edppNomPrefillTokens       int           // EDPP nominal prefill chunk for the fixed prefill normalizer
+	edppNomDecodeCtx           int           // EDPP nominal decode context for the fixed decode normalizer
+	edppTauTTFTClasses         string        // EDPP per-class τ_ttft overrides ("critical=100ms,batch=10s")
+	edppTauITLClasses          string        // EDPP per-class τ_itl overrides ("critical=20ms,batch=500ms")
+	edppCoeffsPath             string        // path to frozen EDPP E3 coefficients JSON
+	edppTAdmEstimator          string        // EDPP admission-delay estimator that drives routing ("" ⇒ waiting)
+	edppJoint                  bool          // EDPP joint (decode, prefill) argmin routing (--edpp-joint)
+	edppOracleOutputLen        bool          // EDPP diagnostic oracle: charge routed request's own decode work with TRUE output length (--edpp-oracle-output-len); upper-bound only, violates INV-9
+	edppCXferSizeAware         bool          // EDPP size-aware c_xfer: compute transfer cost per request from KV size (--edpp-c-xfer-size-aware), mirroring the DES executor, instead of the flat --edpp-c-xfer
+	edppRule                   string        // EDPP reduced-path decision rule (--edpp-rule): dpp (default) | least-ttft | var
+	edppVarMetric              string        // EDPP VaR scoring kernel (--edpp-var-metric): flip (default) | util | hazard; used only with --edpp-rule var
+	edppVarCongestion          bool          // EDPP drift-plus-VaR (--edpp-var-congestion): keep the congestion drift AND add the VaR externality; used only with --edpp-rule var
+	edppVarCongestionWeight    float64       // EDPP drift-plus-VaR congestion weight (--edpp-var-congestion-weight): scales congestion vs VaR; used only with --edpp-rule var --edpp-var-congestion
+	edppVarNormalize           bool          // EDPP drift-plus-VaR auto-normalization (--edpp-var-normalize): per-decision min-max normalize congestion vs VaR so the weight is scale-free (≈1)
+	edppVarNormalizeFloorScale float64       // EDPP normalization spread floor scale (--edpp-var-normalize-floor-scale): scales ε₀ = scale·(dwork/W*); a term whose cross-candidate spread falls below ε₀ is compressed out instead of amplified. 0 ⇒ 1.0. Swept by the sensitivity study.
+	edppVarDeployable          bool          // EDPP DEPLOYABLE VaR (--edpp-var-deployable): estimate co-resident remaining from censored N̂_out instead of the oracle true remaining (INV-9-safe)
+	edppVarCollocPrefill       bool          // EDPP DEPLOYABLE VaR extra (--edpp-var-colloc-prefill): also price the first-token VaR of collocated prefill occupants on the decode instance (INV-9-safe; default ON — the rule prices this externality; set =false to ablate)
+	edppVarGoodput             bool          // EDPP goodput-objective diagnostic (--edpp-var-goodput): charge VaR − good_r and drop the standalone transfer penalty; upper bound with --edpp-oracle-output-len
+	edppKairosBeta             float64       // Kairos baseline TBT safety margin (--kairos-beta); used only with --edpp-rule kairos
+	edppTauE2E                 time.Duration // EDPP default τ_e2e for the VaR E2E composite (--edpp-tau-e2e); 0 ⇒ E2E conjunct disabled
+	edppTauE2EClasses          string        // EDPP per-class τ_e2e overrides (--edpp-tau-e2e-classes, "critical=5s,batch=60s")
+	prefillRoutingScorers      string        // Scorer weights for prefill pool routing
+	decodeRoutingScorers       string        // Scorer weights for decode pool routing
 
 	// E/P/D disaggregation config (GAP-4, issue #1264)
 	encodeInstances int    // Number of instances dedicated to encoding multimodal input (0 = disabled)
@@ -1366,6 +1367,7 @@ func registerSimConfigFlags(cmd *cobra.Command) {
 	cmd.Flags().BoolVar(&edppVarCongestion, "edpp-var-congestion", false, "EDPP drift-plus-VaR (only with --edpp-rule var): KEEP the Lyapunov work-congestion drift term and ADD the VaR externality, instead of replacing congestion. The congestion term feels a node saturating (capacity/heterogeneity); VaR supplies the SLO externality.")
 	cmd.Flags().Float64Var(&edppVarCongestionWeight, "edpp-var-congestion-weight", 1.0, "EDPP drift-plus-VaR congestion weight (only with --edpp-var-congestion): cost = weight·congestion + VaR. Makes the two terms commensurate; larger ⇒ congestion dominates (toward dpp), smaller ⇒ VaR dominates (toward pure VaR).")
 	cmd.Flags().BoolVar(&edppVarNormalize, "edpp-var-normalize", false, "EDPP drift-plus-VaR auto-normalization (only with --edpp-var-congestion): per-decision min-max normalize congestion and VaR across joint candidates so --edpp-var-congestion-weight is a scale-free relative weight (≈1) instead of an absolute scale. Symmetric congestion (identical hardware) cancels automatically.")
+	cmd.Flags().Float64Var(&edppVarNormalizeFloorScale, "edpp-var-normalize-floor-scale", 1.0, "EDPP normalization spread floor scale (only with --edpp-var-normalize): the min-max denominator is max{spread, ε₀} with ε₀ = scale·(dwork/W*), one arriving request's work on the nominal decode instance. A term whose cross-candidate spread falls below ε₀ is compressed toward zero instead of amplified to [0,1] (the noise-amplification fix). The sensitivity study sweeps this scale.")
 	cmd.Flags().BoolVar(&edppVarDeployable, "edpp-var-deployable", false, "EDPP DEPLOYABLE VaR (only with --edpp-rule var): estimate each decode co-resident's remaining steps from the censored per-class N̂_out (max(N̂_out−StepsDone,1)) instead of the ORACLE true remaining. INV-9-safe (reads no hidden output length) — turns the diagnostic ceiling into a runnable policy.")
 	cmd.Flags().BoolVar(&edppVarCollocPrefill, "edpp-var-colloc-prefill", true, "EDPP DEPLOYABLE VaR extra (only with --edpp-rule var): also price the first-token (TTFT) value-at-risk of collocated prefill occupants ON the decode instance. These are pre-first-token requests a prior collocate decision placed there, which the decode-side VaR terms skip. Reads only remaining prompt tokens (INV-9-safe). On by default so the rule prices this externality. Set =false to ablate it.")
 	cmd.Flags().BoolVar(&edppVarGoodput, "edpp-var-goodput", false, "EDPP goodput-objective diagnostic (only with --edpp-rule var --edpp-var-congestion): reframe the objective from minimizing transfer cost to maximizing goodput. The rule charges VaR − good_r (goodput destroyed among co-residents minus goodput EARNED for the arriving request) and DROPS the standalone transfer penalty, whose effect already flows through the request's own projected TTFT. good_r uses the request's decode length; pair with --edpp-oracle-output-len for the TRUE-output-length upper bound (violates INV-9). Off ⇒ byte-identical to the current rule.")
@@ -2023,6 +2025,7 @@ var runCmd = &cobra.Command{
 			EDPPVarKeepCongestion:           edppVarCongestion,
 			EDPPVarCongestionWeight:         edppVarCongestionWeight,
 			EDPPVarNormalize:                edppVarNormalize,
+			EDPPVarNormalizeFloorScale:      edppVarNormalizeFloorScale,
 			EDPPVarDeployable:               edppVarDeployable,
 			EDPPVarCollocPrefill:            edppVarCollocPrefill,
 			EDPPVarGoodputObjective:         edppVarGoodput,

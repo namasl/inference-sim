@@ -1,0 +1,9 @@
+# name in out topo_kind knee ttft_base_ms itl_base_ms e2e_base_ms
+# knees: achieved/offered >= 0.95 (phase-B sweep 2026-07-27); baselines: rate-0.2 probe p99s.
+# hetero baselines are the NOMINAL-FAST (H100 1P2D) probe, so slow-instance service
+# is under genuine ITL/E2E pressure rather than blessed by the fleet baseline.
+decode        256   512 homog  3.0 51.78  16.79 22773.2
+mixed         2048  128 homog  12  85.64  16.88 4178.9
+prefill_lean  8192  64  homog  12  239.59 17.86 2400.8
+prefill_bound 16000 16  homog  8   428.70 18.20 929.3
+hetero        256   64  hetero 6   51.73  16.70 2069.2

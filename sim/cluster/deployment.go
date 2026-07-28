@@ -76,32 +76,33 @@ type DeploymentConfig struct {
 
 	// EDPP (Lyapunov drift-plus-penalty) decider knobs â used only when PDDecider == "edpp".
 	// All durations are microseconds. See sim/edpp.go and the design doc for semantics.
-	EDPPTauTTFTUs           int64            // default Ï_ttft: time-average TTFT SLO target (Âµs)
-	EDPPTauITLUs            int64            // default Ï_itl: time-average ITL SLO target (Âµs)
-	EDPPTauRefUs            int64            // fixed reference Ï for the transfer-penalty normalization (Âµs)
-	EDPPTauTTFTByClassUs    map[string]int64 // per-SLO-class Ï_ttft overrides (Âµs); nil = defaults for all
-	EDPPTauITLByClassUs     map[string]int64 // per-SLO-class Ï_itl overrides (Âµs); nil = defaults for all
-	EDPPTauE2EUs            int64            // default Ï_e2e for the VaR E2E composite (Âµs); 0 â E2E conjunct disabled. Used only when EDPPRule=="var".
-	EDPPTauE2EByClassUs     map[string]int64 // per-SLO-class Ï_e2e overrides (Âµs); nil = defaults for all
-	EDPPV                   float64          // V: penalty/stability tradeoff knob (larger â fewer offloads)
-	EDPPCXferUs             int64            // c_xfer: KV-transfer cost paid when routing P (Âµs)
-	EDPPNomPrefillTokens    int              // S_nom: nominal prefill chunk for the fixed prefill normalizer
-	EDPPNomDecodeCtx        int              // L_nom: nominal decode context for the fixed decode normalizer
-	EDPPCoeffs              sim.EDPPCoeffs   // frozen E3 latency-law coefficients; required when PDDecider == "edpp"
-	EDPPTAdmEstimator       string           // admission-delay estimator that DRIVES routing ("" â waiting); deployable-only, oracle names rejected by NewEDPPDecider
-	EDPPJoint               bool             // when true, EDPP enumerates all (decode, prefill) candidates and picks the drift-plus-penalty argmin (--edpp-joint); false â reduced fixed-d rule
-	EDPPRule                string           // EDPP reduced-path decision rule: "" / "dpp" (default) | "least-ttft" | "var" (DIAGNOSTIC ORACLE)
-	EDPPVarMetric           string           // EDPP VaR scoring kernel when EDPPRule=="var": "flip" (default) | "util" | "hazard"
-	EDPPVarKeepCongestion   bool             // EDPP drift-plus-VaR when EDPPRule=="var": keep the congestion drift and ADD the VaR externality (instead of replacing it)
-	EDPPVarCongestionWeight float64          // EDPP drift-plus-VaR congestion weight: cost = weightÂ·congestion + VaR (0 â 1.0)
-	EDPPVarNormalize        bool             // EDPP drift-plus-VaR auto-normalization: per-decision min-max normalize congestion vs VaR so the weight is scale-free
-	EDPPVarDeployable       bool             // DEPLOYABLE VaR: estimate co-resident remaining from censored N̂_out instead of the oracle true remaining (INV-9-safe)
-	EDPPVarCollocPrefill    bool             // DEPLOYABLE VaR extra: also price the first-token VaR of collocated prefill occupants on the decode instance (INV-9-safe; default ON — the rule prices this externality)
-	EDPPVarGoodputObjective bool             // DIAGNOSTIC (EDPPRule=="var" && keep-congestion): reframe the objective to goodput — charge VaR − good_r and drop the standalone transfer penalty. Upper bound when paired with EDPPOracleOutputLen; off ⇒ byte-identical to the current rule.
-	EDPPKairosBeta          float64          // Kairos baseline TBT safety margin β (EDPPRule=="kairos"); 0 ⇒ 1.0
-	EDPPJointTrace          bool             // when true (joint mode only), record the per-decision scorer-vs-joint divergence trace (--edpp-joint-trace); pure instrumentation, no routing effect
-	EDPPOracleOutputLen     bool             // DIAGNOSTIC / UPPER-BOUND ONLY (--edpp-oracle-output-len): charge the routed request's OWN decode work with its TRUE output length instead of NÌ_out. Violates INV-9; never deployable.
-	EDPPCXferSizeAware      bool             // --edpp-c-xfer-size-aware: EDPP computes c_xfer per request from KV size (mirrors the DES KV-transfer executor), instead of the flat EDPPCXferUs. Deployable (input-only).
+	EDPPTauTTFTUs              int64            // default Ï_ttft: time-average TTFT SLO target (Âµs)
+	EDPPTauITLUs               int64            // default Ï_itl: time-average ITL SLO target (Âµs)
+	EDPPTauRefUs               int64            // fixed reference Ï for the transfer-penalty normalization (Âµs)
+	EDPPTauTTFTByClassUs       map[string]int64 // per-SLO-class Ï_ttft overrides (Âµs); nil = defaults for all
+	EDPPTauITLByClassUs        map[string]int64 // per-SLO-class Ï_itl overrides (Âµs); nil = defaults for all
+	EDPPTauE2EUs               int64            // default Ï_e2e for the VaR E2E composite (Âµs); 0 â E2E conjunct disabled. Used only when EDPPRule=="var".
+	EDPPTauE2EByClassUs        map[string]int64 // per-SLO-class Ï_e2e overrides (Âµs); nil = defaults for all
+	EDPPV                      float64          // V: penalty/stability tradeoff knob (larger â fewer offloads)
+	EDPPCXferUs                int64            // c_xfer: KV-transfer cost paid when routing P (Âµs)
+	EDPPNomPrefillTokens       int              // S_nom: nominal prefill chunk for the fixed prefill normalizer
+	EDPPNomDecodeCtx           int              // L_nom: nominal decode context for the fixed decode normalizer
+	EDPPCoeffs                 sim.EDPPCoeffs   // frozen E3 latency-law coefficients; required when PDDecider == "edpp"
+	EDPPTAdmEstimator          string           // admission-delay estimator that DRIVES routing ("" â waiting); deployable-only, oracle names rejected by NewEDPPDecider
+	EDPPJoint                  bool             // when true, EDPP enumerates all (decode, prefill) candidates and picks the drift-plus-penalty argmin (--edpp-joint); false â reduced fixed-d rule
+	EDPPRule                   string           // EDPP reduced-path decision rule: "" / "dpp" (default) | "least-ttft" | "var" (DIAGNOSTIC ORACLE)
+	EDPPVarMetric              string           // EDPP VaR scoring kernel when EDPPRule=="var": "flip" (default) | "util" | "hazard"
+	EDPPVarKeepCongestion      bool             // EDPP drift-plus-VaR when EDPPRule=="var": keep the congestion drift and ADD the VaR externality (instead of replacing it)
+	EDPPVarCongestionWeight    float64          // EDPP drift-plus-VaR congestion weight: cost = weightÂ·congestion + VaR (0 â 1.0)
+	EDPPVarNormalize           bool             // EDPP drift-plus-VaR auto-normalization: per-decision min-max normalize congestion vs VaR so the weight is scale-free
+	EDPPVarNormalizeFloorScale float64          // EDPP normalization spread floor scale: ε₀ = scale·(dwork/W*); spreads below ε₀ are compressed out instead of amplified (0 ⇒ 1.0)
+	EDPPVarDeployable          bool             // DEPLOYABLE VaR: estimate co-resident remaining from censored N̂_out instead of the oracle true remaining (INV-9-safe)
+	EDPPVarCollocPrefill       bool             // DEPLOYABLE VaR extra: also price the first-token VaR of collocated prefill occupants on the decode instance (INV-9-safe; default ON — the rule prices this externality)
+	EDPPVarGoodputObjective    bool             // DIAGNOSTIC (EDPPRule=="var" && keep-congestion): reframe the objective to goodput — charge VaR − good_r and drop the standalone transfer penalty. Upper bound when paired with EDPPOracleOutputLen; off ⇒ byte-identical to the current rule.
+	EDPPKairosBeta             float64          // Kairos baseline TBT safety margin β (EDPPRule=="kairos"); 0 ⇒ 1.0
+	EDPPJointTrace             bool             // when true (joint mode only), record the per-decision scorer-vs-joint divergence trace (--edpp-joint-trace); pure instrumentation, no routing effect
+	EDPPOracleOutputLen        bool             // DIAGNOSTIC / UPPER-BOUND ONLY (--edpp-oracle-output-len): charge the routed request's OWN decode work with its TRUE output length instead of NÌ_out. Violates INV-9; never deployable.
+	EDPPCXferSizeAware         bool             // --edpp-c-xfer-size-aware: EDPP computes c_xfer per request from KV size (mirrors the DES KV-transfer executor), instead of the flat EDPPCXferUs. Deployable (input-only).
 
 	// E/P/D disaggregation configuration (GAP-4, issue #1264).
 	// When EncodeInstances == 0 (default), the encode stage is disabled and the

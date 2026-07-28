@@ -64,39 +64,40 @@ import (
 // the request's own class: a stricter class reads the same server backlog as more
 // threatening, and its realized-SLO feedback accumulates in its own virtual queue.
 type EDPPConfig struct {
-	TauTTFTUs             int64                 // default τ_ttft: time-average TTFT SLO target (µs)
-	TauITLUs              int64                 // default τ_itl: time-average ITL SLO target (µs)
-	TauRefUs              int64                 // fixed reference τ for the transfer-penalty normalization (µs); makes the penalty scale 1/τ_ttft² like the other terms. Independent of the operating τ_ttft.
-	TauTTFTByClassUs      map[string]int64      // per-class τ_ttft overrides (µs); nil = use default for all
-	TauITLByClassUs       map[string]int64      // per-class τ_itl overrides (µs); nil = use default for all
-	TauE2EUs              int64                 // default τ_e2e: end-to-end SLO deadline budget (µs); used ONLY by the VaR drift oracle (Rule=="var") to evaluate a co-resident's E2E composite-good (deadline = arrival + τ_e2e). 0 ⇒ E2E conjunct disabled in g(). Not read by dpp/least-ttft.
-	TauE2EByClassUs       map[string]int64      // per-class τ_e2e overrides (µs); nil = use default for all
-	V                     float64               // penalty/stability tradeoff knob (Neely's V); larger ⇒ fewer offloads
-	CXferUs               int64                 // c_xfer: KV-transfer cost paid when routing P (µs)
-	NomPrefillTokens      int                   // S_nom: nominal prefill chunk for the fixed prefill normalizer
-	NomDecodeCtx          int                   // L_nom: nominal decode context for the fixed decode normalizer
-	BlockSize             int                   // token block size for the prefix-cache a_p computation
-	ChunkTokens           int                   // per-step prefill token budget (max_num_batched_tokens); caps δ_pf-chunk. 0 = no cap (whole prefill counts as one chunk)
-	Coeffs                EDPPCoeffs            // frozen E3 latency-law coefficients (design §1.1); required
-	CoeffsByGPU           map[string]EDPPCoeffs // per-GPU-type θ_i overrides; nil ⇒ use Coeffs for every candidate (homogeneous)
-	TraceEnabled          bool                  // when true, Decide attaches an EDPPDecisionTrace (intermediate rule terms) to each decision. Off ⇒ zero allocation.
-	TAdmEstimator         string                // admission-delay estimator name ("" ⇒ waiting, the current formula)
-	Joint                 bool                  // when true, Decide enumerates all (decode, prefill) candidates and picks the drift-plus-penalty argmin (joint P/D routing, --edpp-joint); false ⇒ the reduced fixed-d local-vs-disagg rule.
-	JointTraceEnabled     bool                  // when true (joint mode only), decideJoint attaches an EDPPJointDecisionTrace comparing the scorer's (d,p) pick to the joint argmin. Off ⇒ zero allocation, no shadow prefill scorer run.
-	Rule                  string                // reduced-path decision rule: "" / "dpp" (drift-plus-penalty, default) | "least-ttft" (disaggregate iff ttftP < ttftD; bypasses the drift/z/V machinery, design 2026-07-15) | "var" (replace the work-currency balance term with a value-at-risk externality; DIAGNOSTIC ORACLE, design 2026-07-21).
-	VarMetric             string                // VaR scoring kernel when Rule=="var": "flip" (A, binary composite-good flip count; default), "util" (B, saturating slack utility), "hazard" (C, deadline-slack hazard × delay). Ignored unless Rule=="var".
-	VarKeepCongestion     bool                  // when Rule=="var": KEEP the Lyapunov work-congestion drift term and ADD the VaR externality (drift-plus-VaR), instead of replacing it. The congestion term feels a node saturating (capacity + heterogeneity); VaR supplies the SLO externality. false ⇒ pure VaR (externality replaces congestion). Ignored unless Rule=="var".
-	VarCongestionWeight   float64               // drift-plus-VaR balance: cost = VarCongestionWeight·congestion + VaR (the two terms live on different scales, so this makes them commensurate). 0 ⇒ 1.0. Used only when Rule=="var" and VarKeepCongestion.
-	VarNormalize          bool                  // drift-plus-VaR auto-normalization (joint path): per-decision min-max normalize congestion and VaR across candidates to [0,1] before combining, so VarCongestionWeight is a scale-free relative weight (default ≈1) instead of an absolute scale. A zero-spread guard makes a symmetric congestion term (identical hardware) cancel automatically. Used only when Rule=="var" and VarKeepCongestion.
-	KairosBeta            float64               // Kairos baseline (Rule=="kairos") TBT safety margin β: a deflected prefill chunk must keep the decode step within β·τ_itl. 0 ⇒ 1.0. See sim/edpp_kairos.go (arXiv:2607.02043).
-	VarDeployable         bool                  // DEPLOYABLE VaR (Rule=="var"): estimate each decode co-resident's remaining steps from the censored per-class N̂_out (max(N̂_out − StepsDone, 1)) instead of the ORACLE true remaining. INV-9-safe (no output-length read). Turns the diagnostic ceiling into a runnable policy; measures the oracle→deployable gap.
-	VarCollocPrefill      bool                  // DEPLOYABLE VaR extra (Rule=="var"): also price the first-token (TTFT) value-at-risk of collocated prefill occupants ON the decode instance. These are requests a prior collocate decision placed there that are still pre-first-token, which RunningDecode skips so the decode-side terms miss them. Reads only remaining prompt tokens (known input, INV-9-safe). On by default so the rule prices this externality; set false to ablate.
-	VarGoodputObjective   bool                  // DIAGNOSTIC (Rule=="var" && VarKeepCongestion, --edpp-var-goodput): reframe the objective from "minimize transfer cost" to "maximize goodput". The rule charges VaR − good_r (the goodput destroyed among co-residents minus the goodput EARNED for the arriving request) and DROPS the standalone transfer penalty (its effect already flows through the request's own projected TTFT). good_r uses the request's decode length via reqNHatOut — the censored N̂_out, or the TRUE output length when OracleOutputLen is also set (an INV-9 upper bound). Off ⇒ byte-identical to the current rule (INV-6). Tests whether the goodput reframing beats the transfer-cost objective.
-	OracleOutputLen       bool                  // DIAGNOSTIC / UPPER-BOUND ONLY (--edpp-oracle-output-len): substitute the routed request's TRUE output length (len(req.OutputTokens)) for the per-class N̂_out estimate when charging its OWN decode work (joint W_d and the qdWork backlog bookkeeping). Violates INV-9 by design; never a deployable policy. Co-resident remaining stays estimated/censored. Used to test whether output-length estimation error explains the overload collapse (control for the value-vs-work-currency hypothesis).
-	CXferSizeAware        bool                  // --edpp-c-xfer-size-aware: compute c_xfer per request from KV size (XferBaseUs + ⌈a_r/blockSize⌉·blockSize·KVBytesPerTokenPerGPU / bandwidth), mirroring the DES KV-transfer executor, instead of the flat CXferUs. Off ⇒ byte-identical to the flat-c_xfer behavior. Deployable (input-only, oracle-safe).
-	KVBytesPerTokenPerGPU float64               // per-GPU KV bytes per token (from ModelConfig + prefill TP); used only when CXferSizeAware
-	XferBandwidthGBps     float64               // inter-instance KV-transfer bandwidth (GB/s), matching the DES executor; used only when CXferSizeAware
-	XferBaseUs            float64               // KV-transfer base latency (µs), matching the DES executor; used only when CXferSizeAware
+	TauTTFTUs              int64                 // default τ_ttft: time-average TTFT SLO target (µs)
+	TauITLUs               int64                 // default τ_itl: time-average ITL SLO target (µs)
+	TauRefUs               int64                 // fixed reference τ for the transfer-penalty normalization (µs); makes the penalty scale 1/τ_ttft² like the other terms. Independent of the operating τ_ttft.
+	TauTTFTByClassUs       map[string]int64      // per-class τ_ttft overrides (µs); nil = use default for all
+	TauITLByClassUs        map[string]int64      // per-class τ_itl overrides (µs); nil = use default for all
+	TauE2EUs               int64                 // default τ_e2e: end-to-end SLO deadline budget (µs); used ONLY by the VaR drift oracle (Rule=="var") to evaluate a co-resident's E2E composite-good (deadline = arrival + τ_e2e). 0 ⇒ E2E conjunct disabled in g(). Not read by dpp/least-ttft.
+	TauE2EByClassUs        map[string]int64      // per-class τ_e2e overrides (µs); nil = use default for all
+	V                      float64               // penalty/stability tradeoff knob (Neely's V); larger ⇒ fewer offloads
+	CXferUs                int64                 // c_xfer: KV-transfer cost paid when routing P (µs)
+	NomPrefillTokens       int                   // S_nom: nominal prefill chunk for the fixed prefill normalizer
+	NomDecodeCtx           int                   // L_nom: nominal decode context for the fixed decode normalizer
+	BlockSize              int                   // token block size for the prefix-cache a_p computation
+	ChunkTokens            int                   // per-step prefill token budget (max_num_batched_tokens); caps δ_pf-chunk. 0 = no cap (whole prefill counts as one chunk)
+	Coeffs                 EDPPCoeffs            // frozen E3 latency-law coefficients (design §1.1); required
+	CoeffsByGPU            map[string]EDPPCoeffs // per-GPU-type θ_i overrides; nil ⇒ use Coeffs for every candidate (homogeneous)
+	TraceEnabled           bool                  // when true, Decide attaches an EDPPDecisionTrace (intermediate rule terms) to each decision. Off ⇒ zero allocation.
+	TAdmEstimator          string                // admission-delay estimator name ("" ⇒ waiting, the current formula)
+	Joint                  bool                  // when true, Decide enumerates all (decode, prefill) candidates and picks the drift-plus-penalty argmin (joint P/D routing, --edpp-joint); false ⇒ the reduced fixed-d local-vs-disagg rule.
+	JointTraceEnabled      bool                  // when true (joint mode only), decideJoint attaches an EDPPJointDecisionTrace comparing the scorer's (d,p) pick to the joint argmin. Off ⇒ zero allocation, no shadow prefill scorer run.
+	Rule                   string                // reduced-path decision rule: "" / "dpp" (drift-plus-penalty, default) | "least-ttft" (disaggregate iff ttftP < ttftD; bypasses the drift/z/V machinery, design 2026-07-15) | "var" (replace the work-currency balance term with a value-at-risk externality; DIAGNOSTIC ORACLE, design 2026-07-21).
+	VarMetric              string                // VaR scoring kernel when Rule=="var": "flip" (A, binary composite-good flip count; default), "util" (B, saturating slack utility), "hazard" (C, deadline-slack hazard × delay). Ignored unless Rule=="var".
+	VarKeepCongestion      bool                  // when Rule=="var": KEEP the Lyapunov work-congestion drift term and ADD the VaR externality (drift-plus-VaR), instead of replacing it. The congestion term feels a node saturating (capacity + heterogeneity); VaR supplies the SLO externality. false ⇒ pure VaR (externality replaces congestion). Ignored unless Rule=="var".
+	VarCongestionWeight    float64               // drift-plus-VaR balance: cost = VarCongestionWeight·congestion + VaR (the two terms live on different scales, so this makes them commensurate). 0 ⇒ 1.0. Used only when Rule=="var" and VarKeepCongestion.
+	VarNormalize           bool                  // drift-plus-VaR auto-normalization (joint path): per-decision min-max normalize congestion and VaR across candidates to [0,1] before combining, so VarCongestionWeight is a scale-free relative weight (default ≈1) instead of an absolute scale. The spread floor (VarNormalizeFloorScale) makes a symmetric congestion term (identical hardware) cancel automatically. Used only when Rule=="var" and VarKeepCongestion.
+	VarNormalizeFloorScale float64               // drift-plus-VaR normalization spread floor (joint path, only with VarNormalize): the min-max denominator is max{spread, ε₀} with ε₀ = scale·(dwork/W*) — one arriving request's work on the nominal decode instance in reference units. A term whose cross-candidate spread falls below ε₀ is compressed toward zero in proportion instead of amplified to the full unit range (the noise-amplification fix). 0 ⇒ 1.0 (paper default); the sensitivity study varies this scale alongside VarCongestionWeight.
+	KairosBeta             float64               // Kairos baseline (Rule=="kairos") TBT safety margin β: a deflected prefill chunk must keep the decode step within β·τ_itl. 0 ⇒ 1.0. See sim/edpp_kairos.go (arXiv:2607.02043).
+	VarDeployable          bool                  // DEPLOYABLE VaR (Rule=="var"): estimate each decode co-resident's remaining steps from the censored per-class N̂_out (max(N̂_out − StepsDone, 1)) instead of the ORACLE true remaining. INV-9-safe (no output-length read). Turns the diagnostic ceiling into a runnable policy; measures the oracle→deployable gap.
+	VarCollocPrefill       bool                  // DEPLOYABLE VaR extra (Rule=="var"): also price the first-token (TTFT) value-at-risk of collocated prefill occupants ON the decode instance. These are requests a prior collocate decision placed there that are still pre-first-token, which RunningDecode skips so the decode-side terms miss them. Reads only remaining prompt tokens (known input, INV-9-safe). On by default so the rule prices this externality; set false to ablate.
+	VarGoodputObjective    bool                  // DIAGNOSTIC (Rule=="var" && VarKeepCongestion, --edpp-var-goodput): reframe the objective from "minimize transfer cost" to "maximize goodput". The rule charges VaR − good_r (the goodput destroyed among co-residents minus the goodput EARNED for the arriving request) and DROPS the standalone transfer penalty (its effect already flows through the request's own projected TTFT). good_r uses the request's decode length via reqNHatOut — the censored N̂_out, or the TRUE output length when OracleOutputLen is also set (an INV-9 upper bound). Off ⇒ byte-identical to the current rule (INV-6). Tests whether the goodput reframing beats the transfer-cost objective.
+	OracleOutputLen        bool                  // DIAGNOSTIC / UPPER-BOUND ONLY (--edpp-oracle-output-len): substitute the routed request's TRUE output length (len(req.OutputTokens)) for the per-class N̂_out estimate when charging its OWN decode work (joint W_d and the qdWork backlog bookkeeping). Violates INV-9 by design; never a deployable policy. Co-resident remaining stays estimated/censored. Used to test whether output-length estimation error explains the overload collapse (control for the value-vs-work-currency hypothesis).
+	CXferSizeAware         bool                  // --edpp-c-xfer-size-aware: compute c_xfer per request from KV size (XferBaseUs + ⌈a_r/blockSize⌉·blockSize·KVBytesPerTokenPerGPU / bandwidth), mirroring the DES KV-transfer executor, instead of the flat CXferUs. Off ⇒ byte-identical to the flat-c_xfer behavior. Deployable (input-only, oracle-safe).
+	KVBytesPerTokenPerGPU  float64               // per-GPU KV bytes per token (from ModelConfig + prefill TP); used only when CXferSizeAware
+	XferBandwidthGBps      float64               // inter-instance KV-transfer bandwidth (GB/s), matching the DES executor; used only when CXferSizeAware
+	XferBaseUs             float64               // KV-transfer base latency (µs), matching the DES executor; used only when CXferSizeAware
 }
 
 // EDPPJointDecisionTrace records, for one joint (--edpp-joint) decision, the scorer's
@@ -352,6 +353,10 @@ type EDPPDecider struct {
 	// (joint path) so varCongestionWeight is a scale-free relative weight. See EDPPConfig.VarNormalize.
 	varNormalize bool
 
+	// varNormalizeFloorScale scales the spread floor ε₀ = scale·(dwork/W*) applied to the min-max
+	// denominator on the normalized path (default 1.0). See EDPPConfig.VarNormalizeFloorScale.
+	varNormalizeFloorScale float64
+
 	// varDeployable estimates co-resident remaining steps from the censored per-class N̂_out
 	// instead of the oracle true remaining (INV-9-safe). See EDPPConfig.VarDeployable.
 	varDeployable bool
@@ -445,28 +450,33 @@ func NewEDPPDecider(cfg EDPPConfig, model LatencyModel, cacheQuery map[string]fu
 	if kairosBeta <= 0 {
 		kairosBeta = 1.0
 	}
+	varNormalizeFloorScale := cfg.VarNormalizeFloorScale
+	if varNormalizeFloorScale <= 0 {
+		varNormalizeFloorScale = 1.0
+	}
 
 	d := &EDPPDecider{
-		cfg:                 cfg,
-		model:               model,
-		cacheQuery:          cacheQuery,
-		prefillSnapshots:    prefillSnapshots,
-		joint:               cfg.Joint,
-		rule:                cfg.Rule,
-		varMetric:           varMetric,
-		varKeepCongestion:   cfg.VarKeepCongestion,
-		varCongestionWeight: varCongestionWeight,
-		varNormalize:        cfg.VarNormalize,
-		varDeployable:       cfg.VarDeployable,
-		varCollocPrefill:    cfg.VarCollocPrefill,
-		varGoodputObjective: cfg.VarGoodputObjective,
-		kairosBeta:          kairosBeta,
-		zByClass:            make(map[string]*edppClassState),
-		coeffs:              cfg.Coeffs,
-		coeffsByGPU:         cfg.CoeffsByGPU,
-		pending:             make(map[string]edppPendingWork),
-		qByInstance:         make(map[string]*edppInstWork),
-		nHatOut:             make(map[string]*edppRunningMean),
+		cfg:                    cfg,
+		model:                  model,
+		cacheQuery:             cacheQuery,
+		prefillSnapshots:       prefillSnapshots,
+		joint:                  cfg.Joint,
+		rule:                   cfg.Rule,
+		varMetric:              varMetric,
+		varKeepCongestion:      cfg.VarKeepCongestion,
+		varCongestionWeight:    varCongestionWeight,
+		varNormalize:           cfg.VarNormalize,
+		varNormalizeFloorScale: varNormalizeFloorScale,
+		varDeployable:          cfg.VarDeployable,
+		varCollocPrefill:       cfg.VarCollocPrefill,
+		varGoodputObjective:    cfg.VarGoodputObjective,
+		kairosBeta:             kairosBeta,
+		zByClass:               make(map[string]*edppClassState),
+		coeffs:                 cfg.Coeffs,
+		coeffsByGPU:            cfg.CoeffsByGPU,
+		pending:                make(map[string]edppPendingWork),
+		qByInstance:            make(map[string]*edppInstWork),
+		nHatOut:                make(map[string]*edppRunningMean),
 
 		awaitingFirstToken: make(map[string]*edppAwaiting),
 	}
@@ -1271,14 +1281,37 @@ func (d *EDPPDecider) jointVaRComponents(ec *jointEvalCtx, ds RoutingSnapshot, p
 	return cong, vv, self
 }
 
+// varNormFloor returns the spread floor ε₀ for the per-decision min-max normalization. It is one
+// arriving request's work on the nominal decode instance (the first decode snapshot) in reference
+// units, ε₀ = scale·(Wp+Wd)/W*_d, so the congestion term binds only once backlogs differ by more
+// than a request's worth of work; below that the spread is treated as noise and compressed out. The
+// scale (VarNormalizeFloorScale, default 1) is the knob the sensitivity study sweeps. Always
+// positive so it doubles as the division guard. See jointNormalizedCandidates.
+func (d *EDPPDecider) varNormFloor(ec *jointEvalCtx, decodeSnaps []RoutingSnapshot) float64 {
+	const tiny = 1e-12
+	if len(decodeSnaps) == 0 || ec.n.wStarD <= 0 {
+		return tiny
+	}
+	nom := decodeSnaps[0]
+	theta := d.coeffsFor(nom.GPUType)
+	wd := theta.Wd(len(ec.req.InputTokens), ec.nHatOut)
+	ap := d.apForInstance(ec.req, nom.ID)
+	wp := theta.Wp(maxInt(ap, 0), len(ec.req.InputTokens))
+	eps0 := d.varNormalizeFloorScale * (wd + wp) / ec.n.wStarD
+	if eps0 < tiny {
+		return tiny
+	}
+	return eps0
+}
+
 // jointNormalizedCandidates enumerates the joint candidates for the auto-normalized dpVaR path
 // (two passes): first it computes each candidate's (congestion, VaR, self) via jointVaRComponents
 // and finds the min/max of the congestion and VaR terms across the set; then it builds each
-// candidate's objective J = w·norm(congestion) + norm(VaR) + self, where norm(x) = (x−min)/(max−min)
-// with a zero-spread guard that maps a term with no cross-candidate spread to 0. On identical
-// hardware the congestion term has no spread, so it cancels automatically and VaR decides; on
-// heterogeneous hardware it has spread, so it reins in over-routing. Enumeration order (decode
-// snapshots ascending, local before disagg) matches the un-normalized path (INV-6).
+// candidate's objective J = w·norm(congestion) + norm(VaR) + self, where
+// norm(x) = (x−min)/max{max−min, ε₀} floors the min-max denominator at ε₀ (varNormFloor). On
+// identical hardware the congestion spread sits below ε₀, so the term is compressed out and VaR
+// decides; on heterogeneous hardware it clears ε₀, so it reins in over-routing. Enumeration order
+// (decode snapshots ascending, local before disagg) matches the un-normalized path (INV-6).
 func (d *EDPPDecider) jointNormalizedCandidates(ec *jointEvalCtx, decodeSnaps, prefillSnaps []RoutingSnapshot) []cand {
 	type comp struct {
 		dID, pID       string
@@ -1304,15 +1337,17 @@ func (d *EDPPDecider) jointNormalizedCandidates(ec *jointEvalCtx, decodeSnaps, p
 		congMin, congMax = math.Min(congMin, c.cong), math.Max(congMax, c.cong)
 		varMin, varMax = math.Min(varMin, c.vv), math.Max(varMax, c.vv)
 	}
-	// norm maps x to [0,1] across the candidate set; a zero (near-zero) spread ⇒ the term does
-	// not discriminate this decision, so it contributes 0 (e.g. symmetric congestion on identical
-	// hardware cancels automatically).
-	const spreadEps = 1e-12
+	// norm maps x to [0,1] across the candidate set by min-max, dividing by max{spread, ε₀}. The
+	// floor ε₀ = scale·(dwork/W*) is one arriving request's work on the nominal decode instance in
+	// reference units (dwork = Wp+Wd, the currency of the congestion term). When a term's spread
+	// clears the floor the map is the plain min-max; when it falls below (identical hardware under a
+	// balanced scorer, so the candidates carry near-equal backlog) the term is compressed toward zero
+	// in proportion instead of amplified to the full unit range, so it fades out and the VaR term
+	// decides. A zero spread maps every candidate to 0. The floor is always positive, so it also
+	// guards the division. See EDPPConfig.VarNormalize / VarNormalizeFloorScale.
+	eps0 := d.varNormFloor(ec, decodeSnaps)
 	norm := func(x, lo, hi float64) float64 {
-		if hi-lo <= spreadEps {
-			return 0
-		}
-		return (x - lo) / (hi - lo)
+		return (x - lo) / math.Max(hi-lo, eps0)
 	}
 	out := make([]cand, 0, len(comps))
 	for _, c := range comps {

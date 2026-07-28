@@ -510,6 +510,7 @@ Example:
 			EDPPVarKeepCongestion:           edppVarCongestion,
 			EDPPVarCongestionWeight:         edppVarCongestionWeight,
 			EDPPVarNormalize:                edppVarNormalize,
+			EDPPVarNormalizeFloorScale:      edppVarNormalizeFloorScale,
 			EDPPVarDeployable:               edppVarDeployable,
 			EDPPVarCollocPrefill:            edppVarCollocPrefill,
 			EDPPVarGoodputObjective:         edppVarGoodput,
