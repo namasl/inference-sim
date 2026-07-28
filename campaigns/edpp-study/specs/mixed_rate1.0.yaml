@@ -1,0 +1,36 @@
+# Synthetic MIXED (balanced prefill/decode) archetype for the ttft_d estimator study.
+#
+# Sits between synth (decode-heavy, prefill_decode_ratio 0.125) and rag (prefill-heavy,
+# ratio 30). Single client, single SLO class, aggregate_rate schema (same clean structure
+# as synth) so the load sweep can rewrite one field. Input and output means are comparable
+# (~1500 tok each) with a moderate 500-tok shared prefix, giving roughly balanced prefill
+# vs decode compute per request. NOT from an external catalog — fabricated for this study.
+version: "2"
+seed: 42
+category: language
+aggregate_rate: 1.0
+num_requests: 5000
+clients:
+  - id: "mixed-balanced"
+    tenant_id: "batch-jobs"
+    slo_class: "batch"
+    rate_fraction: 1.0
+    streaming: false
+    arrival:
+      process: poisson
+    input_distribution:
+      type: lognormal
+      params:
+        mu: 7.13      # exp(7.13 + 0.5^2/2) ≈ 1500 mean
+        sigma: 0.5
+        min: 200
+        max: 6000
+    output_distribution:
+      type: gaussian
+      params:
+        mean: 1500
+        std_dev: 700
+        min: 200
+        max: 4000
+    prefix_group: "mixed-balanced-system-prompt"
+    prefix_length: 500

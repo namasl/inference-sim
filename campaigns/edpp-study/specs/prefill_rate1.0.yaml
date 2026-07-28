@@ -1,0 +1,35 @@
+# Synthetic PREFILL-HEAVY archetype for the ttft_d estimator study.
+#
+# Clearly prefill-bound (input ≫ output) but with SANE prompt sizes (~4k mean, 8k max) so
+# a single collocated instance can be swept quickly — unlike real rag (15k–80k-tok prompts),
+# whose overload runs take ~30 min each and are intractable to sweep here. Same clean
+# single-client aggregate_rate schema as synth/mixed. NOT from an external catalog.
+version: "2"
+seed: 42
+category: language
+aggregate_rate: 1.0
+num_requests: 3000
+clients:
+  - id: "prefill-heavy"
+    tenant_id: "batch-jobs"
+    slo_class: "batch"
+    rate_fraction: 1.0
+    streaming: false
+    arrival:
+      process: poisson
+    input_distribution:
+      type: lognormal
+      params:
+        mu: 8.16      # exp(8.16 + 0.4^2/2) ≈ 3800 mean
+        sigma: 0.4
+        min: 1000
+        max: 8000
+    output_distribution:
+      type: gaussian
+      params:
+        mean: 300
+        std_dev: 150
+        min: 50
+        max: 800
+    prefix_group: "prefill-heavy-system-prompt"
+    prefix_length: 500
