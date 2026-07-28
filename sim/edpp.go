@@ -1064,12 +1064,70 @@ func (d *EDPPDecider) decideJoint(req *Request, state *RouterState) Disaggregati
 	} else {
 		dec = DisaggregationDecision{Disaggregate: true, DecodePodOverride: best.dID, PrefillPodHint: best.pID}
 	}
+	// Stage C admission capture (pure instrumentation, gated; INV-6): snapshot the
+	// AdmissionContext(s) of the WINNING candidate so --edpp-admission-trace can recompute
+	// every estimator's prediction at end of run and compare it against the realized t_adm.
+	// Rebuilt from the same helpers the scoring pass used, after the argmin is committed, so
+	// it cannot influence the decision. Without this the joint rule emitted no admission
+	// records at all and the estimator's bias was unmeasurable under the policies we report.
+	if d.captureAdmissionCtx {
+		for _, ds := range decodeSnaps {
+			if ds.ID == best.dID {
+				dc := d.jointDecodeAdmissionCtx(ec, ds)
+				dec.AdmissionCtxDecode = &dc
+				break
+			}
+		}
+		if !best.local {
+			for _, ps := range prefillSnaps {
+				if ps.ID == best.pID {
+					pc := d.jointPrefillAdmissionCtx(ec, ps)
+					dec.AdmissionCtxPrefill = &pc
+					break
+				}
+			}
+		}
+	}
+
 	// Scorer-vs-joint divergence trace (pure instrumentation, gated; INV-6): compute only
 	// when enabled, after the decision is committed, so it can never influence the argmin.
 	if d.cfg.JointTraceEnabled {
 		dec.EDPPJointTrace = d.buildJointTrace(ec, state, decodeSnaps, prefillSnaps, best)
 	}
 	return dec
+}
+
+// jointDecodeAdmissionCtx builds the decode-pool AdmissionContext the joint rule feeds to the
+// t_adm estimator for candidate decode instance ds. Factored out of jointCandidateCost /
+// jointVaRComponents so the scoring paths and the --edpp-admission-trace capture below the
+// argmin cannot drift apart; the field values are unchanged (INV-6).
+func (d *EDPPDecider) jointDecodeAdmissionCtx(ec *jointEvalCtx, ds RoutingSnapshot) AdmissionContext {
+	thetaD := d.coeffsFor(ds.GPUType)
+	bDec, kv, sPfD := ds.BatchSize, ds.KvTokensInUse, ds.ResidentPrefillTokens
+	_, qdRaw := d.instWorkRaw(ds.ID)
+	return AdmissionContext{
+		QWork: qdRaw, Mu: thetaD.muDecode(bDec, kv, sPfD),
+		BatchSize: ds.BatchSize, MaxBatchSize: int(ds.MaxBatchSize),
+		FreeKVBlocks: ds.FreeKVBlocks, ReqKVNeed: ec.reqKVNeed,
+		TIter: thetaD.tIterDecode(bDec, kv, sPfD), QueueDepth: ds.QueueDepth,
+		AdmissionRate: admissionRateFromSnapshot(ds), RemainingStepsEst: d.decodeRemStepsEst(ds, ec.req.SLOClass),
+		Running: censorOracleRemaining(ds.RunningDecode),
+	}
+}
+
+// jointPrefillAdmissionCtx is the prefill-pool counterpart of jointDecodeAdmissionCtx.
+func (d *EDPPDecider) jointPrefillAdmissionCtx(ec *jointEvalCtx, ps RoutingSnapshot) AdmissionContext {
+	thetaP := d.coeffsFor(ps.GPUType)
+	qpRaw, _ := d.instWorkRaw(ps.ID)
+	sPfP := ps.ResidentPrefillTokens
+	return AdmissionContext{
+		QWork: qpRaw, Mu: thetaP.muPrefill(sPfP),
+		BatchSize: ps.BatchSize, MaxBatchSize: int(ps.MaxBatchSize),
+		FreeKVBlocks: ps.FreeKVBlocks, ReqKVNeed: ec.reqKVNeed,
+		TIter: thetaP.tIterPrefill(sPfP), QueueDepth: ps.QueueDepth,
+		AdmissionRate: admissionRateFromSnapshot(ps), RemainingStepsEst: d.prefillRemStepsEst(ps),
+		Running: ps.RunningPrefill,
+	}
 }
 
 // cand is one enumerated joint (decode, placement) candidate: local (prefill co-resident
@@ -1131,14 +1189,7 @@ func (d *EDPPDecider) jointCandidateCost(ec *jointEvalCtx, ds RoutingSnapshot, p
 	// herds onto the fast instance. Both the backlog and the placed work use this instance's W*_i.
 	wStarD := thetaD.muDNom(n.tauITL) * n.tauTTFT
 	qd := qdRaw / wStarD
-	decodeCtx := AdmissionContext{
-		QWork: qdRaw, Mu: thetaD.muDecode(bDec, kv, sPfD),
-		BatchSize: ds.BatchSize, MaxBatchSize: int(ds.MaxBatchSize),
-		FreeKVBlocks: ds.FreeKVBlocks, ReqKVNeed: ec.reqKVNeed,
-		TIter: tIterD, QueueDepth: ds.QueueDepth,
-		AdmissionRate: admissionRateFromSnapshot(ds), RemainingStepsEst: d.decodeRemStepsEst(ds, ec.req.SLOClass),
-		Running: censorOracleRemaining(ds.RunningDecode),
-	}
+	decodeCtx := d.jointDecodeAdmissionCtx(ec, ds)
 	tAdmD := d.tadmEstimator.EstimateTAdm(decodeCtx)
 
 	// Decode backlog term (same for local and disagg on this d — cancels within a d,
@@ -1185,14 +1236,7 @@ func (d *EDPPDecider) jointCandidateCost(ec *jointEvalCtx, ds RoutingSnapshot, p
 	qp := qpRaw / wStarP
 	sPfP := ps.ResidentPrefillTokens
 	tIterP := thetaP.tIterPrefill(sPfP)
-	prefillCtx := AdmissionContext{
-		QWork: qpRaw, Mu: thetaP.muPrefill(sPfP),
-		BatchSize: ps.BatchSize, MaxBatchSize: int(ps.MaxBatchSize),
-		FreeKVBlocks: ps.FreeKVBlocks, ReqKVNeed: ec.reqKVNeed,
-		TIter: tIterP, QueueDepth: ps.QueueDepth,
-		AdmissionRate: admissionRateFromSnapshot(*ps), RemainingStepsEst: d.prefillRemStepsEst(*ps),
-		Running: ps.RunningPrefill,
-	}
+	prefillCtx := d.jointPrefillAdmissionCtx(ec, *ps)
 	tAdmP := d.tadmEstimator.EstimateTAdm(prefillCtx)
 	cXferUs := d.cXferUsFor(ec.req) // flat CXferUs, or the size-aware transfer cost
 	// T̂_disagg: admission + prefill-pool iteration overhead + the request's OWN prefill work Wp
@@ -1262,18 +1306,8 @@ func (d *EDPPDecider) jointCandidateTTFT(ec *jointEvalCtx, ds RoutingSnapshot, p
 	apP := d.apForInstance(ec.req, ps.ID)
 	nChunksP, _ := d.chunkTerms(thetaP, apP)
 	wpP := thetaP.Wp(maxInt(apP, 0), len(ec.req.InputTokens))
-	qpRaw, _ := d.instWorkRaw(ps.ID)
-	sPfP := ps.ResidentPrefillTokens
-	tIterP := thetaP.tIterPrefill(sPfP)
-	prefillCtx := AdmissionContext{
-		QWork: qpRaw, Mu: thetaP.muPrefill(sPfP),
-		BatchSize: ps.BatchSize, MaxBatchSize: int(ps.MaxBatchSize),
-		FreeKVBlocks: ps.FreeKVBlocks, ReqKVNeed: ec.reqKVNeed,
-		TIter: tIterP, QueueDepth: ps.QueueDepth,
-		AdmissionRate: admissionRateFromSnapshot(*ps), RemainingStepsEst: d.prefillRemStepsEst(*ps),
-		Running: ps.RunningPrefill,
-	}
-	tAdmP := d.tadmEstimator.EstimateTAdm(prefillCtx)
+	tIterP := thetaP.tIterPrefill(ps.ResidentPrefillTokens)
+	tAdmP := d.tadmEstimator.EstimateTAdm(d.jointPrefillAdmissionCtx(ec, *ps))
 	cXferUs := d.cXferUsFor(ec.req)
 	return tAdmP + nChunksP*tIterP + wpP + cXferUs // T̂_disagg(d,p)
 }
@@ -1303,14 +1337,7 @@ func (d *EDPPDecider) jointVaRComponents(ec *jointEvalCtx, ds RoutingSnapshot, p
 	// herds onto the fast instance. Both the backlog and the placed work use this instance's W*_i.
 	wStarD := thetaD.muDNom(n.tauITL) * n.tauTTFT
 	qd := qdRaw / wStarD
-	decodeCtx := AdmissionContext{
-		QWork: qdRaw, Mu: thetaD.muDecode(bDec, kv, sPfD),
-		BatchSize: ds.BatchSize, MaxBatchSize: int(ds.MaxBatchSize),
-		FreeKVBlocks: ds.FreeKVBlocks, ReqKVNeed: ec.reqKVNeed,
-		TIter: tIterD, QueueDepth: ds.QueueDepth,
-		AdmissionRate: admissionRateFromSnapshot(ds), RemainingStepsEst: d.decodeRemStepsEst(ds, ec.req.SLOClass),
-		Running: censorOracleRemaining(ds.RunningDecode),
-	}
+	decodeCtx := d.jointDecodeAdmissionCtx(ec, ds)
 	tAdmD := d.tadmEstimator.EstimateTAdm(decodeCtx)
 	jDecodeBacklog := qd * (wd / wStarD)
 
@@ -1337,14 +1364,7 @@ func (d *EDPPDecider) jointVaRComponents(ec *jointEvalCtx, ds RoutingSnapshot, p
 	qp := qpRaw / wStarP
 	sPfP := ps.ResidentPrefillTokens
 	tIterP := thetaP.tIterPrefill(sPfP)
-	prefillCtx := AdmissionContext{
-		QWork: qpRaw, Mu: thetaP.muPrefill(sPfP),
-		BatchSize: ps.BatchSize, MaxBatchSize: int(ps.MaxBatchSize),
-		FreeKVBlocks: ps.FreeKVBlocks, ReqKVNeed: ec.reqKVNeed,
-		TIter: tIterP, QueueDepth: ps.QueueDepth,
-		AdmissionRate: admissionRateFromSnapshot(*ps), RemainingStepsEst: d.prefillRemStepsEst(*ps),
-		Running: ps.RunningPrefill,
-	}
+	prefillCtx := d.jointPrefillAdmissionCtx(ec, *ps)
 	tAdmP := d.tadmEstimator.EstimateTAdm(prefillCtx)
 	cXferUs := d.cXferUsFor(ec.req)
 	tHatDisagg := tAdmP + nChunksP*tIterP + wpP + cXferUs

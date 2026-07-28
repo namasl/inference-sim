@@ -152,6 +152,56 @@ the fix.
   against a fleet decode capacity of ~3.6 req/s — over-provisioned ~133×. Measured
   `prefill_t_adm` p99 is flat at 15.6 ms across the whole sweep.
 
+## Estimator bias on the collocated path (why lt-joint fails)
+
+Measured with `--edpp-admission-trace` under the joint policies (seed 42). The trace pairs
+each request's realized admission delay with what every estimator would have predicted from
+the AdmissionContext captured at decision time.
+
+**The collocated prediction is effectively a constant.** Across every rate and both policies
+the roll-forward predicts **16.9–17.5 ms**, with p50, p90, p99 and max all within 0.6 ms of
+each other. It does not move with load. The realized delay, meanwhile, grows a long tail.
+
+| rate | arm | realized p50 / p99 / max (ms) | predicted p50 / p99 / max (ms) | under-predicted |
+|---|---|---|---|---|
+| 2.1 | lt-joint | 24.1 / 32.4 / 1 289 | 16.9 / 17.1 / 17.2 | 92.2% |
+| 2.1 | dpvar | 24.3 / 32.3 / 126 | 16.9 / 17.1 / 17.2 | 90.5% |
+| 3.0 | lt-joint | 24.3 / 545 / 1 635 | 17.0 / 17.1 / 17.2 | 92.6% |
+| 3.0 | dpvar | 23.9 / 181 / 4 354 | 17.0 / 17.1 / 17.2 | 89.4% |
+| 3.5 | lt-joint | 25.1 / 1 133 / 3 134 | 17.1 / 17.2 / 17.2 | 91.4% |
+| 3.5 | dpvar | 25.5 / 8 691 / 18 072 | 17.0 / 17.3 / 17.5 | 93.2% |
+
+Bucketed by how large the true wait was (rate 3.0, `lt-joint`):
+
+| realized bucket | n | realized p50 | predicted p50 | pred / realized |
+|---|---|---|---|---|
+| < 52 ms (cheap) | 1612 | 24.1 | 17.0 | **0.71** |
+| 52–500 ms | 18 | 311.0 | 17.1 | **0.06** |
+| > 500 ms | 19 | 980.9 | 17.1 | **0.02** |
+
+So the estimator is ~30% low on the 98% of requests that are genuinely cheap, and **20–50×
+low on exactly the requests that cause the misses**. It never signals danger: it emits ~17 ms
+whether the true wait is 24 ms or one second. This is the snapshot blindness of the §IV
+validation, quantified on the collocated path — under-predicting on **92%** of requests at
+the knee, by **50×** on the tail.
+
+That explains the two policies' divergence without appealing to goodput. `lt-joint`'s entire
+objective is this estimate: it compares ~17 ms for collocating against ~52 ms for
+disaggregating, so it is structurally incapable of seeing the queue at any load, and it stays
+at 0% disaggregation through the knee. `dpvar` receives the *same* worthless estimate — its
+predicted column is identical — yet still moves 30% of traffic off the decode instance at the
+knee and 81% at 3.5, because the VaR term reads batch occupancy directly rather than a
+predicted delay. Confirming ablation: with the `good_r` credit switched off, plain VaR alone
+already produces 25.9% disaggregation at rate 3.0 against 29.8% with it, so VaR supplies the
+bulk of the switching signal and `good_r` refines *which* requests move (it adds ~4 points of
+disaggregation but lifts goodput from 0.9044 to 0.9932). Zeroing the congestion weight
+(`--edpp-var-congestion-weight 0`) changes the disaggregation fraction by nothing at all at
+any rate, so congestion is not involved.
+
+Caveat on the last row: `dpvar` at 3.5 shows the worst realized tail (8 691 ms p99) over only
+453 collocated requests. That is a selection effect — it has already moved 1 926 requests
+away, so the residue includes the few it misjudged. Its goodput there is still 0.9933.
+
 ## Fixes this table depends on
 
 1. **`awaitingFirstToken` leak (`sim/cluster/cluster.go`, `firstTokenKey`).** A PD request's
@@ -164,7 +214,15 @@ the fix.
    0.056 and 0 leaked. Fixing it **improved** `dpvar`: 0.9873 → 0.9932 at rate 3.0 and
    0.6132 → **0.6623** at rate 4.0. `always`, `kairos`, and `lt-joint` are unchanged, since
    none consumes the TTFT deficit term.
-2. **Deficit-queue logging** (`EDPPDeficitStats`, `ClusterSimulator.EDPPDeficitStats`, and an
+2. **Joint-path admission capture** (`jointDecodeAdmissionCtx` / `jointPrefillAdmissionCtx`
+   in `sim/edpp.go`, plus a capture below the argmin in `decideJoint`). `--edpp-admission-trace`
+   previously emitted *no records at all* under `--edpp-joint`, because only the non-joint
+   decide path populated `AdmissionCtxDecode`/`AdmissionCtxPrefill`. The estimator's bias was
+   therefore unmeasurable under every policy this study reports. The two context builders are
+   now factored into helpers shared by the scoring paths and the capture, so they cannot drift
+   apart, and the winning candidate's contexts are snapshotted after the argmin is committed
+   (gated on the existing capture flag, so it cannot influence the decision).
+3. **Deficit-queue logging** (`EDPPDeficitStats`, `ClusterSimulator.EDPPDeficitStats`, and an
    `EDPP_DEFICIT` line in `cmd`). Without it there was no way to tell whether the rule's
    time-average SLO constraints ever bound. They are what produced the `z_ttft` / `act` /
    `leak` columns, and they are how the leak was found.
@@ -207,6 +265,20 @@ for R in 1.5 2.1 2.5 3.0 3.5 4.0; do
   done
 done
 ```
+
+To reproduce the estimator-bias tables, add `--edpp-admission-trace <path>` to any of the
+EDPP arms (`kairos`, `lt-joint`, `dpvar`); it writes one row per pool per request with the
+realized `t_adm` and all six estimator predictions:
+
+```bash
+./blis run --log info --model meta-llama/llama-3.3-70b-instruct \
+  --workload-spec campaigns/edpp-study/specs/policy_curves/w_decode_3.0_42.yaml \
+  $TOPO $SLO $VVF --seed 42 \
+  --edpp-admission-trace /tmp/adm_dpvar_3.0.csv --metrics-path /tmp/adm_dpvar_3.0.json
+```
+
+Filter to `pool == "local"` for the collocated path. This requires the joint-path capture
+listed under the fixes above; before it the file came back empty for every joint policy.
 
 `--log info` is required: the `EDPP_DEFICIT` line is logged at info level to stderr (stdout
 stays deterministic per INV-6). The workload specs are committed under
