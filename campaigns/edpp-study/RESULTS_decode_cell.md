@@ -147,10 +147,11 @@ the fix.
   only. This is a deliberate definitional choice, recorded here because it means a
   disaggregating policy is measured more leniently on the TTFT dimension than a collocating
   one.
-- **The prefill pool never congests on this workload.** 32 of these 256-token prompts fit
-  in one 8192-token prefill iteration (~67 ms), giving ~477 req/s of prefill throughput
-  against a fleet decode capacity of ~3.6 req/s — over-provisioned ~133×. Measured
-  `prefill_t_adm` p99 is flat at 15.6 ms across the whole sweep.
+- **The prefill pool never congests on this workload.** Eight of these 256-token prompts fit
+  in one 2048-token prefill iteration costing ~29.2 ms, giving ~274 req/s of prefill
+  throughput against a fleet decode capacity of ~3.6 req/s — over-provisioned ~76×. Measured
+  `prefill_t_adm` is flat at 15.56 ms across the whole sweep, which is half an iteration
+  (14.6 ms): pure phase offset, with no queueing at all.
 
 ## Estimator bias on the collocated path (why lt-joint fails)
 
