@@ -88,6 +88,39 @@ are read anywhere, and the non-VaR arms never read them at all.
 Protocol constants live in `specs/grid_v2/cells.txt` (knee rate + baseline p99s per
 cell). Changing a cell means re-measuring its knee.
 
+## What is already on disk, and what you can reuse
+
+`out/` is git-ignored, so this only applies on the machine that produced it. As of
+commit `31ff9f2` the following exist locally, all produced **before** the per-instance
+`W*_i` fix in that same commit:
+
+| directory | state |
+|---|---|
+| `out/decomp/` | v2.1, complete — includes the heterogeneous **stress** rows `hetero_s10/s12/s14` |
+| `out/ratio_v2/` | v2.1, complete, 5 seeds |
+| `out/policy_curves/` | v2.1, partial (interrupted; `repro_policy_curves.sh` resumes by skipping existing metrics files) |
+| `out/topo_v2/` | v2.1, partial (interrupted; this harness does **not** resume — rerun clean) |
+| `out/grid_v2/` | only a 2-seed post-fix smoke of the decode cell; the 5-seed run was deleted |
+| `out/{grid_v2,policy_curves,decomp}_itl5x/` | archived runs at the earlier 5x ITL multiple, superseded |
+| `out/audit_2026-07-27/` | evidence for the audit that produced this protocol |
+
+**How much of the pre-fix data is still valid.** The `W*_i` fix touches only the
+congestion term, so it can only move an arm that evaluates congestion:
+
+- `never`, `always` — never enter EDPP scoring. Unaffected.
+- `kairos` — its own rule, no congestion term. Unaffected.
+- `lt-joint` — `jointCandidateTTFT` contains zero `wStar` references. Unaffected
+  (verified: ratio N=5.0 seed 42 gives 0.9938 both before and after the fix).
+- `dpvar` — affected, but only slightly in the cases checked (ratio N=5.0 seed 42:
+  0.9844 -> 0.9854).
+
+So pre-fix rows for the four non-`dpvar` arms can be reused as-is, and only `dpvar`
+needs regenerating. **The recommendation is still a clean re-run** of all five scripts:
+the old files also contain arms that are no longer in the policy set (least-TTFT,
+prefix-threshold, drift-plus-penalty, the oracle arm), and one consistent provenance is
+worth more than the saved hour. If you do reuse, delete the stale arm files first so
+`analyze/grid_v2_report.py` cannot pick them up.
+
 ## Known open items
 
 - **`main-full.tex` section V still describes the old policy set** (it names
