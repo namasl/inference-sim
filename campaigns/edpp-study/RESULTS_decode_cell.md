@@ -171,7 +171,7 @@ the fix.
 
 ## How to reproduce
 
-Requires the two fixes above (commit `dc5f5c1` or later on
+Requires the two fixes above (commit `f15e314` or later on
 `feat/edpp-estimator-validation`).
 
 ```bash
