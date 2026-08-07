@@ -3,6 +3,7 @@ package workload
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -312,7 +313,7 @@ func TestParseTraceRecord_InvalidInteger_ReturnsError(t *testing.T) {
 	}
 
 	// WHEN parsing
-	_, err := parseTraceRecord(row, false, false, -1)
+	_, err := parseTraceRecord(row, false, false, -1, -1)
 
 	// THEN error about invalid value
 	if err == nil {
@@ -331,7 +332,7 @@ func TestParseTraceRecord_InvalidDeadlineUs_ReturnsError(t *testing.T) {
 	}
 	row[17] = "not_a_number" // deadline_us column (shifted +1 by prefix_length)
 
-	_, err := parseTraceRecord(row, false, false, -1)
+	_, err := parseTraceRecord(row, false, false, -1, -1)
 
 	if err == nil {
 		t.Fatal("expected error for non-numeric deadline_us, got nil")
@@ -349,7 +350,7 @@ func TestParseTraceRecord_InvalidServerInputTokens_ReturnsError(t *testing.T) {
 	}
 	row[18] = "not_a_number" // server_input_tokens column (shifted +1)
 
-	_, err := parseTraceRecord(row, false, false, -1)
+	_, err := parseTraceRecord(row, false, false, -1, -1)
 
 	if err == nil {
 		t.Fatal("expected error for non-numeric server_input_tokens, got nil")
@@ -369,7 +370,7 @@ func TestParseTraceRecord_InvalidVLLMPriority_ReturnsError(t *testing.T) {
 	row[4] = "not_a_number" // vllm_priority column (index 4)
 
 	// WHEN parsing with hasVLLMPriority=true
-	_, err := parseTraceRecord(row, true, false, -1)
+	_, err := parseTraceRecord(row, true, false, -1, -1)
 
 	// THEN error about invalid value
 	if err == nil {
@@ -390,7 +391,7 @@ func TestParseTraceRecord_NegativeVLLMPriority_ReturnsError(t *testing.T) {
 	row[4] = "-1" // negative vllm_priority
 
 	// WHEN parsing with hasVLLMPriority=true
-	_, err := parseTraceRecord(row, true, false, -1)
+	_, err := parseTraceRecord(row, true, false, -1, -1)
 
 	// THEN error about negative value
 	if err == nil {
@@ -412,7 +413,7 @@ func TestParseTraceRecord_NegativeDeadlineUs_ReturnsError(t *testing.T) {
 	}
 	row[17] = "-1" // negative deadline_us (shifted +1)
 
-	_, err := parseTraceRecord(row, false, false, -1)
+	_, err := parseTraceRecord(row, false, false, -1, -1)
 
 	if err == nil {
 		t.Fatal("expected error for negative deadline_us, got nil")
@@ -431,7 +432,7 @@ func TestParseTraceRecord_NegativeInputTokens_ReturnsError(t *testing.T) {
 	}
 	row[9] = "-1" // input_tokens column (shifted +1)
 
-	_, err := parseTraceRecord(row, false, false, -1)
+	_, err := parseTraceRecord(row, false, false, -1, -1)
 
 	if err == nil {
 		t.Fatal("expected error for negative input_tokens, got nil")
@@ -450,7 +451,7 @@ func TestParseTraceRecord_NegativeOutputTokens_ReturnsError(t *testing.T) {
 	}
 	row[10] = "-1" // output_tokens column (shifted +1)
 
-	_, err := parseTraceRecord(row, false, false, -1)
+	_, err := parseTraceRecord(row, false, false, -1, -1)
 
 	if err == nil {
 		t.Fatal("expected error for negative output_tokens, got nil")
@@ -469,7 +470,7 @@ func TestParseTraceRecord_NegativeServerInputTokens_ReturnsError(t *testing.T) {
 	}
 	row[18] = "-1" // server_input_tokens column (shifted +1)
 
-	_, err := parseTraceRecord(row, false, false, -1)
+	_, err := parseTraceRecord(row, false, false, -1, -1)
 
 	if err == nil {
 		t.Fatal("expected error for negative server_input_tokens, got nil")
@@ -489,7 +490,7 @@ func TestParseTraceRecord_DeadlineBeforeArrival_ReturnsError(t *testing.T) {
 	row[17] = "1000" // deadline_us = 1000 (shifted +1)
 	row[19] = "5000" // arrival_time_us = 5000 (shifted +1)
 
-	_, err := parseTraceRecord(row, false, false, -1)
+	_, err := parseTraceRecord(row, false, false, -1, -1)
 
 	if err == nil {
 		t.Fatal("expected error for deadline before arrival, got nil")
@@ -518,7 +519,7 @@ func TestParseTraceRecord_InvalidReasonRatio_ReturnsError(t *testing.T) {
 		}
 		row[15] = tc.value // reason_ratio column (shifted +1)
 
-		_, err := parseTraceRecord(row, false, false, -1)
+		_, err := parseTraceRecord(row, false, false, -1, -1)
 
 		if err == nil {
 			t.Errorf("reason_ratio=%q: expected error, got nil", tc.value)
@@ -969,6 +970,138 @@ func TestRequestsToTraceRecords_VLLMPriority_AlwaysZero(t *testing.T) {
 				i, rec.VLLMPriority)
 		}
 	}
+}
+
+// TestTraceV2_Adapter_RoundTrip verifies that LoRA adapter identity survives the
+// full run→trace→replay round-trip (#1464 F1). A request carrying a non-empty
+// Adapter must be reconstructed by LoadTraceV2Requests with the same Adapter, and
+// the trace must omit the adapter column entirely for adapter-blind workloads so
+// the no-op default adds no columns (INV-6).
+func TestTraceV2_Adapter_RoundTrip(t *testing.T) {
+	t.Run("adapter preserved through export and replay reconstruction", func(t *testing.T) {
+		reqs := []*sim.Request{
+			{
+				ID:           "request_0",
+				State:        sim.StateCompleted,
+				InputTokens:  make([]sim.TokenID, 64),
+				OutputTokens: make([]sim.TokenID, 32),
+				ArrivalTime:  1000,
+				Adapter:      "sql-lora",
+			},
+			{
+				ID:           "request_1",
+				State:        sim.StateCompleted,
+				InputTokens:  make([]sim.TokenID, 48),
+				OutputTokens: make([]sim.TokenID, 16),
+				ArrivalTime:  2000,
+				Adapter:      "", // base-model-only
+			},
+		}
+
+		records := RequestsToTraceRecords(reqs)
+		if records[0].Adapter != "sql-lora" {
+			t.Fatalf("RequestsToTraceRecords dropped adapter: got %q, want %q", records[0].Adapter, "sql-lora")
+		}
+
+		dir := t.TempDir()
+		headerPath := filepath.Join(dir, "header.yaml")
+		dataPath := filepath.Join(dir, "data.csv")
+		header := &TraceHeader{Version: 2, TimeUnit: "us", Mode: "generated"}
+		if err := ExportTraceV2(header, records, headerPath, dataPath); err != nil {
+			t.Fatalf("ExportTraceV2: %v", err)
+		}
+
+		loaded, err := LoadTraceV2(headerPath, dataPath)
+		if err != nil {
+			t.Fatalf("LoadTraceV2: %v", err)
+		}
+		if loaded.Records[0].Adapter != "sql-lora" {
+			t.Errorf("TraceRecord round-trip: got adapter %q, want %q", loaded.Records[0].Adapter, "sql-lora")
+		}
+		if loaded.Records[1].Adapter != "" {
+			t.Errorf("base-model record: got adapter %q, want empty", loaded.Records[1].Adapter)
+		}
+
+		// The replay reconstruction path must restore Adapter onto the request.
+		replayed, err := LoadTraceV2Requests(loaded, 42)
+		if err != nil {
+			t.Fatalf("LoadTraceV2Requests: %v", err)
+		}
+		if len(replayed) != len(reqs) {
+			t.Fatalf("replayed request count: got %d, want %d", len(replayed), len(reqs))
+		}
+		if replayed[0].Adapter != "sql-lora" {
+			t.Errorf("replayed request adapter: got %q, want %q (INV-13 identity lost)", replayed[0].Adapter, "sql-lora")
+		}
+		if replayed[1].Adapter != "" {
+			t.Errorf("replayed base-model request adapter: got %q, want empty", replayed[1].Adapter)
+		}
+	})
+
+	t.Run("adapter threads through session round-0 request and blueprint", func(t *testing.T) {
+		// Two-round session; both rounds carry the same adapter. The blueprint
+		// drives follow-up rounds, so it must also carry the adapter (session.go
+		// applies bp.Adapter to each follow-up round request).
+		records := []TraceRecord{
+			{RequestID: 0, SessionID: "s1", RoundIndex: 0, InputTokens: 32, OutputTokens: 16, ArrivalTimeUs: 1000, Adapter: "sql-lora", Status: "ok"},
+			{RequestID: 1, SessionID: "s1", RoundIndex: 1, InputTokens: 24, OutputTokens: 8, ArrivalTimeUs: 5000, Adapter: "sql-lora", Status: "ok"},
+		}
+		dir := t.TempDir()
+		headerPath := filepath.Join(dir, "header.yaml")
+		dataPath := filepath.Join(dir, "data.csv")
+		header := &TraceHeader{Version: 2, TimeUnit: "us", Mode: "generated"}
+		if err := ExportTraceV2(header, records, headerPath, dataPath); err != nil {
+			t.Fatalf("ExportTraceV2: %v", err)
+		}
+		loaded, err := LoadTraceV2(headerPath, dataPath)
+		if err != nil {
+			t.Fatalf("LoadTraceV2: %v", err)
+		}
+
+		round0, blueprints, err := LoadTraceV2SessionBlueprints(loaded, 42, nil, 0)
+		if err != nil {
+			t.Fatalf("LoadTraceV2SessionBlueprints: %v", err)
+		}
+		if len(round0) != 1 || len(blueprints) != 1 {
+			t.Fatalf("got %d round-0 requests and %d blueprints, want 1 and 1", len(round0), len(blueprints))
+		}
+		if round0[0].Adapter != "sql-lora" {
+			t.Errorf("session round-0 request adapter: got %q, want %q", round0[0].Adapter, "sql-lora")
+		}
+		if blueprints[0].Adapter != "sql-lora" {
+			t.Errorf("session blueprint adapter: got %q, want %q (follow-up rounds would lose adapter)", blueprints[0].Adapter, "sql-lora")
+		}
+	})
+
+	t.Run("adapter-blind workload omits the adapter column (INV-6 no-op)", func(t *testing.T) {
+		reqs := []*sim.Request{
+			{
+				ID:           "request_0",
+				State:        sim.StateCompleted,
+				InputTokens:  make([]sim.TokenID, 64),
+				OutputTokens: make([]sim.TokenID, 32),
+				ArrivalTime:  1000,
+			},
+		}
+		records := RequestsToTraceRecords(reqs)
+
+		dir := t.TempDir()
+		headerPath := filepath.Join(dir, "header.yaml")
+		dataPath := filepath.Join(dir, "data.csv")
+		header := &TraceHeader{Version: 2, TimeUnit: "us", Mode: "generated"}
+		if err := ExportTraceV2(header, records, headerPath, dataPath); err != nil {
+			t.Fatalf("ExportTraceV2: %v", err)
+		}
+
+		data, err := os.ReadFile(dataPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		headerRow := strings.Split(string(data), "\n")[0]
+		if strings.Contains(headerRow, "adapter") {
+			t.Errorf("adapter column must be absent for adapter-blind workloads; header: %q", headerRow)
+		}
+	})
 }
 
 func TestTraceRecord_VLLMPriority_FieldExists(t *testing.T) {
@@ -1540,6 +1673,92 @@ func TestTraceRecordsToRequestMetrics_RateDeficitSemantics(t *testing.T) {
 	}
 	if rateDeficitCorrect == rateDeficitWrong {
 		t.Errorf("Correct and wrong totalArrivals should produce different rate_deficit values")
+	}
+}
+
+// TestExtractorParity_BuildOutputVsTraceRecords verifies the #1516 cross-command
+// parity requirement: the two saturation input adapters produce identical
+// (ArrivedAt, E2E, ID) triples for the same completed requests. run/replay derive
+// the triples from Metrics.CompletedRequestMetrics(); observe derives them from
+// TraceRecordsToRequestMetrics(RequestsToTraceRecords(...)). If they disagreed,
+// observe→replay traces would diverge (INV-13). The round-trip must preserve the
+// triple with the same rounding (ticks→ms via /1e3 vs (last-send)/1000) and the
+// same request-id form (request_<i>).
+func TestExtractorParity_BuildOutputVsTraceRecords(t *testing.T) {
+	// Build a set of completed requests with integer-millisecond E2Es so the two
+	// rounding paths (Metrics stores ticks; trace stores absolute µs timestamps)
+	// land on identical values. E2E in µs is a multiple of 1000.
+	type reqSpec struct {
+		id        int
+		arrivalUs int64
+		e2eUs     int64
+	}
+	specs := []reqSpec{
+		{0, 1_000_000, 150_000}, // arrive 1s, E2E 150ms
+		{1, 2_500_000, 300_000}, // arrive 2.5s, E2E 300ms
+		{2, 500_000, 50_000},    // arrive 0.5s, E2E 50ms (out of arrival order to exercise sort)
+	}
+
+	// --- run/replay side: build a sim.Metrics as the simulator would ---
+	m := &sim.Metrics{
+		Requests:     make(map[string]sim.RequestMetrics),
+		RequestE2Es:  make(map[string]float64),
+		RequestTTFTs: make(map[string]float64),
+	}
+	// --- observe side: build the equivalent completed sim.Requests for trace export ---
+	simReqs := make([]*sim.Request, 0, len(specs))
+	for _, s := range specs {
+		id := "request_" + strconv.Itoa(s.id)
+		m.CompletedRequests++
+		m.Requests[id] = sim.RequestMetrics{ID: id, ArrivedAt: float64(s.arrivalUs) / 1e6}
+		m.RequestE2Es[id] = float64(s.e2eUs) // ticks (µs); CompletedRequestMetrics divides by 1e3 → ms
+		m.RequestTTFTs[id] = 0
+
+		// A completed request whose full E2E lands in FirstTokenTime, so
+		// RequestsToTraceRecords computes LastChunkTimeUs = arrival + e2e and
+		// SendTimeUs = arrival (send time defaults to arrival in generated traces).
+		simReqs = append(simReqs, &sim.Request{
+			ID:             id,
+			ArrivalTime:    s.arrivalUs,
+			TTFTSet:        true,
+			FirstTokenTime: s.e2eUs,
+			ITL:            []int64{},
+			State:          sim.StateCompleted,
+		})
+	}
+
+	runSide := m.CompletedRequestMetrics()
+
+	records := RequestsToTraceRecords(simReqs)
+	// RequestsToTraceRecords sets SendTimeUs from arrival? Confirm the E2E it yields
+	// matches: observe computes E2E = (LastChunkTimeUs - SendTimeUs)/1000. For the
+	// parity to hold, SendTimeUs must equal ArrivalTimeUs for these generated
+	// records (no network send offset).
+	observeSide := TraceRecordsToRequestMetrics(records)
+
+	if len(runSide) != len(observeSide) {
+		t.Fatalf("triple count mismatch: run=%d observe=%d", len(runSide), len(observeSide))
+	}
+
+	// Index observe side by ID for order-independent comparison (run side is
+	// sorted by id; observe side follows trace-record order).
+	byID := make(map[string]sim.RequestMetrics, len(observeSide))
+	for _, o := range observeSide {
+		byID[o.ID] = o
+	}
+
+	for _, r := range runSide {
+		o, ok := byID[r.ID]
+		if !ok {
+			t.Errorf("run-side id %q missing from observe side", r.ID)
+			continue
+		}
+		if r.ArrivedAt != o.ArrivedAt {
+			t.Errorf("id %q: ArrivedAt run=%v observe=%v", r.ID, r.ArrivedAt, o.ArrivedAt)
+		}
+		if r.E2E != o.E2E {
+			t.Errorf("id %q: E2E run=%v observe=%v", r.ID, r.E2E, o.E2E)
+		}
 	}
 }
 

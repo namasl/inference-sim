@@ -351,13 +351,22 @@ func NewClusterSimulator(config DeploymentConfig, requestSource RequestSource, o
 				simCfg.HWConfig = hc
 			}
 			// Phase 1C: look up CostPerHour for this matched GPU type (issue #692).
+			// Also capture the pool's GPU memory for per-instance KV auto-calc (#1522).
 			var poolCostPerHour float64
+			var poolGPUMemoryGiB float64
 			for i := range config.NodePools {
 				if config.NodePools[i].GPUType == matchedGPUType {
 					poolCostPerHour = config.NodePools[i].CostPerHour
+					poolGPUMemoryGiB = config.NodePools[i].GPUMemoryGiB
 					break
 				}
 			}
+			// Issue #1522: recompute KV-block capacity from the ACTUAL placed GPU
+			// memory so a mixed-GPU pool no longer forces every instance onto the
+			// global capacity. Runs after the HWConfigByGPU execution-calibration
+			// override above, giving the placed GPU authority over KV capacity too.
+			// No-op when KVAutoCalc.Enabled is false (INV-6).
+			applyPerInstanceKVCapacity(&simCfg, poolGPUMemoryGiB, config.KVAutoCalc, matchedGPUType)
 			inst := NewInstanceSimulator(id, simCfg)
 			inst.Model = config.Model
 			inst.nodeID = nodeID
@@ -1709,6 +1718,17 @@ func (c *ClusterSimulator) aggregateMetrics() *sim.Metrics {
 		}
 		merged.AllITLs = append(merged.AllITLs, m.AllITLs...)
 		merged.RequestStepCounters = append(merged.RequestStepCounters, m.RequestStepCounters...)
+
+		// Per-adapter resident-set counts are keyed by adapter id, which — unlike the
+		// globally-unique request ids above — legitimately recurs across instances (the
+		// same adapter can be loaded on many instances). Sum them for a cluster-wide
+		// total per adapter rather than merging (which would warn and overwrite).
+		for k, v := range m.AdapterLoadCounts {
+			merged.AdapterLoadCounts[k] += v
+		}
+		for k, v := range m.AdapterEvictionCounts {
+			merged.AdapterEvictionCounts[k] += v
+		}
 		merged.PreemptionCount += m.PreemptionCount
 		merged.KVAllocationFailures += m.KVAllocationFailures
 		merged.DroppedUnservable += m.DroppedUnservable
@@ -1778,45 +1798,184 @@ func (c *ClusterSimulator) projectPDMetrics() {
 		pid := parent.ID              // "req_N"
 		completed := parent.CompletionTime > 0 && parent.DecodeInstanceID != ""
 
-		// E2E = parent.CompletionTime - parent.ArrivalTime
-		// (arrival → prefill → transfer → decode → completion).
+		// Read the decode sub-request's own per-instance measurements before the
+		// per-metric delete/rekey blocks below consume them (R1: no silent data
+		// loss). Both the E2E fix (issue #1513) and the TTFT fix (issue #1510) are
+		// built from these instance-frame values:
+		//   - decodeDelay  = RequestSchedulingDelays[dec] = arrival → decode-schedule span
+		//   - decodeOwnE2E = RequestE2Es[dec]             = decode-schedule → completion span
+		// Because the decode sub-request's ArrivalTime is the parent's original
+		// arrival (pd_events.go), decodeDelay spans prefill_queue + prefill_step +
+		// kv_transfer + decode_queue_wait. RequestSchedulingDelays[dec] is not
+		// deleted until the scheduling-delay block below; read it here so the E2E
+		// and TTFT blocks share one value.
+		decodeDelay, hasDecodeDelay := m.RequestSchedulingDelays[dec]
+		decodeOwnE2E, hasDecodeOwnE2E := m.RequestE2Es[dec]
+
+		// E2E: user-visible arrival → last-token span for PD disaggregation
+		// (issue #1513). The decode sub-request's own per-instance E2E
+		// (decodeOwnE2E = FirstTokenTime + Σ ITL + PostDecodeFixedOverhead, all
+		// measured relative to the decode sub-request's ArrivalTime = the parent's
+		// original arrival, pd_events.go) correctly captures the decode execution
+		// span INCLUDING the decode step's own advance. Two clock frames apply,
+		// discriminated by whether the decode sub-request ever ran prefill:
+		//
+		//   - Normal PD decode sub-request: it starts at ProgressIndex == InputLen
+		//     (batch_formation.go), so the FirstTokenTime block (simulator.go) never
+		//     fires and FirstTokenTime stays 0. Its own E2E is therefore measured
+		//     from the decode SCHEDULE instant and omits the arrival → decode-schedule
+		//     wait. Add decodeDelay to reconstitute the full arrival → completion span:
+		//
+		//       E2E = decodeSchedulingDelay + decodeOwnE2E
+		//
+		//   - Preempted-and-re-prefilled decode sub-request: preemption resets
+		//     ProgressIndex to 0 and clears TTFTSet (batch_formation.go), so on
+		//     re-prefill the FirstTokenTime block fires and stamps FirstTokenTime as
+		//     an ARRIVAL-relative offset (simulator.go: now + step + OTPT − ArrivalTime).
+		//     decodeOwnE2E is then ALREADY the full arrival → completion span, and
+		//     decodeDelay (re-stamped to reschedule − arrival on re-admission,
+		//     simulator.go) must NOT be added or E2E double-counts the pre-decode wait.
+		//     Discriminate on FirstTokenTime != 0 and use decodeOwnE2E directly.
+		//
+		// On the primary path this is the E2E-analog of the TTFT fix below and
+		// guarantees INV-5 by construction: decodeOwnE2E ≥ ITL[0] = firstDecodeStep,
+		// so E2E ≥ TTFT. (The fallback branch below inherits the pre-#1513
+		// parent.CompletionTime-based value; INV-5 there is not guaranteed by
+		// construction — e.g. a decode sub-request that emits a first token and then
+		// times out mid-generation takes the TTFT primary path but the E2E fallback,
+		// so a deadline landing inside the post-first-token OTPT window can leave
+		// TTFT slightly above E2E. This is unchanged from main and orthogonal to the
+		// short-output under-count fixed here; tracked with the other drop/timeout
+		// edge cases in issue #1511.)
+		//
+		// The previous formula (parent.CompletionTime − ArrivalTime) under-counted:
+		// parent.CompletionTime is stamped on the CLUSTER clock at the
+		// completion-DETECTION tick (detectDecodeCompletions) and omits the decode
+		// step's own advance, so for short outputs the reported E2E fell below a
+		// single decode step (ITL[0]) — and below the parent TTFT — violating INV-5.
+		//
+		// parentE2E / haveParentE2E are captured for reuse by the completion-time
+		// block below (metric consistency: completion == arrival + E2E).
 		delete(m.RequestE2Es, pfx)
 		delete(m.RequestE2Es, dec)
+		var parentE2E float64
+		var haveParentE2E bool
 		if completed {
-			e2e := parent.CompletionTime - parent.ArrivalTime
-			if e2e < 0 {
-				// INV-3/INV-5 violation: completion before arrival. Should never occur
-				// after the clusterTime fix in EnqueueDecodeSubRequest.
-				logrus.Errorf("[cluster] projectPDMetrics: negative E2E for %s (completionTime=%d arrivalTime=%d); skipping",
-					pid, parent.CompletionTime, parent.ArrivalTime)
+			if hasDecodeDelay && hasDecodeOwnE2E {
+				// decodeOwnE2E is schedule-relative on the normal path (FirstTokenTime
+				// unset) and arrival-relative after a re-prefill (FirstTokenTime set);
+				// only add decodeDelay in the former case (issue #1513 preemption fix).
+				e2e := decodeOwnE2E
+				preempted := parent.DecodeSubReq != nil && parent.DecodeSubReq.FirstTokenTime != 0
+				if !preempted {
+					e2e += float64(decodeDelay)
+				}
+				if e2e < 0 {
+					// Defensive parity with the TTFT block: never emit a negative E2E
+					// (a headline SLO metric). Unreachable in normal operation
+					// (decodeDelay ≥ 0 by shared-clock event ordering, decodeOwnE2E > 0),
+					// but guards a hypothetical clock regression rather than silently
+					// reporting a negative value.
+					logrus.Errorf("[cluster] projectPDMetrics: negative reconstructed E2E for %s (decodeDelay=%d decodeOwnE2E=%.0f preempted=%v); skipping",
+						pid, decodeDelay, decodeOwnE2E, preempted)
+				} else {
+					parentE2E = e2e
+					haveParentE2E = true
+				}
 			} else {
-				m.RequestE2Es[pid] = float64(e2e)
+				// Fallback: decode-side metrics unavailable. A drop-at-transfer-start
+				// or late-drop parent (issue #1511) nils DecodeSubReq before the decode
+				// sub-request runs, so it recorded neither an own E2E nor a scheduling
+				// delay; a decode sub-request that timed out while still queued likewise
+				// has no recorded own E2E. Use the parent.CompletionTime-based value
+				// (cluster clock), matching the pre-#1513 behavior for these edge cases
+				// (no regression).
+				e2e := parent.CompletionTime - parent.ArrivalTime
+				if e2e < 0 {
+					// INV-3/INV-5 violation: completion before arrival. Should never occur
+					// after the clusterTime fix in EnqueueDecodeSubRequest.
+					logrus.Errorf("[cluster] projectPDMetrics: negative E2E for %s (completionTime=%d arrivalTime=%d); skipping",
+						pid, parent.CompletionTime, parent.ArrivalTime)
+				} else {
+					parentE2E = float64(e2e)
+					haveParentE2E = true
+				}
+			}
+			if haveParentE2E {
+				m.RequestE2Es[pid] = parentE2E
 			}
 		}
 
-		// TTFT: user-visible time-to-first-token for PD disaggregation.
-		// In llm-d, the first token reaches the user from the decode pod, not
-		// prefill: prefill completes → KV transfers → decode pod recomputes last
-		// prompt token and samples first output token. User-visible TTFT =
-		// prefillTTFT + transferDuration + firstDecodeStep. See issue #930.
+		// TTFT: user-visible time-to-first-token for PD disaggregation (issue #1510,
+		// correcting the earlier #930 composition). In llm-d the first token reaches the
+		// user from the decode pod, not prefill: prefill completes → KV transfers →
+		// decode pod queues, recomputes the last prompt token, and samples the first
+		// output token. The correct user-visible TTFT is the arrival → first-token-emitted
+		// span:
+		//
+		//   TTFT = decodeSchedulingDelay + firstDecodeStep
+		//
+		// where decodeSchedulingDelay = RequestSchedulingDelays[decodeSubReqID] = the
+		// decode sub-request's (schedule − arrival). Because the decode sub-request's
+		// ArrivalTime is the parent's original arrival time (pd_events.go), that delay
+		// already spans prefill_queue + prefill_step + kv_transfer + decode_queue_wait —
+		// including the decode-queue wait that the previous
+		// (prefillTTFT + transferDuration + firstDecodeStep) formula omitted. It also
+		// carries exactly ONE OutputTokenProcessingTime: prefillTTFT (dropped here) held a
+		// second, phantom copy; firstDecodeStep = ITL[0] contributes the single legitimate
+		// one (the decode pod streams the first real token exactly once). This is
+		// structurally identical to the non-PD TTFT (scheduling_delay + first-token step).
 		//
 		// Read prefill TTFT before deleting sub-request keys (R1: no silent data loss).
-		// Gate on completed: dropped-request TTFTs must not enter the distribution.
+		// prefillTTFT is retained as the TTFTSum baseline: pre-projection TTFTSum holds
+		// exactly prefillTTFT for this parent (the decode sub-request never sets
+		// FirstTokenTime, so it contributes 0). decodeDelay/hasDecodeDelay were read
+		// above (shared with the E2E block); RequestSchedulingDelays[dec] is not
+		// deleted until the scheduling-delay block below.
+		//
+		// Gate on `completed` (CompletionTime > 0 && DecodeInstanceID != ""). A
+		// late-drop (decode pod unroutable at transfer complete) leaves DecodeInstanceID
+		// set but nils DecodeSubReq, so it fails the primary guard and takes the
+		// prefill-only fallback. NOTE: a drop-at-transfer-start parent is still
+		// `completed == true` (DecodeInstanceID is set upfront at routing and dropAtStart
+		// stamps CompletionTime), so it too receives a prefill-only TTFT here — a
+		// pre-existing behavior unchanged by this fix (the old guard also routed these to
+		// the same fallback). Tracked separately in issue #1511.
 		prefillTTFT, hasPrefillTTFT := m.RequestTTFTs[pfx]
 		delete(m.RequestTTFTs, pfx)
 		delete(m.RequestTTFTs, dec)
 		if completed {
-			if hasPrefillTTFT && parent.TransferStartTime > 0 && parent.TransferCompleteTime >= parent.TransferStartTime && parent.DecodeSubReq != nil && len(parent.DecodeSubReq.ITL) > 0 {
-				transferDuration := float64(parent.TransferCompleteTime - parent.TransferStartTime)
+			// A decode sub-request that emitted a first token and THEN timed out mid-generation
+			// still has a recorded scheduling delay and a non-empty ITL, so it takes this
+			// primary branch and reports a real TTFT. That is intentional and correct: the user
+			// did receive that first token, so its arrival→first-token span is a genuine
+			// measurement (INV-5 holds — the first token preceded the timeout ≤ completion). A
+			// decode sub-request that timed out while still queued has an empty ITL and falls to
+			// the prefill fallback below. Both match the pre-#1510 behavior.
+			if hasPrefillTTFT && hasDecodeDelay && parent.DecodeSubReq != nil && len(parent.DecodeSubReq.ITL) > 0 {
 				firstDecodeStep := float64(parent.DecodeSubReq.ITL[0])
-				newTTFT := prefillTTFT + transferDuration + firstDecodeStep
-				m.RequestTTFTs[pid] = newTTFT
-				// BC-3: Keep TTFTSum consistent with the TTFT adjustment.
-				m.TTFTSum += int64(newTTFT - prefillTTFT)
+				newTTFT := float64(decodeDelay) + firstDecodeStep
+				if newTTFT < 0 {
+					// Defensive parity with the E2E block above: never emit a negative
+					// TTFT (a headline SLO metric). Unreachable in normal operation —
+					// decodeDelay ≥ 0 by shared-clock event ordering and firstDecodeStep > 0
+					// — but guards against a hypothetical clock regression rather than
+					// silently reporting a negative value.
+					logrus.Errorf("[cluster] projectPDMetrics: negative TTFT for %s (decodeDelay=%d firstDecodeStep=%.0f); using prefill TTFT",
+						pid, decodeDelay, firstDecodeStep)
+					m.RequestTTFTs[pid] = prefillTTFT // delta 0 vs baseline: TTFTSum untouched
+				} else {
+					m.RequestTTFTs[pid] = newTTFT
+					// BC-3: Keep TTFTSum consistent with the TTFT adjustment. The baseline
+					// prefillTTFT is replaced by newTTFT for this parent.
+					m.TTFTSum += int64(newTTFT - prefillTTFT)
+				}
 			} else if hasPrefillTTFT {
-				// Defensive fallback: use prefill-only TTFT if decode data unavailable.
+				// Defensive fallback: use prefill-only TTFT if decode data unavailable
+				// (no decode scheduling delay, nil DecodeSubReq, or empty ITL). TTFTSum
+				// unchanged (projected value equals the baseline).
 				m.RequestTTFTs[pid] = prefillTTFT
-				logrus.Warnf("[cluster] projectPDMetrics: parent %s missing decode ITL or TransferCompleteTime; using prefill TTFT", pid)
+				logrus.Warnf("[cluster] projectPDMetrics: parent %s missing decode scheduling delay, DecodeSubReq, or ITL; using prefill TTFT", pid)
 			} else {
 				logrus.Warnf("[cluster] projectPDMetrics: completed parent %s has no prefill TTFT (key %s)", pid, pfx)
 			}
@@ -1851,11 +2010,24 @@ func (c *ClusterSimulator) projectPDMetrics() {
 			m.RequestITLs[pid] = decodeITL
 		}
 
-		// Completion time from parent lifecycle tracking.
+		// Completion-time METRIC. Kept consistent with the projected E2E so the
+		// non-PD identity completion_metric == ArrivalTime + E2E holds (non-PD sets
+		// both from the same `lat`, simulator.go). Without this, the E2E fix (issue
+		// #1513) and the parent.CompletionTime-based completion metric would disagree
+		// by the decode step advance, and computeSessionMetrics (metrics.go), which
+		// derives session duration from RequestCompletionTimes, would inherit the same
+		// under-count.
+		//
+		// This adjusts only the METRIC, not the lifecycle field parent.CompletionTime,
+		// which is intentionally left untouched: it drives session follow-up arrival
+		// scheduling (sessionCallback in detectDecodeCompletions) and phase-causality
+		// checks (INV-10). When the E2E fallback is taken (decode-side metrics
+		// unavailable), parentE2E already derives from parent.CompletionTime, so this
+		// reduces to the pre-#1513 value for those edge cases.
 		delete(m.RequestCompletionTimes, pfx)
 		delete(m.RequestCompletionTimes, dec)
-		if completed {
-			m.RequestCompletionTimes[pid] = float64(parent.CompletionTime)
+		if completed && haveParentE2E {
+			m.RequestCompletionTimes[pid] = float64(parent.ArrivalTime) + parentE2E
 		}
 	}
 }

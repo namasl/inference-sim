@@ -54,7 +54,17 @@ type InstanceSimulator struct {
 func NewInstanceSimulator(id InstanceID, cfg sim.SimConfig) *InstanceSimulator {
 	// Create KV store (single-tier or tiered based on config)
 	kvStore := kv.NewKVStore(cfg.KVCacheConfig)
-	latencyModel, err := latency.NewLatencyModel(cfg.LatencyCoeffs, cfg.ModelHardwareConfig)
+	// Build the LoRA adapter-cost accessor (nil when the subsystem is inert) and
+	// supply it to the latency model at construction so the per-step compute
+	// overhead applies to both backends (#1467, R23). BuildAdapterCost is pure and
+	// stateless; sim.NewSimulator (called below) builds its own instance for the
+	// cold-load gate from the same config — two behaviorally identical accessors,
+	// no shared state. A nil accessor leaves StepTime byte-identical to pre-feature (INV-6).
+	adapterCost, err := sim.BuildAdapterCost(cfg)
+	if err != nil {
+		panic(fmt.Sprintf("NewInstanceSimulator(%s): adapter cost model: %v", id, err))
+	}
+	latencyModel, err := latency.NewLatencyModel(cfg.LatencyCoeffs, cfg.ModelHardwareConfig, latency.WithAdapterCost(adapterCost))
 	if err != nil {
 		panic(fmt.Sprintf("NewInstanceSimulator(%s): NewLatencyModel: %v", id, err))
 	}
@@ -155,6 +165,16 @@ func (i *InstanceSimulator) QueueDepth() int {
 // BatchSize returns the number of requests in the running batch, or 0 if nil.
 func (i *InstanceSimulator) BatchSize() int {
 	return i.sim.BatchSize()
+}
+
+// ResidentAdapterIDs returns the ids of LoRA adapters currently resident on this
+// instance, or nil when the LoRA subsystem is inert. Read by the snapshot provider
+// to populate RoutingSnapshot.ResidentAdapters for the lora-affinity scorer (#1469).
+func (i *InstanceSimulator) ResidentAdapterIDs() []string {
+	if i.sim == nil {
+		return nil
+	}
+	return i.sim.ResidentAdapterIDs()
 }
 
 // KVUtilization returns the fraction of KV cache blocks in use.
@@ -477,6 +497,10 @@ func (i *InstanceSimulator) DrainWaitQueue() []*sim.Request {
 func (i *InstanceSimulator) EvictRequest(req *sim.Request) bool {
 	if i.sim.WaitQ.Remove(req) {
 		i.sim.KVCache.ReleaseKVBlocks(req)
+		// Release the LoRA adapter pin (#1466): a queued request is not pinned, so
+		// this is a no-op here, but calling it keeps eviction symmetric with the
+		// running-batch branch below and robust if pinning semantics change.
+		i.sim.ReleaseAdapterPin(req)
 		req.State = sim.StateCompleted
 		return true
 	}
@@ -488,6 +512,11 @@ func (i *InstanceSimulator) EvictRequest(req *sim.Request) bool {
 					i.sim.RunningBatch.Requests[idx+1:]...,
 				)
 				i.sim.KVCache.ReleaseKVBlocks(req)
+				// Release the LoRA adapter pin (#1466): a running request WAS pinned
+				// on batch entry, and this gateway eviction is a terminal path outside
+				// completion/timeout, so it must free the slot or the pin leaks and
+				// eventually stalls all cold loads on this instance (INV-L5).
+				i.sim.ReleaseAdapterPin(req)
 				req.State = sim.StateCompleted
 				if len(i.sim.RunningBatch.Requests) == 0 {
 					i.sim.RunningBatch = nil

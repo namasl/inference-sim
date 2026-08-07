@@ -114,6 +114,15 @@ go build -o blis main.go
 ./blis calibrate --trace-header t.yaml --trace-data d.csv --sim-results results.json \
   --slo-ttft "critical=100ms" --slo-e2e "critical=5s" --report calibration.json
 
+# Compare LoRA adapter-cost fidelity vs a Digital Twin reference (#1470, US5).
+# Standalone mode: BLIS aggregate (from blis run --metrics-path) vs a committed DT
+# reference (per-config adapter_aware/adapter_blind), per-metric MAPE on TTFT +
+# throughput. --sim-metrics-blind enables the delta-normalized (aware/blind)
+# diagnostic that isolates the ported adapter physics. Does not use --trace-*.
+./blis calibrate --adapter-reference dt-ref.json \
+  --sim-metrics aware.json --sim-metrics-blind blind.json \
+  --adapter-mape-threshold 0.20 --report adapter-fidelity.json
+
 # Run with lazy request generation (alpha, #1441). Streams requests from the
 # workload generator into the cluster instead of pre-generating the full
 # slice — reduces peak generator memory from O(total_requests) to the
@@ -188,30 +197,36 @@ go build -o blis main.go
 ./blis run --model qwen/qwen3-14b --flow-control --saturation-detector utilization \
   --queue-depth-threshold 5 --kv-cache-util-threshold 0.8 --in-flight-eviction
 
-# Run with post-hoc saturation detection (composite detector, #1369)
-./blis run --model qwen/qwen3-14b --post-hoc-detector composite
+# Run with a single saturation detector, writing its per-event verdict trace (#1516).
+# --detectors takes EXACTLY ONE of composite, threshold, backlog-drift (empty = off;
+# "all"/comma-lists error — the bank is #1519). --saturation-report writes a
+# {"trace":[...]} JSON file (one record per event). Nothing saturation-related goes
+# to stdout (the final label returns in #1517).
+./blis run --model qwen/qwen3-14b --detectors composite --saturation-report sat.json
 
-# Run with post-hoc saturation detection (threshold detector with custom threshold)
-./blis run --model qwen/qwen3-14b --post-hoc-detector threshold --saturation-threshold-ms 3000
+# Tune a detector via a strict-YAML config file (#1516). composite has no params
+# (a composite: block errors). threshold has one knob; backlog-drift mirrors
+# workload.BacklogDriftConfig. The config must carry ONLY the selected detector's
+# block — a block for another detector errors (no silent drop). Absent block =
+# defaults; partial block overrides only named fields; unknown key / bad value
+# errors naming the field.
+cat > sat-config.yaml <<'YAML'
+backlog_drift:
+  window_size_sec: 30
+  min_windows: 5
+YAML
+./blis run --model qwen/qwen3-14b --detectors backlog-drift \
+  --saturation-config sat-config.yaml --saturation-report sat.json
 
-# Replay with post-hoc saturation detection
+# Replay writes the same {"trace":[...]} format (run→replay byte-identical, INV-13)
 ./blis replay --trace-header t.yaml --trace-data d.csv --model qwen/qwen3-14b \
-  --post-hoc-detector composite
+  --detectors composite --saturation-report sat.json
 
-# Observe with post-hoc saturation detection - stdout JSON (interactive, #1379)
+# Observe writes the same format over REAL-server latencies (same pipeline,
+# different input; #1516)
 ./blis observe --server-url http://localhost:8000 --model qwen/qwen3-14b \
   --workload-spec workload.yaml --trace-header trace.yaml --trace-data trace.csv \
-  --post-hoc-detector composite
-
-# Observe with post-hoc saturation detection - file output (cluster pods, #1379)
-./blis observe --server-url http://localhost:8000 --model qwen/qwen3-14b \
-  --rate 10 --num-requests 100 --trace-header trace.yaml --trace-data trace.csv \
-  --post-hoc-detector composite --saturation-report saturation.json
-
-# Observe with backlog-drift detector - file output (run/replay parity)
-./blis observe --server-url http://localhost:8000 --model qwen/qwen3-14b \
-  --workload-spec workload.yaml --trace-header trace.yaml --trace-data trace.csv \
-  --saturation-report saturation.json
+  --detectors backlog-drift --saturation-report sat.json
 ```
 
 ## Testing
@@ -320,7 +335,9 @@ Full details: see [`docs/contributing/standards/principles.md`](docs/contributin
 
 ### Current Implementation Focus
 
-Composable Scorer Framework completed: PR17 (scorer framework + stateless scorers) and PR18 (prefix-affinity scorer + router-side cache). Default weighted routing profile: `precise-prefix-cache:2,queue-depth:1,kv-utilization:1` (llm-d parity). Precise prefix scoring (#883): `precise-prefix-cache` scorer queries actual instance KV cache state with min-max normalization (llm-d production parity); `no-hit-lru` scorer distributes cold requests to least-recently-used endpoints. Valid scorer names: `prefix-affinity`, `precise-prefix-cache`, `no-hit-lru`, `queue-depth`, `kv-utilization`, `load-balance`, `active-requests`, `running-requests`, `load-aware`, `vllm-dp`.
+Composable Scorer Framework completed: PR17 (scorer framework + stateless scorers) and PR18 (prefix-affinity scorer + router-side cache). Default weighted routing profile: `precise-prefix-cache:2,queue-depth:1,kv-utilization:1` (llm-d parity). Precise prefix scoring (#883): `precise-prefix-cache` scorer queries actual instance KV cache state with min-max normalization (llm-d production parity); `no-hit-lru` scorer distributes cold requests to least-recently-used endpoints. Valid scorer names: `prefix-affinity`, `precise-prefix-cache`, `no-hit-lru`, `queue-depth`, `kv-utilization`, `load-balance`, `active-requests`, `running-requests`, `load-aware`, `vllm-dp`, `lora-affinity` (#1469, off by default; scores instances with the request's adapter already resident higher, min-max normalized).
+
+LoRA control-plane subsystem (#1464, epic PRs 1–7): adapter identity + pre-declared `id→rank` registry, per-instance resident set (capacity-bounded LRU), three DT-derived cost terms (cold-load latency, per-step compute overhead, static HBM reservation), the `lora-affinity` scorer, and per-adapter metrics. No-op by default (`lora:` absent ⇒ byte-identical output, INV-6). Adapter ids round-trip through TraceV2 (trailing conditional `adapter` column) for run/replay parity (INV-13). Fidelity vs the Agullo Digital Twin (#1470, `blis calibrate --adapter-reference`): the compute-overhead (throughput) term validates ≤20% MAPE for both calibrated configs (Llama-3.1-8B-Instruct, Qwen-2.5-7B-Instruct); the absolute-TTFT leg is bounded but unsupported (BLIS ports adapter *deltas* onto its own separately-calibrated base, which differs from the DT's H100 base fit) — reported honestly, never silently passed.
 
 Phase 0 workload unification complete (see issue #420): W0-1 (spec v2 schema + SLO tiers), W0-2 (binary rename + converters), W0-3 (cohort population dynamics), W0-4 (legacy retirement). All workload generation now flows through `sim/workload/GenerateRequests()`. SLO tiers: critical, standard, sheddable, batch, background. Arrival processes: poisson, gamma, weibull, constant. CLI binary renamed from `simulation_worker` to `blis`.
 
@@ -396,40 +413,50 @@ Speckit does not affect Go build, test, or lint. All `.specify/` artifacts are o
 
 ## Post-Hoc Saturation Detection
 
-BLIS includes post-hoc saturation detection for analyzing completed simulation runs (#1369). This is distinct from the real-time flow control saturation detector used for admission control.
+BLIS includes post-hoc saturation detection for analyzing completed runs. This is distinct from the real-time flow control saturation detector used for admission control.
 
 **Package**: `sim/saturation/`
 
-**Detectors**:
-- **composite**: Combines rate deficit (1 - completions/arrivals) and latency trend (second-half vs first-half mean). Zero parameters. Classifies as STABLE (score < 0.5), BACKLOGGED (0.5 ≤ score < 0.75), or OVERLOADED (score ≥ 0.75).
-- **threshold**: Simple mean E2E latency comparison. Configurable threshold (default 5000ms). STABLE when mean < threshold, OVERLOADED when mean > threshold.
-- **none**: No-op detector (default). Always returns STABLE with zero score.
+**Streaming detectors** (all stream via `Observe`/`Detect`; the batch `Classify` path was removed in #1516):
+- **composite**: Combines rate deficit (1 - completions/arrivals) and a quartile-filtered latency trend. Zero parameters (a `composite:` config block errors). STABLE / BACKLOGGED / OVERLOADED by score vs a 1/√arrivals noise floor.
+- **threshold**: Mean E2E latency vs a configurable threshold (default 5000ms). STABLE when mean < threshold, OVERLOADED when mean > threshold.
+- **backlog-drift**: Online OLS slope of in-flight over a trailing window (became streaming in #1515), banded against the noise floor.
 
-**CLI flags** (available on `run`, `observe`, `replay`):
-- `--post-hoc-detector <name>`: Detector to use (composite, threshold, none)
-- `--saturation-threshold-ms <ms>`: Threshold for threshold detector (default 5000)
-- `--saturation-report <path>`: Write saturation analysis to file (optional). **File format varies by command:**
-  - On `run`/`replay`: always writes BacklogDriftReport JSON (regardless of `--post-hoc-detector`)
-  - On `observe`: writes BacklogDriftReport when `--post-hoc-detector=none`, else writes saturation.Result JSON
+**CLI flags** (`run`, `observe`, `replay`; #1516):
+- `--detectors <name>`: EXACTLY ONE of `composite`, `threshold`, `backlog-drift` (empty = off). `all` or a comma-list errors — the detector bank is #1519.
+- `--saturation-config <path>`: strict-YAML tuning file with optional `threshold:` and `backlog_drift:` blocks. composite has no block. The config must carry only the selected detector's block — a block belonging to another detector errors (no silent drop, R1). Absent block = defaults; a partial block overrides only named fields; an unknown key or out-of-range value errors naming the field; an empty file = all defaults.
+- `--saturation-report <path>`: writes the selected detector's **per-event verdict trace** as one `{"trace":[...]}` JSON object (one record per event, map keys sorted so repeated runs are byte-identical). Requires `--detectors`. Both `--saturation-config` and `--saturation-report` without `--detectors` are hard errors, as is an unwritable report path (checked up front).
 
-**Output**: Saturation results appear in `MetricsOutput.saturation` field as JSON with `level`, `score`, `confidence`, and `signals` (detector-specific metrics). This stdout JSON format is consistent across all three commands (INV-13 parity).
+**One pipeline, three input adapters**: run/replay/observe all produce the trace through the same `ReplayOneDetector → TraceSink → WriteCombinedReport` path. The only difference is the `[]RequestMetrics` input — run/replay from the sim (`Metrics.CompletedRequestMetrics()`), observe from the real server (`workload.TraceRecordsToRequestMetrics`). run→replay of the same trace is byte-identical (INV-13); observe's trace reflects real-server latencies by design.
 
-**Example**:
+**stdout**: nothing saturation-related — a run with `--detectors` is byte-identical on stdout to one without (the `saturation` field stays dropped by `omitempty`). The `sim.BatchClassifier` seam and `BuildOutput`'s signature are retained (param passed `nil`); the stdout final label returns in #1517.
+
+**Trace file example**:
 ```json
 {
-  "saturation": {
-    "level": "STABLE",
-    "score": 0.35,
-    "confidence": 0.95,
-    "signals": {
-      "rate_deficit": 0.0,
-      "latency_trend": 0.12
+  "trace": [
+    {
+      "timestamp": 150000,
+      "detector": "composite",
+      "result": {
+        "level": "STABLE",
+        "score": 0.35,
+        "confidence": 0.95,
+        "signals": { "latency_trend": 0.12, "rate_deficit": 0.0 }
+      }
     }
-  }
+  ]
 }
 ```
 
-**Use cases**: Automated classification of simulation runs, detecting queue buildup or throughput saturation in capacity planning experiments.
+**Migration from the pre-#1516 flags**:
+- `--post-hoc-detector X` → `--detectors X`
+- `--saturation-threshold-ms N` → `--saturation-config` `threshold: {threshold_ms: N}`
+- the 10 backlog-drift tuning flags (`--saturation-window`, `--saturation-min-windows`, `--saturation-classifier`, …) → `--saturation-config` `backlog_drift:` block
+- the standalone `--saturation-report` (per-window `BacklogDriftReport`) is removed; `--saturation-report` now writes the per-event trace
+- detector `Classify` is removed from the `Detector` interface (streaming-only: `Name`/`Observe`/`Detect`/`Reset`); `workload.AnalyzeBacklogDrift*` stays in the library (used by the backlog-drift detector)
+
+**Use cases**: per-event saturation trajectories for completed runs — detecting queue buildup or throughput saturation in capacity-planning experiments.
 
 ## File Organization
 
@@ -448,6 +475,8 @@ Two latency model modes (trained-physics, roofline), selected via `--latency-mod
 See [`docs/guide/latency-models.md`](docs/guide/latency-models.md) for details.
 
 **Quantized model support**: Three-tier auto-detection of weight precision: (1) `quantization_config` in HF `config.json` — GPTQ/AWQ (`bits`), FP8 (implicit), compressed-tensors (`config_groups.*.weights.num_bits`); (2) model name conventions (`w4a16` → 0.5, `FP8` → 1.0 via `InferWeightBytesFromModelName`); (3) fallback to `BytesPerParam` from `torch_dtype`. Uses quantized weight precision for weight bandwidth and KV capacity calculations while keeping compute dtype for KV cache and activations. `ModelConfig.WeightBytesPerParam` (0=fallback to `BytesPerParam`) with `EffectiveWeightBytesPerParam()` accessor decouples weight storage precision from compute/KV dtype.
+
+**Per-instance KV capacity for mixed-GPU node pools (#1522)**: When node pools are configured (`--policy-config` with `node_pools`) and `--total-kv-blocks` is NOT explicitly set, each placed instance auto-calculates its KV-block capacity from its ACTUAL placed GPU's `gpu_memory_gib` (plus TP, DP, block size, `--gpu-memory-utilization`, and weight precision) — so an H100 pool and an L40S pool no longer share one global capacity (restores INV-P2-1: an instance's GPU calibration and KV capacity describe the same device). Applied at all three placement sites (startup, deferred `NodeReadyEvent`, autoscaler scale-up) via `cluster.applyPerInstanceKVCapacity`, immediately after the `HWConfigByGPU` execution-calibration override (issue #893) so the placed GPU is authoritative for capacity as well. **Precedence**: an explicit `--total-kv-blocks` disables per-instance recalc (every instance keeps that uniform global capacity); when both node pools and PD per-pool KV overrides are present, the placement-derived per-GPU capacity wins (mirrors how `HWConfigByGPU` overrides the resolved `HWConfig`). A per-GPU capacity smaller than the configured `--max-model-len` auto-caps that instance's `MaxModelLen` to the KV-feasible maximum. Missing pool memory or a capacity-calc error falls back to the inherited global capacity with a warning (never a panic). `blis replay`/`observe` reject node pools, so this is `blis run` only (INV-13 parity N/A). Distinct from #1315 (role-specific capacity correct, latency coefficients wrong) and #633 (per-role overrides that can't express mixed hardware within one role).
 
 ### Key Data Flow
 
