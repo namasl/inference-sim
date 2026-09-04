@@ -31,7 +31,7 @@ Kept continuously so the build is resumable if the session dies. Newest entries 
 - [x] `PLAN.md`
 - [x] **Wave 2 COMPLETE** — B, C, D, E, F, G all landed and committed. 573 tests green.
 - [x] C org-stats DONE
-- [x] G silent_failures rendering DONE
+- [x] G silent_failures + join_edges rendering DONE; fixture fiction purged
 - [x] F revisions DONE (join, T5, silent_failures, T1 widening) — 243 tests
 - [~] Wave 3: H detector + CLI launched
 - [ ] Wave 3: H detector + CLI
@@ -463,3 +463,54 @@ bump despite being the highest-value class. One cosmetic surface-side wording is
 deferred — on a renamed-expert-count config the message cites `n_shared_experts=1` as the MoE
 signal rather than the stronger `num_experts_per_tok=8`; the verdict is right, the sentence reads
 oddly.
+
+### G — four invented fixture strings, and where they came from
+
+87 tests. G was sent back for one false claim and found **three more of its own inventions**:
+
+- WeirdAct's third "fatal" failure was fiction — `num_key_value_heads: 0` is not fatal; the real
+  validator accepts 0. G replaced the config with `"8"` (a numeric *string*), which trips the real
+  **silent** validator instead, so the "both classes" golden survives honestly.
+- Its two fatal line refs were wrong.
+- Qwen3Next's Mamba/MTP silent failures were fiction — the surface reports none for that config.
+  Rather than invent a config to force them, G let the golden show reality and cover the
+  "both classes clear" wording instead.
+- Two fields it listed as unparsed (`shared_expert_intermediate_size`, `linear_attn_config`) are
+  in fact parsed by BLIS.
+
+**The bad line refs were mine.** `:615` and `:276` came from my stale seams scan; the real
+locations are `trained_physics_model.go:1051-1053` and `kv_capacity.go:437-439` (verified). So my
+drifted refs seeded G's fictional strings, which nearly shipped inside golden files that later
+readers would trust. A chain worth remembering: a wrong reference in a plan does not stay in the
+plan.
+
+G's fix was the right one — it ran the real surface against the fixture configs and pasted the
+**actual output** verbatim, so Kimi's silent section now quotes BLIS's own alias list and a reader
+can check the claim rather than trust it.
+
+### The loophole G identified, now closed
+
+G noted that its suite deliberately does not import `surface`, so B changing its YAML cannot break
+its goldens — and that this decoupling is **exactly why its fixtures drifted into fiction**. Real
+tension: independence buys stability and costs truthfulness.
+
+I closed it with `tests/test_fixture_truth.py`, an integration guard that loads the real surface,
+runs it against every fixture config, and asserts set equality in **both** directions against what
+the golden claims. A missing entry means a stale golden; an extra entry means the golden asserts
+something BLIS does not do, which is worse, because these strings are what a reader trusts. It also
+pins `silently_wrong` and specifically forbids using a recognized expert-count alias as an
+"unrecognized spelling" example — the error that slipped past two reviewers.
+
+**I verified the guard actually bites** rather than assuming: injecting a fictional claim into a
+golden makes it fail, naming the invented string, and the suite goes green again once reverted.
+This is the first test in the build that could have caught any of the four fiction bugs, and it is
+the same shape of check that would have caught the T2 suppressor bug and the unpopulated
+`silent_failures`.
+
+### Deferred deliberately
+
+G asked for per-signal attribution on `join_edges` (currently a flat list), so a reader could tell
+which signal arrived on which edge — `family:` being the edge most likely to be wrong. Deferred:
+the flat list plus the sources table already makes a false merge **detectable**, which is what the
+backtest needs; full diagnosability is refinement, and session time is better spent on validation.
+Recorded so it is a known limitation rather than an oversight.

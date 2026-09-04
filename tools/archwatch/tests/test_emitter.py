@@ -111,25 +111,39 @@ def kimi_candidate() -> Candidate:
         signals=[hf, vllm, ix],
         triggers=["T1", "T3", "T4"],
         significance=["S1", "S2", "S3"],
+        join_edges=[
+            "arch:kimik3forcausallm",
+            "repo:moonshotai/kimi-k3",
+            "family:kimi k3",
+        ],
+        # Findings below are the REAL output of Surface.check_*/unparsed_fields for
+        # kimi_k3_config.json, captured verbatim so the golden is a faithful sample of what a
+        # human will actually read. The config spells its 896 experts "num_moe_experts",
+        # genuinely absent from moeExpertCountFields (sim/latency/config.go:92-98: num_experts,
+        # moe_num_experts, n_routed_experts, num_local_experts, num_routed_experts) — note
+        # moe_num_experts *is* a valid alias (Dbrx); only the num_/moe_ transposition is not.
         unparsed_fields=[
-            "moe_num_experts",
-            "n_group",
-            "topk_group",
-            "mtp_num_layers",
-            "mtp_loss_weight",
-            "router_gate_type",
             "attention_sink_tokens",
+            "mtp_loss_weight",
+            "mtp_num_layers",
+            "n_group",
+            "num_moe_experts",
+            "q_lora_rank",
+            "qk_nope_head_dim",
+            "router_gate_type",
+            "topk_group",
+            "v_head_dim",
         ],
         bucket0_failures=[],
         # Nothing fatal, and BLIS is still wrong: the dangerous combination.
         silent_failures=[
-            'MoE signalled but the expert count spelling "moe_num_experts" is not in '
-            "ResolveNumExperts's alias set -> the 896 experts are never resolved and a 1T "
-            "sparse model is sized and simulated as dense, behind one logrus.Warnf "
-            "(sim/latency/kv_capacity.go:552)",
-            "KDA / linear-attention layers are charged as full attention in step time and "
-            "weights; no config field tells BLIS otherwise "
-            "(sim/latency/trained_physics_model.go:297)",
+            "[moe_expert_count_resolvable] n_shared_experts=1 signals MoE but no total expert "
+            "count resolved >= 2 from any known spelling (num_experts, moe_num_experts, "
+            "n_routed_experts, num_local_experts, num_routed_experts) -- warned and degraded on "
+            "trained-physics; rejected on roofline (sim/latency/kv_capacity.go:779-786)",
+            "[moe_total_required_when_active_present] active experts per token (8) is set but the "
+            "resolved total expert count is 0 -- rejected by ValidateRooflineConfig; unchecked on "
+            "trained-physics (sim/latency/config.go:575-579)",
         ],
         est_total_params=1_026_000_000_000,
         est_active_params=38_400_000_000,
@@ -152,24 +166,31 @@ def bucket0_candidate() -> Candidate:
                 display_name="WeirdAct 70B",
                 config=_load_config("weirdact_config.json"),
                 urls={"hf": "https://huggingface.co/labx/WeirdAct-70B"},
-                evidence="Unrecognized torch_dtype and a non-SwiGLU activation",
+                evidence="Unrecognized torch_dtype, non-SwiGLU activation, string kv-head count",
                 raw_ref="labx/WeirdAct-70B",
                 extra={"downloads": 12400, "likes": 310},
             )
         ],
         triggers=["T1"],
         significance=["S1", "S4"],
-        unparsed_fields=["ssm_state_size", "linear_attn_config"],
+        join_edges=["arch:weirdactforcausallm", "repo:labx/weirdact-70b"],
+        # Also captured from the real Surface for weirdact_config.json: two fatal failures
+        # AND one silent one, so this golden covers both classes at once.
+        unparsed_fields=["ssm_state_size"],
         bucket0_failures=[
-            'hidden_act "gelu_pytorch_tanh" is not SwiGLU; rejected at '
-            "sim/latency/kv_capacity.go:276",
-            'torch_dtype "float4_e2m1" is unrecognized -> BytesPerParam=0; rejected at '
-            "sim/latency/trained_physics_model.go:615",
-            "num_key_value_heads is 0; must be > 0 (sim/latency/config.go:419-431)",
+            "[recognized_torch_dtype] torch_dtype='float4_e2m1' is not in BLIS's closed precision "
+            "table (bfloat16, float16, float32, fp8, int4, int8, nf4, uint8), so BytesPerParam = "
+            "0 -- BytesPerParam = 0, rejected at latency-model construction AND by KV "
+            "auto-calculation (sim/latency/trained_physics_model.go:1051-1053)",
+            "[swiglu_family_hidden_act] hidden_act='gelu_pytorch_tanh' is not a SwiGLU-family "
+            "activation (geglu, silu, situ, swiglu, or absent); the weight estimator assumes a "
+            "3-matrix gated MLP -- rejected in CalculateKVBlocks "
+            "(sim/latency/kv_capacity.go:437-439)",
         ],
         silent_failures=[
-            "linear_attn_config.full_attn_layers lists 4 of 48 layers; the other 44 are "
-            "charged as full attention in KV capacity (sim/latency/kv_capacity.go:125)",
+            "[kv_head_count_unreadable] num_key_value_heads is present but not a JSON number "
+            "('8'); BLIS reads 0 and silently falls back to num_attention_heads (would be sized "
+            "as 48-way MHA instead) with no error and no warning -- sim/latency/config.go:315-317",
         ],
         est_total_params=71_000_000_000,
         est_active_params=71_000_000_000,
@@ -203,6 +224,7 @@ def framework_only_candidate() -> Candidate:
         ],
         triggers=["T2", "T4", "T5"],
         significance=["S3"],
+        join_edges=["arch:mysterynetforcausallm"],
     )
 
 
@@ -264,19 +286,15 @@ def known_arch_drift_candidate() -> Candidate:
         ],
         triggers=["T1-known-arch", "T4"],
         significance=["S2", "S3"],
+        join_edges=["arch:qwen3nextforcausallm", "family:qwen3.8 flash next"],
+        # Real Surface output for qwen3next_config.json: nothing fatal, nothing silent — so
+        # this golden also covers the "both classes clear" wording. The interest here is config
+        # drift (T1-known-arch) plus vendor prose naming mechanisms BLIS has never seen.
         unparsed_fields=[
             "linear_conv_kernel_dim",
-            "mamba_state_size",
             "mamba_num_heads",
+            "mamba_state_size",
             "mtp_num_layers",
-            "shared_expert_intermediate_size",
-        ],
-        silent_failures=[
-            "Mamba/SSM layers carry fixed-size state, but BLIS sizes every layer's KV cache "
-            "as full attention: KV bytes per token over-counted ~7x "
-            "(sim/latency/kv_capacity.go:91)",
-            "The built-in MTP module is not modelled at all; accepted-token throughput is "
-            "under-reported with no warning",
         ],
         est_total_params=402_000_000_000,
         est_active_params=17_500_000_000,
@@ -478,7 +496,7 @@ def test_body_states_the_required_findings() -> None:
 def test_bucket0_failures_are_listed_verbatim() -> None:
     cand = bucket0_candidate()
     text = emitter.render(cand, detected_at=PINNED)
-    assert "**No — bucket 0.** 3 fatal validator failures" in text
+    assert "**No — bucket 0.** 2 fatal validator failures" in text
     for failure in cand.bucket0_failures:
         assert failure in text
     assert "Bucket 0 is already established" in text
@@ -572,7 +590,7 @@ def test_fatal_and_silent_are_reported_as_separate_classes() -> None:
     assert "## Silently wrong today" in text
     assert "**also** fails hard validators" in text
     assert "Separately, 1 **silent** failure" in text
-    assert "**No — bucket 0.** 3 fatal validator failures" in text
+    assert "**No — bucket 0.** 2 fatal validator failures" in text
 
 
 def test_silent_section_absent_when_there_are_none() -> None:
@@ -584,7 +602,9 @@ def test_silent_section_absent_when_there_are_none() -> None:
 def test_front_matter_counts_silent_failures() -> None:
     kimi = _front_matter(emitter.render(kimi_candidate(), detected_at=PINNED))
     assert len(kimi["silent_failures"]) == 2
-    assert "ResolveNumExperts" in kimi["silent_failures"][0]
+    assert "no total expert count resolved" in kimi["silent_failures"][0]
+    # The real message quotes the alias list, so a reader can check the claim, not trust it.
+    assert "num_experts, moe_num_experts, n_routed_experts" in kimi["silent_failures"][0]
     assert kimi["silently_wrong"] is True  # clean bucket 0 + silent failures
     assert kimi["bucket"] is None
 
@@ -599,7 +619,7 @@ def test_front_matter_counts_silent_failures() -> None:
     assert thin["silently_wrong"] is False
 
 
-def test_candidate_without_the_silent_failures_field_still_renders() -> None:
+def test_candidate_missing_the_newer_contract_fields_still_renders() -> None:
     """getattr fallback: a Candidate built against the older contract must not crash."""
 
     class Older:
@@ -611,6 +631,7 @@ def test_candidate_without_the_silent_failures_field_still_renders() -> None:
         unparsed_fields = ["mystery_field"]
         bucket0_failures: list = []
         est_total_params = None
+        # no silent_failures, no join_edges: the pre-addendum contract
         est_active_params = None
         sources: list = []
         corroborated = False
@@ -618,14 +639,17 @@ def test_candidate_without_the_silent_failures_field_still_renders() -> None:
 
     text = emitter.render(Older())  # type: ignore[arg-type]
     assert "## Silently wrong today" not in text
-    assert _front_matter(text)["silent_failures"] == []
+    assert "How these signals were joined" not in text
+    front = _front_matter(text)
+    assert front["silent_failures"] == []
+    assert front["join_edges"] == []
 
 
 @pytest.mark.parametrize(
     "build, expected",
     [
         (kimi_candidate, "**runs this and reports wrong numbers** — 2 silent failures"),
-        (bucket0_candidate, "would **not run** this config (3 fatal failures)"),
+        (bucket0_candidate, "would **not run** this config (2 fatal failures)"),
         (framework_only_candidate, "not checked — no `config.json` available yet"),
     ],
 )
@@ -697,6 +721,56 @@ def test_alias_join_renders_as_a_marker_not_a_trigger() -> None:
 
 def test_markers_absent_when_none_apply() -> None:
     assert "**Markers**" not in emitter.render(kimi_candidate(), detected_at=PINNED)
+
+
+# ---------------------------------------------------------------------------
+# Join edges — the audit trail for a false merge
+# ---------------------------------------------------------------------------
+
+
+def test_join_edges_are_shown_under_the_sources_table() -> None:
+    cand = kimi_candidate()
+    text = emitter.render(cand, detected_at=PINNED)
+    assert "**How these signals were joined**" in text
+    # Directly under the sources table, where a false merge is visible.
+    assert text.index("## Sources") < text.index("**How these signals were joined**")
+    assert text.index("**How these signals were joined**") < text.index("## Why it fired")
+    assert "- `arch:kimik3forcausallm` — architecture id" in text
+    assert "- `repo:moonshotai/kimi-k3` — normalized repo id" in text
+    assert "- `family:kimi k3` — normalized family name" in text
+    assert "fused two distinct architectures into one report" in text
+
+
+def test_join_edges_reach_the_front_matter_verbatim() -> None:
+    cand = kimi_candidate()
+    front = _front_matter(emitter.render(cand, detected_at=PINNED))
+    assert front["join_edges"] == cand.join_edges
+
+
+def test_single_signal_join_key_omits_the_false_merge_warning() -> None:
+    """One signal cannot be a false merge, so the warning would be noise."""
+    text = emitter.render(bucket0_candidate(), detected_at=PINNED)
+    assert "**Join key** — the union-find edges this single signal was filed under:" in text
+    assert "fused two distinct architectures" not in text
+    assert "- `repo:labx/weirdact-70b` — normalized repo id" in text
+
+
+def test_unknown_join_edge_prefix_renders_without_a_label() -> None:
+    cand = framework_only_candidate()
+    cand.join_edges = ["arch:mysterynetforcausallm", "sha256:deadbeef", "bare-edge"]
+    text = emitter.render(cand, detected_at=PINNED)
+    assert "- `sha256:deadbeef`\n" in text
+    assert "- `bare-edge`\n" in text
+    assert "- `arch:mysterynetforcausallm` — architecture id" in text
+
+
+def test_join_block_absent_when_no_edges_recorded() -> None:
+    cand = kimi_candidate()
+    cand.join_edges = []
+    text = emitter.render(cand, detected_at=PINNED)
+    assert "How these signals were joined" not in text
+    assert "**Join key**" not in text
+    assert _front_matter(text)["join_edges"] == []
 
 
 # ---------------------------------------------------------------------------

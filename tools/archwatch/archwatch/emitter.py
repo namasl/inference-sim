@@ -14,7 +14,7 @@ Layout of a rendered file::
     ... YAML front matter (machine-readable; the backtest parses this) ...
     ---
     # [archwatch] <arch_id> — ...
-    ## Sources
+    ## Sources                               (+ the join-edge audit trail beneath it)
     ## Why it fired
     ## Silently wrong today                  (only when silent_failures is non-empty)
     ## Deterministic findings (stage 1)
@@ -83,8 +83,9 @@ STAGE2_MARKER = "<!-- archwatch:stage2:append-below -->"
 
 #: Bumped when the front-matter shape changes, so the backtest can adapt. Changes are
 #: additive: /2 added silent_failures, silently_wrong, known_arch_drift, markers and
-#: has_perf_notes to /1. Readers should test for keys, not pin the version.
-SCHEMA = "archwatch/2"
+#: has_perf_notes to /1; /3 added join_edges. Readers should test for keys, not pin the
+#: version.
+SCHEMA = "archwatch/3"
 
 TRIGGER_DESCRIPTIONS: dict[str, str] = {
     "T1": "new architecture whose config carries fields BLIS does not parse "
@@ -109,6 +110,15 @@ MARKER_DESCRIPTIONS: dict[str, str] = {
 #: Triggers that assert the architecture itself is new. "T1-known-arch" contradicts
 #: them, and T4 (corroboration) asserts nothing about novelty on its own.
 NOVEL_ARCH_TRIGGERS: frozenset[str] = frozenset({"T1", "T2", "T3", "T5"})
+
+#: What each join-edge prefix means. Signals are merged by union-find over these keys,
+#: so an edge a human disagrees with is a false merge waiting to be split.
+JOIN_EDGE_KINDS: dict[str, str] = {
+    "arch": "architecture id",
+    "repo": "normalized repo id",
+    "family": "normalized family name",
+    "alias": "normalized display-name alias",
+}
 
 KNOWN_ARCH_TRIGGER = "T1-known-arch"
 
@@ -450,6 +460,14 @@ def _perf_note_entries(cand: Candidate) -> list[tuple[Signal, list[str]]]:
     return out
 
 
+def _join_edges(cand: Candidate) -> list[str]:
+    """``Candidate.join_edges``: the union-find keys that merged this candidate's signals.
+
+    Read through ``getattr`` so a Candidate built before the field existed still renders.
+    """
+    return [str(e) for e in (getattr(cand, "join_edges", None) or [])]
+
+
 def _silent_failures(cand: Candidate) -> list[str]:
     """``Candidate.silent_failures``: BLIS runs, warns at most, and is wrong.
 
@@ -508,6 +526,10 @@ def _front_matter(cand: Candidate, detected_at: datetime) -> str:
         "sources": list(cand.sources),
         "triggers": list(cand.triggers or []),
         "markers": _trigger_split(cand)[1],
+        # Audit trail for the union-find join. A wrong edge means two distinct
+        # architectures were fused into one report; the backtest reads these to
+        # detect over-merging.
+        "join_edges": _join_edges(cand),
         "significance": list(cand.significance or []),
         # 0 = proven not to run by the deterministic validators.
         # null = undetermined; stage 2 assigns 1, 2 or 3.
@@ -640,6 +662,41 @@ def _sources_section(cand: Candidate) -> list[str]:
             )
         )
     lines.append("")
+    return lines
+
+
+def _join_block(cand: Candidate) -> list[str]:
+    """Show *why* these signals were considered one model, so a reader can disagree.
+
+    Rendered right under the sources table: that is where a false merge is visible —
+    two rows that do not belong to the same model.
+    """
+    edges = _join_edges(cand)
+    if not edges:
+        return []
+    multi = len(_signals(cand)) > 1
+    lead = (
+        "**How these signals were joined** — union-find over architecture id, normalized "
+        "repo id and normalized family name. Every source row above was merged into this "
+        "one report because of these edges:"
+        if multi
+        else "**Join key** — the union-find "
+        f"{_plural(len(edges), 'edge')} this single signal was filed under:"
+    )
+    lines = [lead, ""]
+    for edge in edges:
+        prefix = edge.split(":", 1)[0] if ":" in edge else ""
+        kind = JOIN_EDGE_KINDS.get(prefix)
+        lines.append(f"- `{edge}`" + (f" — {kind}" if kind else ""))
+    lines.append("")
+    if multi:
+        lines += [
+            "> If any edge above is wrong, this stub has **fused two distinct "
+            "architectures into one report** — worse than emitting two stubs, because the "
+            "findings below then describe a model that does not exist. Check that every "
+            "source row really is the same model before trusting the rest of this file.",
+            "",
+        ]
     return lines
 
 
@@ -957,6 +1014,7 @@ def render(cand: Candidate, *, detected_at: datetime | None = None) -> str:
     parts: list[str] = ["---", _front_matter(cand, stamp).rstrip("\n"), "---", ""]
     parts += _header(cand)
     parts += _sources_section(cand)
+    parts += _join_block(cand)
     parts += _why_section(cand)
     parts += _silent_failures_section(cand)
     parts += _findings_section(cand)
