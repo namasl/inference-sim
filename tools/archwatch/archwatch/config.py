@@ -22,7 +22,15 @@ DERIVATIVE_PATTERNS: tuple[str, ...] = (
     "w8a8", "-fp8", "quantized", "-merge", "merged", "lora", "adapter",
     "-distill-", "abliterated", "uncensored", "-exl2", "mlx-", "-onnx",
     "-openvino", "-trtllm", "smashed", "-dpo", "-sft-",
+    # Added after live measurement showed these slipping through (component C):
+    # bare "-4bit"/"-8bit" suffixes and a "-MLX" suffix (only the "mlx-" prefix
+    # was covered), plus one abliteration brand.
+    "-4bit", "-8bit", "-mlx", "heretic",
 )
+
+# Deliberately NOT suppressed: "-mtp". Multi-token prediction is one of the
+# mechanisms BLIS does not model, so an MTP variant is signal we want to see,
+# not packaging noise.
 
 # Config keys that are never architecture-relevant; excluded from the
 # "fields BLIS does not parse" diff so T1 does not fire on boilerplate.

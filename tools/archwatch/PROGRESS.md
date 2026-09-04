@@ -29,7 +29,7 @@ Kept continuously so the build is resumable if the session dies. Newest entries 
 - [x] Scaffolding, `pyproject.toml`, venv
 - [x] Frozen contracts: `archwatch/connectors/base.py`, `archwatch/config.py`
 - [x] `PLAN.md`
-- [~] Wave 2: **G emitter DONE** (56 tests green); B, C, D, E, F in flight
+- [~] Wave 2: **G emitter DONE**; **C hf DONE** (resumed for a non-LM pre-filter); B, D, E, F in flight
 - [ ] Wave 3: H detector + CLI
 - [x] Wave 4a: I classifier skill (`skills/archwatch-deep-dive/SKILL.md`) — written by orchestrator
 - [ ] Wave 4b: J validation harness
@@ -79,3 +79,57 @@ Recorded because they were real design gaps, not agent errors:
    If so they belong on the T1 wrong-numbers side, not Bucket 0 — mislabelling them would
    misreport real models. Routed to B to verify against the Go source and tag each validator
    `severity: fatal | silent`. Addendum 5.
+
+### C — HuggingFace connector: complete, accepted (resumed once)
+
+57 tests green, verified offline with `HF_HUB_OFFLINE=1` and an autouse fixture that makes any
+network call raise. Two genuine improvements on the plan:
+
+- **`list_models(expand=["config"])` returns the Hub's indexed excerpt of each repo's
+  `config.json` — including `architectures` — for zero extra requests.** The pipeline's primary
+  key is therefore free from the listing. This is a better design than the plan's, which assumed
+  the architecture was only obtainable by fetching each config.
+- Consequently phase 2 fetches **one representative config per distinct architecture**, not per
+  repo. Live, 2,895 phase-1 survivors collapse to **127 distinct architectures** — so the
+  200-fetch cap is comfortable rather than tight. Full poll: 19.8s.
+
+Measured live volume (1-day window): ~3,560 repos created, ~662 dropped as derivatives,
+**~2,895 survivors, 127 architectures**. `poll_trending(30)` correctly surfaced
+`DeepseekV4ForCausalLM`, `GlmMoeDsaForCausalLM`, `Qwen4ExpForConditionalGeneration`.
+
+### The `.gitignore` bug — real data loss, already committed
+
+**The repo-root `.gitignore` line 44 is a bare `*.json`** (BLIS's data-files section). It
+silently excluded every JSON fixture in this tool: `git add` dropped them with no error or
+warning. Verified concretely — the emitter's `expected_*.md` goldens were committed but
+`kimi_k3_config.json` and `weirdact_config.json` were **not**, so a fresh checkout of this
+branch would have failed G's test suite with missing-fixture errors.
+
+Fixed centrally in `tools/archwatch/.gitignore` (a deeper .gitignore wins) with
+`!tests/fixtures/**/*.json` and `!support-surface/**/*.json`. Confirmed with `git check-ignore`
+that fixtures are now tracked and that `.runlog/` remains ignored — negation cannot resurrect
+files under a directory-excluded path, which is why `.runlog/` is safely excluded by directory.
+
+This is the kind of failure worth remembering: no error, no warning, and the tests keep passing
+locally because the files exist on disk. It would only have surfaced on a clean clone.
+
+### One agent claim that was wrong, and checked
+
+C reported that BLIS "presumably reads only `torch_dtype`", making the 2026-era `dtype` rename a
+live Bucket-0 gap. **Verified against the source: false.** `sim/latency/config.go:334-336` reads
+`torch_dtype` and falls back to `dtype`, with a comment naming GLM-5. B was told not to record it
+as a gap, but to encode the real two-key resolution so the validator is not dead code.
+
+### Decisions taken from C's findings
+
+- `DERIVATIVE_PATTERNS` extended with `-4bit`, `-8bit`, `-mlx`, `heretic` (real live misses).
+  **`-mtp` deliberately excluded** — multi-token prediction is a mechanism BLIS does not model,
+  so an MTP variant is signal, not noise.
+- **The non-LM filter belongs in the connector, not F's suppressors.** Knowing a repo is a
+  diffusers/peft/robotics artifact is source-specific knowledge. C resumed to add it, with the
+  rule that absence of evidence is never grounds to drop — an unknown-shaped repo from an
+  unexpected lab is the zero-day case this system exists for.
+- `text_config` pivoting is load-bearing for both B and F: frontier models increasingly expose
+  only `architectures`/`model_type`/`dtype`/`text_config`/`vision_config` at the top level.
+  Without the pivot, T1 fires on every multimodal frontier release and sizing returns `None` for
+  exactly the models S1 must catch.

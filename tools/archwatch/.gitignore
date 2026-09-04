@@ -3,3 +3,10 @@ __pycache__/
 *.pyc
 .runlog/
 .pytest_cache/
+
+# The repo-root .gitignore carries a bare `*.json` (BLIS data files, line 44), which
+# silently excludes every JSON fixture in this tool — `git add` drops them with no error.
+# A deeper .gitignore wins, so re-include the data we actually need version-controlled.
+# .runlog/ stays ignored: it is excluded by directory above, which negation cannot undo.
+!tests/fixtures/**/*.json
+!support-surface/**/*.json
