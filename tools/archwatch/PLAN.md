@@ -329,3 +329,42 @@ findings are written to `VALIDATION.md`.
 backtest shows high recall on the named frontier releases with a survivor count in the
 low tens (not thousands), the classifier skill produces correct buckets on real stubs,
 and `VALIDATION.md` records what worked and what did not.
+
+---
+
+## Contract addenda (found during wave 2 — binding on all later components)
+
+These emerged from the completed emitter component and correct or pin down things the
+original plan left ambiguous. They are binding.
+
+1. **Dedup must use the emitter's path helpers, never a constructed path.**
+   `emitter.issue_exists(arch_id, out_dir)` and `emitter.issue_path(...)`. The emitter
+   sanitizes architecture ids (appending an 8-hex sha1 of the original when it must rewrite
+   one), so `issues/<arch_id>.md` is not always the real filename. Building that path by hand
+   makes the dedup silently fail for any id containing a space, slash, colon, or non-ASCII
+   character — stubs would then be re-emitted forever with no error.
+
+2. **`Signal.observed_at` is timezone-aware UTC.** Pinned in `base.py`. Naive values are
+   treated as UTC by consumers; no consumer applies a host offset.
+
+3. **Stage-2 handshake.** The deep-dive skill appends only *below* the
+   `<!-- archwatch:stage2:append-below -->` marker and never edits front matter or any content
+   above it. Completion is detected by non-empty content after the marker —
+   `emitter.split_stub(text)` returns exactly that split. There is no `stage2: complete` flag.
+   Component J must use this, not a front-matter field.
+
+4. **`extra["perf"]` shape** (produced only by the InferenceX connector): a dict with a
+   `hardware` key plus numeric metric keys (`output_tok_per_s`, `ttft_ms_p50`,
+   `cost_per_mtok_usd`, ...) and a free-text `notes`; a list of such dicts when one commit
+   yields several rows. Values stay numeric — units belong in the key name — so J can compare
+   against them numerically.
+
+5. **Validator severity: `fatal` vs `silent`.** Bucket 0 means "BLIS would not run." Some
+   conditions originally listed for it may only mis-size silently (an unrecognized
+   `torch_dtype` yielding `BytesPerParam=0`; MoE without a resolvable expert count). Each
+   entry in `hard_validators` carries `severity: fatal | silent`. **Only `fatal` entries
+   belong in Bucket 0**; `silent` ones are T1-style wrong-numbers risks and must be reported
+   as such, not as a crash.
+
+6. **`bucket` in front matter is `0` or `null` only.** Buckets 1-3 are stage-2 judgements and
+   are never guessed by stage 1.

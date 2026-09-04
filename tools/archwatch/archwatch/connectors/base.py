@@ -25,6 +25,10 @@ class Signal:
     """
 
     source: str  # "hf" | "vllm" | "sglang" | "inferencex"
+
+    # MUST be timezone-aware UTC. A naive or local-time value makes downstream
+    # ordering — and the emitted detected_at — depend on the machine that ran the
+    # scan. Consumers treat naive values as UTC rather than applying a host offset.
     observed_at: datetime
 
     # --- identity -----------------------------------------------------------
