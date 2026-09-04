@@ -1,0 +1,659 @@
+# archwatch — the HuggingFace config.json surface BLIS actually reads.
+#
+# Harvested by hand from BLIS source in the parent repo (read-only). Every
+# source_ref is <path>:<line> or <path>:<first>-<last> as of the feature/archwatch
+# worktree; re-check them when BLIS moves.
+#
+# The grounding fact: BLIS never dispatches on `architectures[]` or `model_type`.
+# Every number flows from the fields below into sim.ModelConfig /
+# latency.KVCapacityParams. A key that is NOT below is silently dropped — no error,
+# no warning. That silence is the whole reason this file exists.
+#
+# Three sections:
+#   parsed_fields   — keys BLIS reads. `aliases` are alternate spellings resolved by
+#                     the same code path (first non-zero wins, in the order listed).
+#   ignored_fields  — keys BLIS deliberately does not read because they cannot move
+#                     any BLIS number. Excluded from Surface.unparsed_fields() so T1
+#                     does not fire on training/runtime boilerplate. This is an
+#                     extension of archwatch.config.IGNORED_CONFIG_KEYS (frozen),
+#                     not a replacement.
+#   hard_validators — Bucket 0: config shapes BLIS REJECTS outright. Metadata only;
+#                     the predicate for each `id` is implemented in archwatch/surface.py.
+
+parsed_fields:
+
+  # ── shape ───────────────────────────────────────────────────────────────────
+  - name: num_hidden_layers
+    aliases: []
+    role: shape
+    consumed_as: sim.ModelConfig.NumLayers
+    source_ref: "sim/latency/config.go:443"
+    notes: "Total layer count. Drives every per-layer term; also the clamp ceiling for
+      kv_bearing_layers and first_k_dense_replace."
+
+  - name: hidden_size
+    aliases: []
+    role: shape
+    consumed_as: sim.ModelConfig.HiddenDim
+    source_ref: "sim/latency/config.go:444"
+
+  - name: vocab_size
+    aliases: []
+    role: shape
+    consumed_as: sim.ModelConfig.VocabSize
+    source_ref: "sim/latency/config.go:445"
+    notes: "Embedding + lm_head weight bytes only (KV-capacity path). Step time never
+      reads it."
+
+  - name: intermediate_size
+    aliases: [ffn_hidden_size]
+    role: shape
+    consumed_as: sim.ModelConfig.IntermediateDim
+    source_ref: "sim/latency/config.go:341"
+    notes: "Falcon/GLM spell it ffn_hidden_size. For a Mixtral-convention MoE this IS
+      the per-expert FFN dim (moe_intermediate_size absent)."
+
+  - name: intermediate_size_mlp
+    aliases: []
+    role: shape
+    consumed_as: sim.ModelConfig.DenseIntermediateDim
+    source_ref: "sim/latency/config.go:392"
+    notes: "Dense-layer FFN dim when it differs from the expert FFN dim (Llama-4 Scout
+      style). 0 = use intermediate_size for both."
+
+  # ── attention ───────────────────────────────────────────────────────────────
+  - name: num_attention_heads
+    aliases: []
+    role: attention
+    consumed_as: sim.ModelConfig.NumHeads
+    source_ref: "sim/latency/config.go:311"
+
+  - name: num_key_value_heads
+    aliases: [num_kv_heads, multi_query_group_num]
+    role: attention
+    consumed_as: sim.ModelConfig.NumKVHeads
+    source_ref: "sim/latency/config.go:312"
+    notes: "Falcon uses num_kv_heads, GLM uses multi_query_group_num. All three absent
+      or zero => defaults to num_attention_heads (MHA), sim/latency/config.go:315-317."
+
+  - name: head_dim
+    aliases: []
+    role: attention
+    consumed_as: sim.ModelConfig.HeadDim
+    source_ref: "sim/latency/config.go:397"
+    notes: "Capacity path ONLY (EffectiveHeadDim, sim/model_hardware_config.go:46-54).
+      Step time still computes hidden_size/num_attention_heads — see gap
+      explicit_head_dim_step_time_blind."
+
+  # ── MLA (Multi-head Latent Attention) ───────────────────────────────────────
+  - name: kv_lora_rank
+    aliases: []
+    role: attention
+    consumed_as: sim.ModelConfig.KVLoraRank
+    source_ref: "sim/latency/config.go:403"
+    notes: "> 0 is the canonical MLA predicate (sim/model_hardware_config.go:163-165).
+      Switches KVBytesPerToken to the compressed-latent path,
+      sim/latency/kv_capacity.go:135-152."
+
+  - name: qk_rope_head_dim
+    aliases: []
+    role: attention
+    consumed_as: sim.ModelConfig.QKRopeHeadDim
+    source_ref: "sim/latency/config.go:404"
+    notes: "Second summand of the MLA latent width (kv_lora_rank + qk_rope_head_dim).
+      Meaningful only when kv_lora_rank > 0."
+
+  # ── hybrid attention ────────────────────────────────────────────────────────
+  - name: linear_attn_config
+    aliases: []
+    role: attention
+    consumed_as: sim.ModelConfig.KVBearingLayers
+    source_ref: "sim/latency/config.go:152-168"
+    nested: true
+    nested_keys: [full_attn_layers]
+    notes: "Only len(linear_attn_config.full_attn_layers) is read; everything else in
+      the block (kda_layers, state dims, conv widths) is dropped. Present but with no
+      usable full_attn_layers list => warns and falls back to all-layers KV sizing
+      (sim/latency/config.go:161-166). Consumed at sim/latency/config.go:420."
+
+  # ── MoE ─────────────────────────────────────────────────────────────────────
+  - name: num_experts
+    aliases: [moe_num_experts, n_routed_experts, num_local_experts, num_routed_experts]
+    role: moe
+    consumed_as: sim.ModelConfig.NumLocalExperts
+    source_ref: "sim/latency/config.go:92-98"
+    notes: "Total ROUTED expert count, resolved by (*HFConfig).ResolveNumExperts
+      (sim/latency/config.go:127-134): first field in this order whose value is
+      >= sim.MoEMinExperts (2). Field set and order mirror vLLM's get_num_experts;
+      num_routed_experts is a BLIS-historical alias. A single-expert config is
+      dense-equivalent in BLIS (sim/model_hardware_config.go:127-145). Consumed at
+      sim/latency/config.go:345 and sim/latency/kv_capacity.go:757."
+
+  - name: num_experts_per_tok
+    aliases: [num_experts_per_token]
+    role: moe
+    consumed_as: sim.ModelConfig.NumExpertsPerTok
+    source_ref: "sim/latency/config.go:106"
+    notes: "Activation count, NOT a total. Kimi-K3/vLLM spell it num_experts_per_token.
+      Becomes kEff = max(1, NumExpertsPerTok) in the step-time model
+      (sim/latency/trained_physics_model.go:1153). Missing on a detected-MoE model is
+      FATAL, not merely inaccurate — see validator moe_active_expert_count_required."
+
+  - name: n_shared_experts
+    aliases: [num_shared_experts]
+    role: moe
+    consumed_as: sim.ModelConfig.SharedExpertFFNDim (as a multiplier)
+    source_ref: "sim/latency/config.go:107"
+    notes: "Shared-expert COUNT. Used only when shared_expert_intermediate_size is
+      absent: SharedExpertFFNDim = n_shared_experts x (moe_intermediate_size or
+      intermediate_size), sim/latency/config.go:359-371. Missing it is a silent weight
+      under-count (no guard trips)."
+
+  - name: shared_expert_intermediate_size
+    aliases: []
+    role: moe
+    consumed_as: sim.ModelConfig.SharedExpertFFNDim
+    source_ref: "sim/latency/config.go:359"
+    notes: "Explicit TOTAL shared-expert FFN dim; takes precedence over the
+      n_shared_experts x per-expert-dim product."
+
+  - name: moe_intermediate_size
+    aliases: []
+    role: moe
+    consumed_as: sim.ModelConfig.MoEExpertFFNDim
+    source_ref: "sim/latency/config.go:354"
+    notes: "Per-routed-expert FFN dim. 0 => intermediate_size is used per-expert
+      (Mixtral convention)."
+
+  - name: interleave_moe_layer_step
+    aliases: []
+    role: moe
+    consumed_as: sim.ModelConfig.InterleaveMoELayerStep
+    source_ref: "sim/latency/config.go:388"
+    notes: "Every-Nth MoE/dense interleave (Llama-4 Scout style). This is the ONLY
+      layer-pattern field the step-time model consumes:
+      numMoELayers = NumLayers/(step+1), sim/latency/trained_physics_model.go:1083-1090."
+
+  - name: first_k_dense_replace
+    aliases: []
+    role: moe
+    consumed_as: sim.ModelConfig.FirstKDenseReplace
+    source_ref: "sim/latency/config.go:410"
+    notes: "Dense-layer PREFIX count, distinct from interleave_moe_layer_step. Weight
+      accounting only (sim/latency/kv_capacity.go:677-689) — see gap
+      first_k_dense_replace_capacity_only."
+
+  # ── precision ───────────────────────────────────────────────────────────────
+  - name: torch_dtype
+    aliases: [dtype]
+    role: precision
+    consumed_as: sim.ModelConfig.BytesPerParam
+    source_ref: "sim/latency/config.go:334-338"
+    notes: "Mapped through a CLOSED table (sim/latency/config.go:320-329):
+      float32=4, float16=2, bfloat16=2, int8=1, uint8=1, fp8=1, int4=1, nf4=1.
+      Anything else — or both keys absent — yields BytesPerParam=0, which is a hard
+      rejection, not a default. GLM-5 uses `dtype`."
+
+  - name: quantization_config
+    aliases: []
+    role: precision
+    consumed_as: sim.ModelConfig.WeightBytesPerParam
+    source_ref: "sim/latency/config.go:245-294"
+    nested: true
+    nested_keys: [quant_method, bits, config_groups]
+    notes: "Weight-only precision, independent of torch_dtype. Resolution order:
+      bits (number or numeric string) / 8; else quant_method == fp8 => 1.0; else
+      compressed-tensors => first config_groups.<k>.weights.num_bits in sorted key
+      order / 8; else 0 (= not quantized, fall back to BytesPerParam). Read at
+      sim/latency/config.go:380-384. weight_block_size and modules_to_not_convert
+      inside this block are NOT read — see gap blockwise_fp8_flattened."
+
+  # ── other ───────────────────────────────────────────────────────────────────
+  - name: hidden_act
+    aliases: []
+    role: other
+    consumed_as: sim.ModelConfig.HiddenAct / KVCapacityParams.HiddenAct
+    source_ref: "sim/latency/config.go:375"
+    notes: "Read again on the capacity path at sim/latency/kv_capacity.go:748. Its only
+      behavioral use is the SwiGLU-family gate (3-matrix MLP) at
+      sim/latency/kv_capacity.go:437-439 — a non-SwiGLU value is a hard rejection.
+      Roofline step time ignores it entirely (mlpMatrixCount always returns 2,
+      sim/latency/roofline.go:46-59)."
+
+  - name: tie_word_embeddings
+    aliases: []
+    role: other
+    consumed_as: latency.KVCapacityParams.TieWordEmbeddings
+    source_ref: "sim/latency/kv_capacity.go:750-752"
+    notes: "true drops the lm_head term (vocab_size x hidden_size) from the weight
+      estimate, sim/latency/kv_capacity.go:703-706. Boolean; a non-bool value is
+      ignored and treated as false."
+
+  - name: max_position_embeddings
+    aliases: []
+    role: other
+    consumed_as: "--max-model-len (CLI auto-derive)"
+    source_ref: "cmd/root.go:995"
+    notes: "Not part of sim.ModelConfig. Auto-derives --max-model-len when the flag is
+      not set, then capped at the KV-feasible maximum (cmd/root.go:1027+)."
+
+  - name: rope_scaling
+    aliases: []
+    role: rope
+    consumed_as: "--max-model-len multiplier"
+    source_ref: "cmd/root.go:249-315"
+    nested: true
+    nested_keys: [type, rope_type, factor, original_max_position_embeddings]
+    notes: "The ONLY use of RoPE anywhere in BLIS: max_position_embeddings x factor,
+      mirroring vLLM's _get_and_verify_max_len. Types su / longrope / llama3 are
+      blacklisted (already pre-scaled); yarn re-bases on
+      original_max_position_embeddings. Read at cmd/root.go:999. There is no
+      positional-encoding cost term, so no rope field affects step time or capacity."
+
+  - name: model_type
+    aliases: []
+    role: other
+    consumed_as: "rope_scaling gemma3 exception only"
+    source_ref: "cmd/root.go:998"
+    notes: "BLIS's ONE model-identity dispatch, and it is a single substring test:
+      strings.Contains(model_type, \"gemma3\") skips rope_scaling entirely
+      (cmd/root.go:259-261). Nothing else in BLIS branches on model_type, and NOTHING
+      anywhere branches on architectures[]. Also in
+      archwatch.config.IGNORED_CONFIG_KEYS."
+
+  - name: text_config
+    aliases: []
+    role: other
+    consumed_as: "pivoted onto the top level"
+    source_ref: "sim/latency/config.go:222-227"
+    nested: true
+    notes: "ParseHFConfig copies every key of text_config onto the top-level map, so a
+      multimodal config is judged on its TEXT tower. Surface.unparsed_fields() and
+      check_hard_validators() perform the same pivot. Note the pivot OVERWRITES top-level
+      keys, including model_type (gemma3 -> gemma3_text), which is why the gemma3 test is
+      a substring match. vision_config / audio_config are never read — see gap
+      vision_tower_unmodeled.
+
+      LOAD-BEARING, not an edge case. Frontier releases increasingly leave only
+      architectures / model_type / dtype / text_config / vision_config at the top level
+      and put EVERY shape field inside text_config. Without the pivot, unparsed_fields()
+      would report num_hidden_layers, hidden_size and the rest as 'fields BLIS does not
+      parse' and check_hard_validators() would resolve them all to 0 — T1 and Bucket 0
+      would both fire on essentially every multimodal-capable frontier release, which are
+      exactly the models this tool must not get wrong. Fixture:
+      tests/fixtures/surface/nested-text-config-frontier.json."
+
+
+# Keys BLIS deliberately never reads, because none of them can move a BLIS number.
+# BLIS's model is pure shape + precision + KV geometry: there is no epsilon, no
+# initializer, no dropout, no positional-encoding cost, and no bias term anywhere in
+# it. Listing these here (rather than letting them surface as "unparsed") is what
+# keeps T1 from firing on every plain dense config ever published.
+#
+# This list is deliberately TIGHT. When in doubt, leave a key OUT so it shows up as
+# unparsed: a noisy trigger is recoverable, a silently-swallowed new mechanism is not.
+ignored_fields:
+  - names: [initializer_range, initializer_factor]
+    why: "Weight-initialization stddev. Training-time only."
+  - names: [rms_norm_eps, layer_norm_eps, layer_norm_epsilon, layernorm_epsilon,
+            norm_epsilon, rms_norm_epsilon]
+    why: "Numerical epsilon inside a norm. BLIS charges norms by shape (2 x hidden per
+      layer, sim/latency/kv_capacity.go:696) and never by value."
+  - names: [rope_theta, rope_local_base_freq]
+    why: "RoPE base frequency. BLIS has no positional-encoding cost term at all; only
+      rope_scaling.factor matters, and only for --max-model-len."
+  - names: [attention_dropout, hidden_dropout, dropout, resid_pdrop, embd_pdrop,
+            attn_pdrop, classifier_dropout, hidden_dropout_prob,
+            attention_probs_dropout_prob, router_jitter_noise]
+    why: "Regularization. Inactive at inference."
+  - names: [attention_bias, mlp_bias, qkv_bias, use_bias, bias, attention_out_bias,
+            add_bias_linear, add_qkv_bias]
+    why: "BLIS's weight estimate omits every bias vector for every model uniformly
+      (sim/latency/kv_capacity.go:602-723 counts matrices only). The omission is
+      O(1/hidden_size) of the weight bytes and is not architecture-specific."
+  - names: [router_aux_loss_coef, output_router_logits, aux_loss_alpha, seq_aux]
+    why: "MoE load-balancing auxiliary loss. Training-time only."
+  - names: [use_sliding_window, max_window_layers]
+    why: "Inert on their own — sliding_window is the load-bearing key, and it IS
+      reported as unparsed (gap sliding_window_unmodeled). Flagging these two as well
+      would triple-count one mechanism."
+  - names: [pretraining_tp]
+    why: "Legacy Llama-2 field with no inference-time meaning."
+
+
+# ── Bucket 0, and the line between "would not run" and "runs, wrong" ──────────
+#
+# Every entry below was traced from the field read, through the validator, to the
+# CLI/caller that decides fatality. That last hop is the one that matters and it is NOT
+# uniform in BLIS, so each entry carries:
+#
+#   severity  the outcome of a DEFAULT `blis run` — the CLI's default backend is
+#             trained-physics (cmd/root.go:1486) and the default KV path is auto-calc
+#             (no --total-kv-blocks):
+#               fatal   the process aborts (logrus.Fatalf, or a panic from
+#                       sim/cluster/instance.go:70-72 wrapping a constructor error).
+#                       THIS is Bucket 0.
+#               silent  the run COMPLETES and reports numbers derived from a misread
+#                       config. NOT Bucket 0 — this is T1 evidence.
+#               mixed   the default backend runs (silently wrong) while another
+#                       supported backend aborts. Counted with `silent`, deliberately:
+#                       "BLIS would not run" must not be claimed for a configuration
+#                       that does run.
+#   observed  what the user actually sees. One line.
+#   fatal_at  the call chain that aborts, ending at the Fatalf/panic site.
+#   silent_when / inert_when
+#             the configurations in which the same condition does NOT abort.
+#
+# archwatch.surface.Surface.check_hard_validators() returns ONLY `severity: fatal`
+# entries; check_silent_validators() returns `silent` and `mixed`.
+#
+# Note for anyone reading these against PLAN.md: PLAN.md listed the unrecognized
+# torch_dtype and the unresolvable MoE expert count as Bucket 0 together. Tracing them
+# separates them — the dtype really does abort, the MoE one really does not on the
+# default backend. Both are recorded as traced, not as planned.
+hard_validators:
+
+  - id: positive_shape_fields
+    fields: [num_hidden_layers, hidden_size, num_attention_heads]
+    rule: "must be > 0"
+    severity: fatal
+    source_ref: "sim/latency/trained_physics_model.go:1018-1026"
+    also_at: ["sim/latency/config.go:535-543", "sim/latency/kv_capacity.go:110-118"]
+    failure: "rejected at latency-model construction, on both backends"
+    fatal_at: "trained_physics_model.go:1018-1026 (or ValidateRooflineConfig,
+      config.go:535-543) -> latency.go:195-213 -> panic at
+      sim/cluster/instance.go:70-72. On the default KV auto-calc path it aborts even
+      earlier: kv_capacity.go:110-118 -> CalculateKVBlocks -> logrus.Fatalf at
+      cmd/root.go:971-973."
+    observed: "Process aborts before any simulation runs, with 'must be > 0' naming the
+      field."
+    notes: "PLAN.md's example lumped intermediate_size and vocab_size in here. They are
+      split out below because their fatality is NOT the same: only these three are
+      checked by both backends' constructors. A key that is absent, or present with a
+      non-numeric value, reads as 0 through HFConfig.GetInt (sim/latency/config.go:36-43)
+      and fails here identically."
+
+  - id: positive_intermediate_size
+    fields: [intermediate_size, ffn_hidden_size]
+    rule: "must resolve > 0 (intermediate_size, else the ffn_hidden_size alias)"
+    severity: fatal
+    source_ref: "sim/latency/trained_physics_model.go:1027-1029"
+    also_at: ["sim/latency/kv_capacity.go:419-421"]
+    failure: "rejected at trained-physics construction; rejected by KV auto-calc on
+      either backend"
+    fatal_at: "trained_physics_model.go:1027-1029 -> latency.go:210-213 -> panic at
+      sim/cluster/instance.go:70-72; and kv_capacity.go:419-421 -> logrus.Fatalf at
+      cmd/root.go:971-973."
+    observed: "Process aborts: 'IntermediateDim must be > 0'."
+    silent_when: "--latency-model roofline TOGETHER WITH an explicit --total-kv-blocks.
+      ValidateRooflineConfig does not check IntermediateDim at all, and roofline
+      SUBSTITUTES dFF = 4 x hidden_size with no diagnostic
+      (sim/latency/roofline.go:77-80). The run then completes with a fabricated FFN
+      width."
+
+  - id: positive_vocab_size
+    fields: [vocab_size]
+    rule: "must be > 0"
+    severity: fatal
+    source_ref: "sim/latency/kv_capacity.go:422-424"
+    failure: "rejected by KV-capacity auto-calculation"
+    fatal_at: "kv_capacity.go:422-424 -> CalculateKVBlocks -> logrus.Fatalf at
+      cmd/root.go:971-973."
+    observed: "Process aborts: 'KV capacity auto-calculation failed: ... vocab_size must
+      be > 0'."
+    inert_when: "--total-kv-blocks is set. CalculateKVBlocks is then never called, and
+      it is the ONLY consumer of vocab_size anywhere in BLIS — no step-time term reads
+      it — so the run completes and nothing is wrong for want of it."
+
+  - id: nonnegative_shape_fields
+    fields: [head_dim, kv_lora_rank, qk_rope_head_dim, first_k_dense_replace]
+    rule: "must be >= 0"
+    severity: fatal
+    source_ref: "sim/latency/config.go:428-440"
+    failure: "rejected at parse time in GetModelConfigFromHF"
+    fatal_at: "config.go:437-439 -> GetModelConfigFromHF error -> logrus.Fatalf at
+      cmd/root.go:896-899."
+    observed: "Process aborts: 'Failed to load model config: GetModelConfigFromHF:
+      <field> must be >= 0, got -N'."
+    notes: "The most unconditional check in the surface: it fires before the backend or
+      the KV path is chosen. Without it a negative kv_lora_rank would fall through to
+      the standard MHA path (wrong KV capacity, no error) and a negative
+      first_k_dense_replace would clamp to 0. num_key_value_heads is NOT in this loop —
+      see nonnegative_kv_head_count."
+
+  - id: recognized_torch_dtype
+    fields: [torch_dtype, dtype]
+    rule: "the compute dtype is resolved from torch_dtype, ELSE from dtype; the resolved
+      string must be one of: float32, float16, bfloat16, int8, uint8, fp8, int4, nf4.
+      Only a value absent from BOTH keys, or present but unrecognized, yields
+      BytesPerParam = 0"
+    severity: fatal
+    source_ref: "sim/latency/trained_physics_model.go:1051-1053"
+    also_at: ["sim/latency/config.go:320-329", "sim/latency/config.go:544-546",
+              "sim/latency/kv_capacity.go:119-121"]
+    failure: "BytesPerParam = 0, rejected at latency-model construction AND by KV
+      auto-calculation"
+    fatal_at: "Two independent, unconditional aborts. (1) kv_capacity.go:119-121 ->
+      CalculateKVBlocks -> logrus.Fatalf at cmd/root.go:971-973 (default path, hit
+      first). (2) trained_physics_model.go:1051-1053, or roofline's
+      invalidPositiveFloat(BytesPerParam) at config.go:544-546 -> latency.go:195-213 ->
+      panic at sim/cluster/instance.go:70-72."
+    observed: "Process aborts: '... precision (BytesPerParam) must be a valid positive
+      number, got 0'. The message never mentions torch_dtype, so the cause is not
+      obvious from the error alone."
+    notes: "VERIFIED FATAL — PLAN.md's claim holds. The map at sim/latency/config.go:320-329
+      is CLOSED, so an unlisted dtype string (float4_e2m1, fp8_e4m3, float8_e4m3fn,
+      mxfp4) yields 0, indistinguishable from the key being absent. quantization_config
+      does NOT rescue it: that populates WeightBytesPerParam, a different field. Neither
+      does applyWeightPrecisionFallback (cmd/hfconfig.go:256-277), which also only
+      touches WeightBytesPerParam. This is the highest-value Bucket-0 check for a
+      genuinely new numeric format.
+
+      NOT A GAP: a modern config carrying only `dtype` (no `torch_dtype`) is handled
+      correctly. sim/latency/config.go:334-338 is an if/else-if on torch_dtype-as-string
+      then dtype-as-string, and the comment there names GLM-5 as the reason. Every
+      2026-era release using 'dtype: bfloat16' resolves to 2 bytes/param and this
+      validator does not fire. A validator keyed on torch_dtype alone would be dead code
+      against modern configs, which is why the rule above is written as a resolution
+      ORDER rather than as a required key.
+
+      ONE SUBTLETY, and it is a real Bucket-0 path: because it is else-IF and not a
+      first-VALID-value chain, a torch_dtype that IS a string but is NOT in the map short
+      -circuits — `dtype` is never consulted. So
+      {torch_dtype: 'float4_e2m1', dtype: 'bfloat16'} yields BytesPerParam = 0 and
+      aborts, even though a readable dtype is sitting right there. A vendor shipping a new
+      format under the legacy key while keeping a sane `dtype` alongside it hits this."
+
+  - id: head_counts_tp_divisible
+    fields: [num_attention_heads, num_key_value_heads]
+    rule: "must be divisible by TP"
+    severity: fatal
+    source_ref: "sim/latency/trained_physics_model.go:1030-1039"
+    also_at: ["sim/latency/kv_capacity.go:170-172"]
+    failure: "rejected at latency-model construction"
+    fatal_at: "trained_physics_model.go:1030-1039 -> latency.go:210-213 -> panic at
+      sim/cluster/instance.go:70-72; kv_capacity.go:170-172 -> logrus.Fatalf at
+      cmd/root.go:971-973 (only when num_kv_heads >= TP)."
+    observed: "Process aborts: 'NumHeads (N) must be divisible by TP (M)'."
+    evaluated_by_archwatch: false
+    notes: "NOT EVALUATED. archwatch judges a bare config.json and so assumes the CLI
+      default TP=1 (archwatch.surface.ASSUMED_TP), at which every positive integer
+      divides. Recorded because it is real Bucket 0 for a deployment, and because the
+      implementation goes live if archwatch is ever given a TP. The absent/zero/unreadable
+      head-count cases PLAN.md folded in here are covered by positive_shape_fields,
+      kv_head_count_unreadable, and nonnegative_kv_head_count instead."
+
+  - id: kv_head_count_unreadable
+    fields: [num_key_value_heads, num_kv_heads, multi_query_group_num]
+    rule: "if present, must be a JSON number (a numeric STRING is not)"
+    severity: silent
+    source_ref: "sim/latency/config.go:315-317"
+    also_at: ["sim/latency/config.go:36-43", "sim/latency/kv_capacity.go:166-168"]
+    failure: "none — reads as 0 and falls back to num_attention_heads (MHA)"
+    silent_when: "always. There is no guard on this path in either backend."
+    observed: "No error and no warning anywhere. A GQA/MQA model is sized and timed as
+      full MHA: KV bytes/token are over-counted by
+      num_attention_heads / num_key_value_heads (Llama-3.1-70B: 8x), so KV block
+      capacity is under-reported and decode step time over-estimated. The run looks
+      completely normal."
+    notes: "This is a genuine T1 case, not Bucket 0: exactly the 'silently wrong numbers'
+      failure mode the tool exists to find. Reached by any vendor that writes
+      \"num_key_value_heads\": \"8\", or invents a fourth spelling BLIS's alias chain
+      (sim/latency/config.go:312) does not know."
+
+  - id: nonnegative_kv_head_count
+    fields: [num_key_value_heads, num_kv_heads, multi_query_group_num]
+    rule: "must be >= 0"
+    severity: fatal
+    source_ref: "sim/latency/kv_capacity.go:163-165"
+    failure: "rejected in KVBytesPerToken"
+    fatal_at: "kv_capacity.go:163-165 -> CalculateKVBlocks -> logrus.Fatalf at
+      cmd/root.go:971-973."
+    observed: "Process aborts: 'num_kv_heads must be >= 0, got -N'."
+    silent_when: "--total-kv-blocks is set. GetModelConfigFromHF's negative-rejection
+      loop (config.go:428-440) does NOT cover num_key_value_heads, and the
+      trained-physics guard is a divisibility test — at TP=1, -8 % 1 == 0 passes
+      (trained_physics_model.go:1037-1039). dKV then goes negative
+      (trained_physics_model.go:1150) and the KV bandwidth terms subtract time."
+
+  - id: hidden_size_divisible_by_heads
+    fields: [hidden_size, num_attention_heads, head_dim]
+    rule: "hidden_size % num_attention_heads == 0, unless head_dim > 0 or the model is
+      MLA (kv_lora_rank > 0)"
+    severity: fatal
+    source_ref: "sim/latency/kv_capacity.go:158-160"
+    failure: "rejected in KVBytesPerToken"
+    fatal_at: "kv_capacity.go:158-160 -> CalculateKVBlocks -> logrus.Fatalf at
+      cmd/root.go:971-973."
+    observed: "Process aborts: 'hidden_dim (N) must be evenly divisible by
+      num_attention_heads (M)'."
+    silent_when: "--total-kv-blocks is set, and ALWAYS for step time. No step-time guard
+      exists: headDim = hidden_size/num_attention_heads is Go integer division
+      (trained_physics_model.go:1078, roofline.go:74), so a non-divisible pair silently
+      truncates the head dim and shrinks every attention and KV-bandwidth term. An
+      explicit head_dim skips this check but does NOT fix the step-time path — see gap
+      explicit_head_dim_step_time_blind."
+
+  - id: swiglu_family_hidden_act
+    fields: [hidden_act]
+    rule: "must be one of: silu, swiglu, geglu, situ, or absent/empty"
+    severity: fatal
+    source_ref: "sim/latency/kv_capacity.go:437-439"
+    also_at: ["sim/latency/kv_capacity.go:58-70"]
+    failure: "rejected in CalculateKVBlocks"
+    fatal_at: "kv_capacity.go:437-439 -> CalculateKVBlocks error -> logrus.Fatalf at
+      cmd/root.go:971-973."
+    observed: "Process aborts: '--latency-model: KV capacity auto-calculation failed:
+      CalculateKVBlocks: unsupported activation \"gelu\"; only SwiGLU-family activations
+      (silu, swiglu, geglu, situ) are supported'."
+    inert_when: "--total-kv-blocks is set. CalculateKVBlocks is then never called and
+      nothing else in BLIS branches on hidden_act — roofline's mlpMatrixCount discards
+      it and always returns 2 (sim/latency/roofline.go:56-59) — so the run completes and
+      no number is wrong for want of it."
+    notes: "The set is closed and case-SENSITIVE (a plain map lookup). gelu, relu,
+      gelu_pytorch_tanh, gelu_new and every 2-matrix activation are rejected: the weight
+      estimator assumes a 3-matrix gated MLP. Kimi-K3's situ (SiTU-GLU) was added because
+      it is 3-matrix; the gate nonlinearity itself is irrelevant to BLIS."
+
+  - id: moe_expert_count_resolvable
+    fields: [num_experts, moe_num_experts, n_routed_experts, num_local_experts,
+             num_routed_experts, num_experts_per_tok, num_experts_per_token,
+             n_shared_experts, num_shared_experts]
+    rule: "if any MoE activation/shared-expert field is > 0, some total-expert-count
+      field must resolve to >= 2"
+    severity: mixed
+    source_ref: "sim/latency/kv_capacity.go:779-786"
+    also_at: ["sim/latency/config.go:575-579", "sim/latency/trained_physics_model.go:1066"]
+    failure: "warned and degraded on trained-physics; rejected on roofline"
+    silent_when: "the DEFAULT backend, trained-physics. ExtractKVCapacityParams returns
+      an error, but all three call sites only logrus.Warnf and keep the previous
+      total-kv-blocks (cmd/root.go:951-956, cmd/root.go:1916-1918,
+      cmd/replay.go:456-458). GetModelConfigFromHF does not error at all — it yields
+      NumLocalExperts=0 with NumExpertsPerTok set — and the trained-physics
+      constructor's ONLY MoE guard is `NumLocalExperts > 1 && NumExpertsPerTok <= 0`
+      (trained_physics_model.go:1066), which 0 does not trip. The model is therefore
+      built with isMoE=false, numMoELayers=0, numDenseLayers=NumLayers
+      (trained_physics_model.go:1081-1090) and the run COMPLETES."
+    fatal_at: "roofline only: config.go:575-579 (NumLocalExperts == 0 &&
+      NumExpertsPerTok > 0) -> ValidateRooflineConfig -> latency.go:195-197 -> panic at
+      sim/cluster/instance.go:70-72."
+    observed: "Default (trained-physics): ONE warning line — 'could not extract KV
+      capacity params: model appears to be MoE (num_experts_per_tok=8) but
+      num_local_experts is missing' — then a completed run whose step time is a DENSE
+      model's and whose KV capacity is the untouched default block count. Under
+      --latency-model roofline: process aborts."
+    notes: "NOT BUCKET 0 on the default backend — PLAN.md's classification is wrong here,
+      and this is the single most valuable T1 case in the surface. A trillion-parameter
+      sparse model that invents a new spelling for the expert total is simulated as a
+      dense model of intermediate_size FFN, off by orders of magnitude, behind one
+      warning line. sim.MoEMinExperts = 2 (sim/model_hardware_config.go:145), so a
+      1-expert config is dense, not MoE."
+
+  - id: moe_active_expert_count_required
+    fields: [num_experts_per_tok, num_experts_per_token]
+    rule: "when the resolved total expert count is > 1, an active-expert count must
+      be > 0"
+    severity: fatal
+    source_ref: "sim/latency/trained_physics_model.go:1066-1068"
+    also_at: ["sim/latency/config.go:565-569"]
+    failure: "rejected at latency-model construction, on both backends"
+    fatal_at: "trained_physics_model.go:1066-1068, or config.go:565-569 for roofline ->
+      latency.go:195-213 -> panic at sim/cluster/instance.go:70-72."
+    observed: "Process aborts: panic '... MoE config invalid - NumLocalExperts=N but
+      NumExpertsPerTok must be > 0'."
+    notes: "The mirror image of moe_expert_count_resolvable — a new spelling for the
+      ACTIVATION count — and, unlike it, genuinely fatal on both backends. BLIS accepts
+      num_experts_per_tok and num_experts_per_token only (sim/latency/config.go:106)."
+
+  - id: moe_active_not_exceeding_total
+    fields: [num_experts_per_tok, num_experts_per_token, num_experts, n_routed_experts,
+             num_local_experts, moe_num_experts, num_routed_experts]
+    rule: "active experts per token must not exceed the total expert count (checked only
+      when the total is > 1)"
+    severity: mixed
+    source_ref: "sim/latency/config.go:570-574"
+    failure: "rejected by ValidateRooflineConfig; unchecked on trained-physics"
+    silent_when: "the default backend, trained-physics — no such check exists in its
+      constructor. kEff = max(1, NumExpertsPerTok) (trained_physics_model.go:1153) feeds
+      sim.BalancedPlacement (trained_physics_model.go:604, :1165) with more active
+      experts than exist, over-counting MoE FFN compute and routed-expert weight bytes
+      with no diagnostic."
+    fatal_at: "config.go:570-574 -> ValidateRooflineConfig -> latency.go:195-197 ->
+      panic at sim/cluster/instance.go:70-72."
+    observed: "Default: completes, MoE FLOPs and weight bytes over-counted, no message.
+      Under roofline: aborts."
+    notes: "Reported because a mis-resolved alias pair is a common way for a new MoE
+      spelling to produce this inversion."
+
+  - id: moe_total_required_when_active_present
+    fields: [num_experts_per_tok, num_experts_per_token]
+    rule: "an active-expert count > 0 requires a resolved total expert count > 0"
+    severity: mixed
+    source_ref: "sim/latency/config.go:575-579"
+    failure: "rejected by ValidateRooflineConfig; unchecked on trained-physics"
+    silent_when: "the default backend, trained-physics. Same mechanism as
+      moe_expert_count_resolvable's silent path."
+    fatal_at: "config.go:575-579 -> ValidateRooflineConfig -> latency.go:195-197 ->
+      panic at sim/cluster/instance.go:70-72."
+    observed: "Default: completes as a dense model. Under roofline: aborts with 'MoE:
+      NumExpertsPerTok=N but NumLocalExperts=0 (inconsistent)'."
+    notes: "The same underlying condition as moe_expert_count_resolvable, seen from the
+      roofline validator instead of the capacity extractor. Recorded separately because
+      it is a distinct code path with a distinct message; both fire together."
+
+# ── Cannot be determined by reading the code ─────────────────────────────────
+# Nothing in the list above is a guess: every severity was traced to a logrus.Fatalf or
+# a panic site, or to the demonstrated absence of any guard. Two limits worth stating
+# plainly rather than hiding:
+#
+#  1. severity describes a DEFAULT `blis run`. `blis replay` (cmd/replay.go) and the
+#     cluster node-pool path (sim/cluster/kv_autocalc.go:98-102) degrade on some of the
+#     same errors that abort under `blis run` — kv_autocalc.go explicitly warns and
+#     keeps the inherited capacity. A severity here is therefore a claim about the
+#     default command, not about every entry point.
+#  2. The sim-package API default differs from the CLI default: SimConfig.Backend == ""
+#     resolves to ROOFLINE (sim/config.go:276, sim/latency/latency.go:190-191), while
+#     the CLI defaults to trained-physics (cmd/root.go:1486). A caller embedding BLIS as
+#     a library therefore hits the roofline validators, which turns all three `mixed`
+#     entries fatal. archwatch reports the CLI default because that is what a model
+#     release is judged against.

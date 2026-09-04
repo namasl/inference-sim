@@ -122,16 +122,22 @@ open questions.
 
 For Bucket 3, name the specific functions. The full set of seams for adding a mechanism:
 
-| Concern | Location |
+| Concern | Location (function, not line — see note) |
 |---|---|
-| New config field on the struct | `sim/model_hardware_config.go:6` (+ an `Is*`/`Effective*` predicate) |
-| Parse it (both paths, keep in sync) | `GetModelConfigFromHF` `sim/latency/config.go:289` and `ExtractKVCapacityParams` `sim/latency/kv_capacity.go:521` |
-| Per-token KV sizing | `KVBytesPerToken` `sim/latency/kv_capacity.go:91` (auto-propagates to PD transfer and KV offload) |
-| Model weight footprint | `computeModelWeightBytes` `sim/latency/kv_capacity.go:394` |
-| Step-time physics | `StepTime` `sim/latency/trained_physics_model.go:190` and the constructor feature-freeze `:540`; roofline equivalents in `sim/latency/roofline.go` |
-| User-facing warning | `cmd/root.go` (existing pattern around `:614-632`) |
+| New config field on the struct | `ModelConfig` in `sim/model_hardware_config.go` (+ an `Is*`/`Effective*` predicate) |
+| Parse it (both paths, keep in sync) | `GetModelConfigFromHF` in `sim/latency/config.go` **and** `ExtractKVCapacityParams` in `sim/latency/kv_capacity.go` |
+| Per-token KV sizing | `KVBytesPerToken` in `sim/latency/kv_capacity.go` (auto-propagates to PD transfer and KV offload) |
+| Model weight footprint | `computeModelWeightBytes` in `sim/latency/kv_capacity.go` |
+| Step-time physics | `StepTime` and `NewTrainedPhysicsModel` in `sim/latency/trained_physics_model.go`; roofline equivalents in `sim/latency/roofline.go` |
+| User-facing warning | `cmd/root.go` (follow the existing warning pattern) |
 | Docs | `docs/reference/models.md` |
-| New learned coefficient | only if the new term needs its own beta: `defaults.yaml` + the beta-count logic at `trained_physics_model.go:545` |
+| New learned coefficient | only if the new term needs its own beta: `defaults.yaml` + the beta-count logic in `trained_physics_model.go` |
+
+> **Cite functions, not line numbers.** Line refs rot fast — the ones originally written into
+> this skill were harvested from a different checkout of BLIS than the one being analyzed, and
+> every one of them had drifted. Verified `file:line` refs live in
+> `support-surface/parsed-fields.yaml`, which carries a test that bounds-checks each ref against
+> the real Go files. Read them from there; do not trust a line number quoted in prose.
 
 Note there is **no plugin or registry seam for architectures** in BLIS — adding mechanism
 support means editing these shared functions, not registering a new type. Say so when

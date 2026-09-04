@@ -1,0 +1,20 @@
+{
+  "architectures": ["NovelHybridSsmForCausalLM"],
+  "model_type": "novel_hybrid_ssm",
+  "dtype": "bfloat16",
+  "hidden_act": "silu",
+  "hidden_size": 4096,
+  "intermediate_size": 14336,
+  "num_attention_heads": 32,
+  "num_hidden_layers": 64,
+  "num_key_value_heads": 8,
+  "sliding_window": 4096,
+  "use_sliding_window": true,
+  "max_window_layers": 64,
+  "layer_types": ["mamba", "mamba", "mamba", "full_attention"],
+  "mamba_d_state": 128,
+  "mamba_expand": 2,
+  "conv_kernel": 4,
+  "tie_word_embeddings": false,
+  "vocab_size": 131072
+}

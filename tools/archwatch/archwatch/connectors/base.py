@@ -90,7 +90,19 @@ class Candidate:
 
     # findings from the deterministic checks (no LLM involved)
     unparsed_fields: list[str] = field(default_factory=list)
+
+    # FATAL validator failures only — conditions where BLIS refuses to run.
+    # Whatever populates this MUST use Surface.check_hard_validators(), never the
+    # silent set: Candidate.would_not_run is derived from it and would otherwise lie.
     bucket0_failures: list[str] = field(default_factory=list)
+
+    # SILENT validator failures: BLIS runs, emits a warning at most, and produces
+    # confidently wrong numbers. This is the highest-value finding class in the whole
+    # pipeline — the failure mode archwatch exists to catch — and it is strictly
+    # separate from bucket0_failures. Example found in BLIS today: a config whose
+    # expert count uses an unrecognized spelling makes a trillion-parameter sparse
+    # MoE simulate as a dense model, behind a single logrus.Warnf.
+    silent_failures: list[str] = field(default_factory=list)
     est_total_params: int | None = None
     est_active_params: int | None = None
 

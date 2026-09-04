@@ -70,6 +70,12 @@ class DetectorConfig:
     # Cap on how many HF configs to fetch per poll (rate-limit guard).
     max_hf_config_fetches: int = 200
 
+    # Shared GitHub REST budget per poll, across the framework and InferenceX
+    # connectors. Core is ~5000 req/hr but /search/issues is only 30 req/min, so
+    # the search-based paths are the real constraint. Measured live: ~60 calls for
+    # a 7-day framework poll, ~35 for InferenceX, ~105 for a 30-day backtest window.
+    max_github_requests: int = 400
+
     # Closes the filter's largest recall hole, at a cost in precision.
     #
     # Normally a candidate whose architecture is already known is suppressed
