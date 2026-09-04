@@ -25,13 +25,16 @@ from archwatch.novelty import (
     SIGNIFICANCE_IDS,
     TRIGGER_IDS,
     LmShapeEvidence,
+    MIN_FAMILY_KEY_LEN,
     _strength,
+    coherent_arch_ids,
     evaluate,
     evaluate_detailed,
     join_signals,
     lm_shape_evidence,
     normalize_family_key,
     normalize_repo_key,
+    signal_edges,
     matched_gaps,
     normalize_arch_key,
     structural_identity,
@@ -190,7 +193,25 @@ def surface(**kwargs) -> FakeSurface:
 
 
 def cfg(**kwargs) -> DetectorConfig:
-    """DetectorConfig with the frozen defaults unless a test overrides one."""
+    """DetectorConfig with the shipped defaults unless a test overrides one.
+
+    Use this when the test does not depend on a particular threshold. When it *does*,
+    use :func:`strict_cfg` or pass the value explicitly — the defaults are backtest
+    outputs and move, and a test that silently inherits one can have its assertion
+    inverted by a calibration change rather than by a code change.
+    """
+    return DetectorConfig(**kwargs)
+
+
+def strict_cfg(**kwargs) -> DetectorConfig:
+    """Config pinned to the pre-calibration behaviour, for tests that assert on it.
+
+    ``recheck_known_architectures=False`` so "a known architecture is suppressed" means
+    what it says, and ``min_total_params=30B`` so scale-gate tests are not carried by a
+    lowered threshold. Both are stated here rather than inherited.
+    """
+    kwargs.setdefault("recheck_known_architectures", False)
+    kwargs.setdefault("thresholds", Thresholds(min_total_params=30_000_000_000))
     return DetectorConfig(**kwargs)
 
 
@@ -376,9 +397,14 @@ def test_join_prefers_a_populated_display_name():
 
 
 def test_known_architecture_is_suppressed():
-    """A LlamaForCausalLM fine-tune is the firehose; it must never reach a trigger."""
+    """A LlamaForCausalLM fine-tune is the firehose; it must never reach a trigger.
+
+    Pinned to ``recheck_known_architectures=False``: this asserts the suppressor itself,
+    not the shipped default, which the backtest has since flipped to True.
+    """
     report = run([sig(arch="LlamaForCausalLM", model_ids=("someorg/my-llama-tune",),
-                      config=load("dense_llama31_70b"), org="meta-llama")])
+                      config=load("dense_llama31_70b"), org="meta-llama")],
+                 conf=strict_cfg())
     assert report.passed == []
     assert reasons(report) == ["known_architecture"]
 
@@ -730,7 +756,7 @@ def test_s1_scale_threshold_is_respected_in_both_directions():
              "intermediate_size": 2816, "hidden_act": "silu",
              "novel_recurrent_gate": 4, "tie_word_embeddings": False}
     report = run([sig(arch="TinyNovelForCausalLM", org="hobbyist",
-                      model_ids=("hobbyist/tiny",), config=small)])
+                      model_ids=("hobbyist/tiny",), config=small)], conf=strict_cfg())
     assert report.passed == []
     assert reasons(report) == ["insignificant"]
     assert "T1" in report.dropped[0].detail
@@ -964,7 +990,7 @@ def test_report_counts_tally_every_stage():
         sig(arch="GriffinMoeForCausalLM", org="hobbyist", model_ids=("hobbyist/g",),
             config=load("novel_arch_large")),
     ]
-    report = run(signals)
+    report = run(signals, conf=strict_cfg())
     assert report.counts == {
         "passed": 1,
         "known_architecture": 1,
@@ -1094,7 +1120,7 @@ def test_report_summary_is_a_single_readable_line():
         sig(arch="GriffinMoeForCausalLM", org="hobbyist", model_ids=("hobbyist/g",),
             config=load("novel_arch_large")),
     ]
-    summary = run(signals).summary()
+    summary = run(signals, conf=strict_cfg()).summary()
     assert summary.startswith("3 candidates -> 1 passed; dropped: ")
     assert "known_architecture=1" in summary
     assert "all_model_ids_derivative=1" in summary
@@ -1221,7 +1247,7 @@ def test_known_arch_with_an_inert_config_is_suppressed_under_both_settings():
     architecture into an issue."""
     signals = [_known_arch_signal(load("dense_llama31_70b"))]
 
-    off = run(signals)
+    off = run(signals, conf=cfg(recheck_known_architectures=False))
     assert off.passed == []
     assert reasons(off) == ["known_architecture"]
 
@@ -1239,9 +1265,9 @@ def test_known_arch_with_novel_fields_surfaces_only_when_rechecking():
                  sparse_attention_window=4096)
     signals = [_known_arch_signal(grown)]
 
-    off = run(signals)
+    off = run(signals, conf=cfg(recheck_known_architectures=False))
     assert off.passed == []
-    assert reasons(off) == ["known_architecture"], "today's behaviour: never looked at"
+    assert reasons(off) == ["known_architecture"], "pre-calibration behaviour"
 
     on = run(signals, conf=cfg(recheck_known_architectures=True))
     assert [c.arch_id for c in on.passed] == ["LlamaForCausalLM"]
@@ -1392,25 +1418,20 @@ def test_hf_only_signal_with_an_arch_but_no_config_is_still_suppressed():
 
 
 def test_framework_signal_with_no_arch_ids_routes_through_the_alias_path():
-    """Umbrella PRs and follow-ups legitimately carry no architecture name. Normal,
-    not malformed: they key off display_name and must not crash."""
-    report = run([sig("vllm", display_name="[Model] Support Kimi K3 (follow-up)",
-                      raw_ref="30099")])
-    cand = report.passed[0]
-    assert cand.arch_id == "[Model] Support Kimi K3 (follow-up)"
-    assert cand.triggers == ["T2", ALIAS_JOIN_MARKER]
-    assert cand.significance == ["S3"]
-
-
-def test_framework_signal_carrying_only_a_registry_key_survives():
-    report = run([sig("sglang", display_name="kimi_k3", raw_ref="4412")])
-    assert report.passed[0].arch_id == "kimi_k3"
-    assert ALIAS_JOIN_MARKER in report.passed[0].triggers
+    """The join step must not crash or treat these as malformed — they key off
+    display_name. ``evaluate`` then suppresses them; see
+    test_a_framework_pr_yielding_no_architecture_is_suppressed."""
+    cands = join_signals([sig("vllm", display_name="[Model] Support Kimi K3 (follow-up)",
+                              raw_ref="30099")])
+    assert cands[0].arch_id == "[Model] Support Kimi K3 (follow-up)"
+    assert ALIAS_JOIN_MARKER in cands[0].triggers
 
 
 def test_framework_signal_is_still_suppressed_when_it_is_a_known_architecture():
-    """Exempting curated sources must not resurrect a seeded architecture."""
-    report = run([sig("vllm", arch="LlamaForCausalLM", raw_ref="1")])
+    """Exempting curated sources must not resurrect a seeded architecture. A framework
+    PR is not a benchmark, so it gets no known_architecture exemption."""
+    report = run([sig("vllm", arch="LlamaForCausalLM", raw_ref="1")],
+                 conf=strict_cfg())
     assert reasons(report) == ["known_architecture"]
 
 
@@ -1701,10 +1722,17 @@ def test_t5_does_not_fire_for_a_framework_only_candidate():
     assert report.passed[0].triggers == ["T2"]
 
 
-def test_t5_does_not_fire_for_a_known_architecture_under_recheck():
-    """The re-check path is T1-only: an InferenceX benchmark of Llama is not news."""
-    report = run([sig("inferencex", arch="LlamaForCausalLM", raw_ref="1")],
-                 conf=cfg(recheck_known_architectures=True))
+def test_t2_t3_t4_stay_withheld_on_the_recheck_path():
+    """A framework PR against a seeded architecture is not news, and neither is a
+    frontier org republishing one. Only T1 and T5 may fire there."""
+    report = run(
+        [
+            sig("vllm", arch="LlamaForCausalLM", raw_ref="1"),
+            sig("hf", arch="LlamaForCausalLM", org="meta-llama",
+                model_ids=("meta-llama/Llama-3.1-70B",), config=load("dense_llama31_70b")),
+        ],
+        conf=cfg(recheck_known_architectures=True),
+    )
     assert reasons(report) == ["known_architecture_nothing_new"]
 
 
@@ -1868,7 +1896,7 @@ def test_a_known_architecture_that_now_silently_misreads_surfaces_under_recheck(
     signals = [sig("hf", arch="LlamaForCausalLM", org="meta-llama",
                    model_ids=("meta-llama/Llama-4-Scout",),
                    config=load("dense_llama31_70b"))]
-    off = run(signals, surf=surf)
+    off = run(signals, surf=surf, conf=cfg(recheck_known_architectures=False))
     assert reasons(off) == ["known_architecture"]
 
     on = run(signals, surf=surf, conf=cfg(recheck_known_architectures=True))
@@ -1948,7 +1976,7 @@ def test_the_exemption_is_logged(caplog):
 def test_the_exemption_does_not_bypass_the_non_hf_noise_suppressors():
     """It is scoped to the HF-noise class. Known-architecture, dedup and quant-repack
     suppressors are about the architecture itself and still apply."""
-    known = run([sig("vllm", arch="LlamaForCausalLM", raw_ref="1")])
+    known = run([sig("vllm", arch="LlamaForCausalLM", raw_ref="1")], conf=strict_cfg())
     assert reasons(known) == ["known_architecture"]
 
     repack = run([
@@ -2124,50 +2152,63 @@ def test_a_non_lm_config_that_blis_would_run_is_not_touched_by_this_suppressor()
 
 
 # ---------------------------------------------------------------------------
-# framework_title_only: a PR title is not a model
+# framework_no_architecture: a PR title is not a model
 # ---------------------------------------------------------------------------
 
 
-def _title_only(title: str, ref: str = "1", source: str = "vllm") -> Signal:
+def _no_arch_pr(title: str, ref: str = "1", source: str = "vllm",
+                strength: str = "title_only") -> Signal:
+    """A framework PR from which no architecture name could be extracted."""
     return sig(source, display_name=title, raw_ref=ref,
-               extra={"signal_strength": "title_only", "pr_title": title})
+               extra={"signal_strength": strength, "pr_title": title})
 
 
 @pytest.mark.parametrize(
-    "title",
+    "title,strength",
     [
-        "Find attention with a fuser and attach vLLM's layer to it",
-        "gfx1250 on ROCM 10",
-        "video embeds input",
+        # The first three became actual stub filenames on a live run. Note the strength:
+        # they were new_model_file, NOT title_only, which is exactly why keying on the
+        # connector's strength label failed to catch them.
+        ("Find attention with a fuser and attach vLLM's layer to it", "new_model_file"),
+        ("gfx1250 on ROCM 10", "new_model_file"),
+        ("video embeds input", "new_model_file"),
+        ("[Model] Support Kimi K3 (follow-up)", "title_only"),
+        ("[Model] Add something", "prose"),
     ],
 )
-def test_a_title_only_pr_is_suppressed(title):
-    """These three became actual stub filenames on a live run."""
-    report = run([_title_only(title)])
+def test_a_framework_pr_yielding_no_architecture_is_suppressed(title, strength):
+    report = run([_no_arch_pr(title, strength=strength)])
     assert report.passed == []
-    assert reasons(report) == ["framework_title_only"]
-    assert "no extractable architecture" in report.dropped[0].detail
+    assert reasons(report) == ["framework_no_architecture"]
+    assert "yielding no architecture id" in report.dropped[0].detail
+    assert strength in report.dropped[0].detail, "strength kept for diagnostics"
 
 
-@pytest.mark.parametrize("strength", ["registry", "new_model_file", "model_class", "prose"])
-def test_a_stronger_framework_signal_still_passes(strength):
-    report = run([sig("vllm", display_name="[Model] Add something", raw_ref="1",
+@pytest.mark.parametrize("strength", ["registry", "new_model_file", "model_class",
+                                      "prose", "title_only"])
+def test_an_architecture_id_rescues_a_framework_pr_not_its_strength(strength):
+    """The corrected rule. A strength label says how hard the connector looked, not
+    whether it found anything; only an architecture name earns a stub."""
+    report = run([sig("vllm", arch="K2HorizonForCausalLM", raw_ref="1",
+                      display_name="[Model] Add K2Horizon",
                       extra={"signal_strength": strength})])
-    assert [c.triggers for c in report.passed] == [["T2", ALIAS_JOIN_MARKER]]
+    assert [c.arch_id for c in report.passed] == ["K2HorizonForCausalLM"]
+    assert report.passed[0].triggers == ["T2"]
 
 
-def test_one_strong_signal_rescues_a_candidate_joined_with_title_only_prs():
-    strong = sig("vllm", display_name="K2Horizon", raw_ref="2",
-                 extra={"signal_strength": "registry"})
-    weak = _title_only("K2Horizon", ref="3")
+def test_one_arch_bearing_signal_rescues_a_candidate_joined_with_nameless_prs():
+    strong = sig("vllm", arch="K2HorizonForCausalLM", raw_ref="2",
+                 model_ids=("moonshot/K2-Horizon",), extra={"signal_strength": "registry"})
+    weak = _no_arch_pr("K2Horizon", ref="3")
+    weak.model_ids = ["moonshot/K2-Horizon"]  # joins on the repo edge
     report = run([weak, strong])
-    assert [c.arch_id for c in report.passed] == ["K2Horizon"]
+    assert [c.arch_id for c in report.passed] == ["K2HorizonForCausalLM"]
 
 
-def test_a_title_only_pr_does_not_suppress_a_candidate_with_an_hf_config():
+def test_a_nameless_pr_does_not_suppress_a_candidate_with_an_hf_config():
     """Vela-shaped guard: a real model with no ``architectures[]`` also takes the alias
     path, so the rule requires that EVERY signal be a title_only framework signal."""
-    weak = _title_only("Vela-Lumen-31M", ref="9")
+    weak = _no_arch_pr("Vela-Lumen-31M", ref="9")
     weak.model_ids = ["ParallaxOpen/Vela-Lumen-31M"]  # connector mines ids from PR bodies
     report = run(
         [
@@ -2178,28 +2219,226 @@ def test_a_title_only_pr_does_not_suppress_a_candidate_with_an_hf_config():
         ]
     )
     assert len(report.passed) + len(report.dropped) == 1, "premise: the two must merge"
-    assert "framework_title_only" not in reasons(report)
+    assert "framework_no_architecture" not in reasons(report)
     assert [c.arch_id for c in report.passed] == ["Vela-Lumen-31M"]
 
 
-def test_a_title_only_pr_does_not_suppress_a_candidate_with_a_benchmark_row():
-    report = run([_title_only("Nova-1", ref="9"),
+def test_a_nameless_pr_does_not_suppress_a_candidate_with_a_benchmark_row():
+    report = run([_no_arch_pr("Nova-1", ref="9"),
                   sig("inferencex", display_name="Nova-1", raw_ref="beef")])
-    assert "framework_title_only" not in reasons(report)
+    assert "framework_no_architecture" not in reasons(report)
 
 
-def test_a_title_only_signal_carrying_an_arch_name_is_not_alias_path_and_passes():
-    """The rule is gated on the alias path: a class name is real evidence wherever the
-    connector found it."""
-    report = run([sig("vllm", arch="K2HorizonForCausalLM", raw_ref="1",
-                      display_name="some title",
-                      extra={"signal_strength": "title_only"})])
-    assert [c.arch_id for c in report.passed] == ["K2HorizonForCausalLM"]
+def test_the_rule_does_not_depend_on_strength_metadata_being_present():
+    """A connector that omits the strength key must behave the same: the test is whether
+    an architecture id exists, which needs no metadata at all."""
+    with_arch = run([sig("vllm", arch="KimiK3ForCausalLM", raw_ref="1")])
+    assert [c.arch_id for c in with_arch.passed] == ["KimiK3ForCausalLM"]
+
+    without_arch = run([sig("vllm", display_name="Kimi-K3", raw_ref="1")])
+    assert reasons(without_arch) == ["framework_no_architecture"]
 
 
-def test_a_framework_signal_with_no_strength_metadata_is_not_suppressed():
-    """Absent metadata must not read as title_only — a connector that omits the key
-    would otherwise have every candidate silently dropped."""
-    report = run([sig("vllm", display_name="Kimi-K3", raw_ref="1")])
-    assert "framework_title_only" not in reasons(report)
-    assert [c.arch_id for c in report.passed] == ["Kimi-K3"]
+# ---------------------------------------------------------------------------
+# One signal naming N architectures must not merge them
+# ---------------------------------------------------------------------------
+# Union-find membership is all-or-nothing, so a signal offering an arch edge per name
+# becomes a member of every one of those groups — which makes the groups one. SGLang PR
+# #35634 ("Add DeepEPv2 MoE A2A backend") is a backend change that mines four
+# architecture names, and it fused DeepSeek-V3 + DeepSeek-V4 + Qwen3-MoE + Qwen3.5-MoE
+# into a single top-ranked candidate whose findings described a model that never existed.
+
+SGLANG_35634_ARCHS = [
+    "DeepseekV3ForCausalLM",
+    "DeepseekV4ForCausalLM",
+    "Qwen3MoeForCausalLM",
+    "Qwen35MoeForCausalLM",
+]
+
+
+def test_a_backend_pr_mining_four_architectures_does_not_fuse_them():
+    """The exact live false merge, as a regression test."""
+    backend_pr = sig("sglang", arch=SGLANG_35634_ARCHS, raw_ref="35634",
+                     display_name="Add DeepEPv2 MoE A2A backend")
+    real = [
+        sig("hf", arch="DeepseekV4ForCausalLM", org="deepseek-ai",
+            model_ids=("deepseek-ai/DeepSeek-V4",), config=load("mla_moe_deepseek_v3")),
+        sig("hf", arch="Qwen3MoeForCausalLM", org="qwen",
+            model_ids=("Qwen/Qwen3-30B-A3B",), config=load("moe_qwen3_30b_a3b")),
+        sig("hf", arch="Qwen35MoeForCausalLM", org="qwen",
+            model_ids=("Qwen/Qwen3.5-300B-A30B",), config=load("moe_qwen3_30b_a3b")),
+    ]
+    cands = join_signals([backend_pr] + real)
+    by_arch = {c.arch_id: c for c in cands}
+    assert set(by_arch) == {
+        "DeepseekV3ForCausalLM", "DeepseekV4ForCausalLM",
+        "Qwen3MoeForCausalLM", "Qwen35MoeForCausalLM",
+    }, "the four architectures must stay four candidates"
+    for arch, cand in by_arch.items():
+        assert len(cand.signals) <= 2, f"{arch} absorbed unrelated signals"
+    assert by_arch["Qwen3MoeForCausalLM"].sources == ["hf"]
+    assert by_arch["Qwen35MoeForCausalLM"].sources == ["hf"]
+
+
+def test_the_join_identity_is_the_primary_architectures_family():
+    coherent, ignored = coherent_arch_ids(
+        sig("sglang", arch=SGLANG_35634_ARCHS, raw_ref="35634"))
+    assert coherent == ["DeepseekV3ForCausalLM"]
+    assert ignored == SGLANG_35634_ARCHS[1:]
+
+
+def test_variant_spellings_within_one_family_are_still_join_evidence():
+    """The intent the old code had right: an MTP head ships with its release."""
+    coherent, ignored = coherent_arch_ids(
+        sig("hf", arch=["KimiK3ForCausalLM", "KimiK3MTPModel"]))
+    assert coherent == ["KimiK3ForCausalLM", "KimiK3MTPModel"]
+    assert ignored == []
+    cands = join_signals(
+        [
+            sig("hf", arch=["KimiK3ForCausalLM", "KimiK3MTPModel"], model_ids=("m/k3",)),
+            sig("vllm", arch=["KimiK3MTPModel"], raw_ref="1"),
+        ]
+    )
+    assert len(cands) == 1
+
+
+def test_a_signal_whose_primary_family_key_is_unusable_joins_on_the_primary_alone():
+    """With no verifiable family key, nothing may bridge on the strength of the name."""
+    coherent, ignored = coherent_arch_ids(sig("vllm", arch=["V3", "Qwen3MoeForCausalLM"]))
+    assert coherent == ["V3"]
+    assert ignored == ["Qwen3MoeForCausalLM"]
+
+
+def test_an_arch_bearing_signals_title_cannot_bridge_to_another_model():
+    """When a signal has an architecture, that is its identity; the display name is a
+    title. A PR about DeepEP whose title mentions Kimi must not join Kimi."""
+    edges = signal_edges(sig("sglang", arch="DeepseekV3ForCausalLM",
+                             display_name="Kimi-K3 kernels for DeepEP", raw_ref="1"))
+    assert ("family", "kimik3") not in edges
+    assert ("family", "deepseekv3") in edges
+
+
+def test_a_nameless_signal_still_uses_its_display_name_as_family():
+    edges = signal_edges(sig("inferencex", display_name="Kimi-K3", raw_ref="1"))
+    assert ("family", "kimik3") in edges
+
+
+# ---------------------------------------------------------------------------
+# The family-key floor
+# ---------------------------------------------------------------------------
+
+
+def test_the_family_key_floor_admits_every_real_frontier_family():
+    """The floor is capped by real data, not chosen freely: ``dsv4`` is four characters,
+    so five would break a genuine join. Raising MIN_FAMILY_KEY_LEN above 4 must fail
+    here rather than silently stop merging DeepSeek-V4."""
+    for key in ("kimik3", "glm52", "dsv4", "minimaxm3", "qwen35"):
+        assert len(key) >= MIN_FAMILY_KEY_LEN, f"{key} would be excluded by the floor"
+
+
+def test_a_three_character_family_key_is_no_longer_evidence():
+    """``family:asd`` fused MinistralForCausalLM with Qwen3.5-MoE and Bittensor spam."""
+    assert MIN_FAMILY_KEY_LEN > 3
+    assert normalize_family_key("asd") == ""
+    assert normalize_family_key("ASD") == ""
+    cands = join_signals(
+        [
+            sig("hf", display_name="asd", model_ids=("ministral/Ministral-8B",)),
+            sig("hf", display_name="ASD", model_ids=("qwen/Qwen3.5-MoE",)),
+            sig("hf", display_name="asd", model_ids=("spamlab/bittensor-thing",)),
+        ]
+    )
+    assert len(cands) == 3, "a three-character key must not fuse three unrelated repos"
+
+
+def test_real_frontier_family_keys_still_join():
+    for display, arch in [
+        ("Kimi-K3", "KimiK3ForCausalLM"),
+        ("GLM-5.2", "Glm52ForCausalLM"),
+        ("DSv4", "DSv4ForCausalLM"),
+        ("MiniMax-M3", "MiniMaxM3ForCausalLM"),
+        ("Qwen3.5", "Qwen35ForCausalLM"),
+    ]:
+        cands = join_signals([sig("inferencex", display_name=display, raw_ref="1"),
+                              sig("vllm", arch=arch, raw_ref="2")])
+        assert len(cands) == 1, f"{display} no longer joins {arch}"
+
+
+# ---------------------------------------------------------------------------
+# A successful join must not destroy a signal
+# ---------------------------------------------------------------------------
+
+
+def _kimi_hf_plus_benchmark() -> list[Signal]:
+    """InferenceX's ``Kimi-K3`` joined to HF's seeded ``KimiK3ForCausalLM``."""
+    return [
+        sig("hf", arch="KimiK3ForCausalLM", org="moonshotai",
+            model_ids=("moonshotai/Kimi-K3-Instruct",), config=load("dense_llama31_70b")),
+        sig("inferencex", display_name="Kimi-K3", org="moonshotai",
+            model_ids=("moonshotai/Kimi-K3",), raw_ref="cafe"),
+    ]
+
+
+def test_a_benchmark_signal_survives_being_joined_to_a_seeded_architecture():
+    """Corroboration must strengthen a candidate, never suppress it. Alone, the
+    InferenceX row passes on T5; joined to HF it adopted the seeded architecture name and
+    died at known_architecture — so the join destroyed the signal."""
+    surf = surface(known=SEED_SET + ("KimiK3ForCausalLM",))
+    alone = run([_kimi_hf_plus_benchmark()[1]], surf=surf, conf=strict_cfg())
+    # Keyed "Kimi-K3" on its own, so the seed-set name is not even reached; T3 also
+    # fires because moonshotai is a frontier org. What matters is that T5 is there.
+    assert "T5" in alone.passed[0].triggers
+    assert ALIAS_JOIN_MARKER in alone.passed[0].triggers
+
+    joined = run(_kimi_hf_plus_benchmark(), surf=surf, conf=strict_cfg())
+    assert len(joined.passed) == 1, reasons(joined)
+    cand = joined.passed[0]
+    assert cand.arch_id == "KimiK3ForCausalLM"
+    assert cand.triggers == ["T5"]
+    assert "S3" in cand.significance
+    assert cand.sources == ["hf", "inferencex"]
+
+
+def test_the_benchmark_exemption_is_logged(caplog):
+    import logging
+
+    surf = surface(known=SEED_SET + ("KimiK3ForCausalLM",))
+    with caplog.at_level(logging.INFO, logger="archwatch.novelty"):
+        run(_kimi_hf_plus_benchmark(), surf=surf, conf=strict_cfg())
+    lines = [r.getMessage() for r in caplog.records
+             if "exempting" in r.getMessage() and "known_architecture" in r.getMessage()]
+    assert len(lines) == 1
+    assert "inferencex" in lines[0]
+
+
+def test_hf_only_and_framework_only_candidates_are_still_dropped_as_known():
+    """The exemption is scoped to benchmark sources: a vLLM PR against an architecture
+    vLLM already supports is not news, and neither is another HF fine-tune."""
+    surf = surface(known=SEED_SET + ("KimiK3ForCausalLM",))
+    hf_only = run([_kimi_hf_plus_benchmark()[0]], surf=surf, conf=strict_cfg())
+    assert reasons(hf_only) == ["known_architecture"]
+
+    fw_only = run([sig("vllm", arch="KimiK3ForCausalLM", raw_ref="1")],
+                  surf=surf, conf=strict_cfg())
+    assert reasons(fw_only) == ["known_architecture"]
+
+
+def test_dedup_still_guards_repeats_for_a_benchmarked_known_architecture(tmp_path):
+    """``already_reported`` is what stops a benchmarked release being re-emitted every
+    run — the exemption must not bypass it."""
+    from archwatch.emitter import issue_path
+
+    issue_path("KimiK3ForCausalLM", tmp_path).write_text("# already reported\n")
+    report = evaluate_detailed(
+        join_signals(_kimi_hf_plus_benchmark()),
+        surface(known=SEED_SET + ("KimiK3ForCausalLM",)),
+        strict_cfg(), issues_dir=tmp_path,
+    )
+    assert reasons(report) == ["already_reported"]
+
+
+def test_t5_fires_for_a_benchmarked_known_architecture_under_recheck_too():
+    surf = surface(known=SEED_SET + ("KimiK3ForCausalLM",))
+    report = run(_kimi_hf_plus_benchmark(), surf=surf,
+                 conf=cfg(recheck_known_architectures=True))
+    assert "T5" in report.passed[0].triggers

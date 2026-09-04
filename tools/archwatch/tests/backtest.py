@@ -94,6 +94,7 @@ from archwatch.novelty import (  # noqa: E402
     ALIAS_JOIN_MARKER,
     TRIGGER_IDS,
     EvaluationReport,
+    coherent_arch_ids,
     evaluate_detailed,
     join_signals,
     normalize_arch_key,
@@ -276,11 +277,25 @@ def audit_merge(cand: Candidate) -> MergeAudit:
     other check would catch it. The three heuristics, weakest evidence last:
 
     1. **Two distinct architecture spellings fused.** More than one normalized
-       ``arch_id`` key in the group. Sometimes legitimate (a release shipping both a
-       causal and a conditional-generation head, or an MTP twin), always worth a look.
-    2. **Different size tokens fused.** ``-9b`` and ``-397b`` are different models.
-       ``normalize_repo_key`` deliberately strips no size token, so this should be
-       impossible via a ``repo:`` edge and can only arrive on a ``family:`` edge.
+       architecture key among the names that were actually *eligible to join*. Sometimes
+       legitimate (a release shipping both a causal and a conditional-generation head, or
+       an MTP twin), always worth a look.
+
+       Eligibility matters, and reading raw ``arch_ids`` here was wrong. A Signal that
+       merely *names* several architectures no longer joins on all of them: since the
+       union-find fix, only names sharing the primary's family are join evidence (see
+       ``novelty.coherent_arch_ids``). Counting the ignored names too made this heuristic
+       report the old DeepSeek/Qwen fusion as still present when it had in fact been
+       split into three candidates — a false alarm that would have inverted the report's
+       conclusion.
+    2. **Different size tokens fused, with no architecture edge to explain it.**
+       ``-9b`` and ``-397b`` are different models. But two *sizes* of one release
+       legitimately share an ``architectures[]`` string — Qwen3.5-397B-A17B and
+       Qwen3.5-122B-A10B are both ``Qwen3_5MoeForConditionalGeneration`` — and one issue
+       per architecture is the design. So this fires only when the merge rests on a
+       ``repo:`` or ``family:`` edge, which is where a size-blind key would do damage.
+       ``normalize_repo_key`` strips no size token today; this is the guard for the day
+       someone adds one to those lists.
     3. **Different orgs fused on a family edge alone.** Two labs' identically named
        models are a real risk (``*/Falcon-H1``); the family edge keeps an org-qualified
        display name org-qualified, but a bare display name can meet another bare one.
@@ -291,7 +306,7 @@ def audit_merge(cand: Candidate) -> MergeAudit:
     orgs: list[str] = []
     size_sets: list[set[str]] = []
     for sig in cand.signals:
-        for arch in sig.arch_ids:
+        for arch in coherent_arch_ids(sig)[0]:
             key = normalize_arch_key(arch)
             if key and key not in arch_keys:
                 arch_keys.append(key)
@@ -308,7 +323,9 @@ def audit_merge(cand: Candidate) -> MergeAudit:
                     orgs.append(org)
         if sig.org and sig.org.strip().lower() not in orgs:
             orgs.append(sig.org.strip().lower())
-        for name in list(sig.arch_ids) + ([sig.display_name] if sig.display_name else []):
+        for name in list(coherent_arch_ids(sig)[0]) + (
+            [sig.display_name] if sig.display_name else []
+        ):
             key = normalize_family_key(name)
             if key and key not in family_keys:
                 family_keys.append(key)
@@ -328,9 +345,9 @@ def audit_merge(cand: Candidate) -> MergeAudit:
         return audit
     if len(arch_keys) > 1:
         audit.reasons.append(f"{len(arch_keys)} distinct architecture spellings fused: {arch_keys}")
-    if len(size_sets) > 1:
+    if len(size_sets) > 1 and not any(e.startswith("arch:") for e in audit.join_edges):
         audit.reasons.append(
-            "different parameter-size tokens fused: "
+            "different parameter-size tokens fused with no architecture edge: "
             + " vs ".join("/".join(sorted(s)) for s in size_sets)
         )
     if audit.family_only and len(orgs) > 1:
@@ -604,10 +621,14 @@ def step_recall(out: Path, *, targets: Sequence[Target] = TARGETS) -> dict[str, 
     issues_dir = out / "recall-issues"          # empty: dedup must not mask recall
     issues_dir.mkdir(parents=True, exist_ok=True)
 
-    cfg_asis = measure_cfg()
-    cfg_recheck = measure_cfg(recheck=True)
+    # Both settings are pinned explicitly rather than taken from DEFAULTS, so this step
+    # keeps measuring the same two arms whichever way the shipped default is set. (It has
+    # since been flipped to True on this step's own evidence; if the arms inherited the
+    # default they would silently collapse into one column.)
+    cfg_recheck_off = measure_cfg(recheck=False)
+    cfg_recheck_on = measure_cfg(recheck=True)
 
-    by_repo, problems = fetch_target_signals(cfg_asis, targets)
+    by_repo, problems = fetch_target_signals(cfg_recheck_off, targets)
     save_signals(out / "target-signals.json", [s for v in by_repo.values() for s in v])
 
     rows: list[dict[str, Any]] = []
@@ -645,9 +666,9 @@ def step_recall(out: Path, *, targets: Sequence[Target] = TARGETS) -> dict[str, 
 
             zero_day_surface = surface_without(surface, arch_ids)
             for arm_name, arm_surface, arm_cfg in (
-                ("as_shipped", surface, cfg_asis),
-                ("recheck", surface, cfg_recheck),
-                ("zero_day", zero_day_surface, cfg_asis),
+                ("recheck_off", surface, cfg_recheck_off),
+                ("recheck_on", surface, cfg_recheck_on),
+                ("zero_day", zero_day_surface, cfg_recheck_off),
             ):
                 report, _ = _arm(signals, arm_surface, arm_cfg, issues_dir)
                 if report.passed:
@@ -681,7 +702,7 @@ def step_recall(out: Path, *, targets: Sequence[Target] = TARGETS) -> dict[str, 
         mine = [r for r in rows if r["target"] == target.label]
         entry: dict[str, Any] = {"target": target.label, "kind": target.kind,
                                  "repos": [r["repo_id"] for r in mine]}
-        for arm in ("as_shipped", "recheck", "zero_day"):
+        for arm in ("recheck_off", "recheck_on", "zero_day"):
             hits = [r for r in mine if isinstance(r.get(arm), dict) and r[arm].get("passed")]
             entry[arm] = {
                 "hit": bool(hits),
@@ -707,10 +728,10 @@ def step_recall(out: Path, *, targets: Sequence[Target] = TARGETS) -> dict[str, 
                 "seeded_hits": sum(1 for e in seeded if e[arm]["hit"]),
                 "seeded_total": len(seeded),
             }
-            for arm in ("as_shipped", "recheck", "zero_day")
+            for arm in ("recheck_off", "recheck_on", "zero_day")
         },
         "n_silently_wrong": sum(
-            1 for r in rows for arm in ("as_shipped", "recheck", "zero_day")
+            1 for r in rows for arm in ("recheck_off", "recheck_on", "zero_day")
             if isinstance(r.get(arm), dict) and r[arm].get("silently_wrong")
         ),
         "problems": problems,
@@ -726,7 +747,7 @@ def _print_recall_table(
     rows: list[dict[str, Any]], per_target: list[dict[str, Any]], summary: dict[str, Any]
 ) -> None:
     print(f"\n{'target':16s} {'repo':34s} {'arch_id':40s} {'params':>8s}  "
-          f"{'as-shipped':<24s} {'recheck':<24s} {'zero-day':<24s}")
+          f"{'recheck=False':<24s} {'recheck=True':<24s} {'zero-day':<24s}")
     print("-" * 180)
     for r in rows:
         def cell(arm: str) -> str:
@@ -739,9 +760,10 @@ def _print_recall_table(
         arch = ",".join(r.get("arch_ids") or []) or "(none)"
         print(f"{r['target'][:16]:16s} {r['repo_id'][:34]:34s} {arch[:40]:40s} "
               f"{r.get('est_total_h', '-') or '-':>8s}  "
-              f"{cell('as_shipped')[:24]:<24s} {cell('recheck')[:24]:<24s} {cell('zero_day')[:24]:<24s}")
+              f"{cell('recheck_off')[:24]:<24s} {cell('recheck_on')[:24]:<24s} "
+              f"{cell('zero_day')[:24]:<24s}")
     print("\nper-target recall (a target hits when any of its repos passes):")
-    for arm in ("as_shipped", "recheck", "zero_day"):
+    for arm in ("recheck_off", "recheck_on", "zero_day"):
         rec = summary["recall"][arm]
         print(f"  {arm:11s} frontier {rec['frontier_hits']}/{rec['frontier_total']}   "
               f"seeded {rec['seeded_hits']}/{rec['seeded_total']}")
@@ -1092,8 +1114,8 @@ def step_sweep(out: Path, *, window_days: int = 1) -> dict[str, Any]:
                 # The same recall question against the surface as it actually ships,
                 # i.e. with every target already in the seed set. This is the column
                 # that shows what recheck_known_architectures buys.
-                "as_shipped_recall": n_live,
-                "as_shipped_hits": live_hits,
+                "live_surface_recall": n_live,
+                "live_surface_hits": live_hits,
                 "hf_survivors": len(report.passed),
                 "hf_survivors_silently_wrong": sum(1 for c in report.passed if silently_wrong(c)),
                 "hf_survivors_bucket0": sum(1 for c in report.passed if c.would_not_run),
@@ -1103,7 +1125,7 @@ def step_sweep(out: Path, *, window_days: int = 1) -> dict[str, Any]:
             rows.append(row)
             print(f"  recheck={str(recheck):5s} min_total={format_params(min_total):>7s}  "
                   f"recall zero-day {n_hits}/{len(frontier_labels)} "
-                  f"as-shipped {n_live}/{len(frontier_labels)}  "
+                  f"live-surface {n_live}/{len(frontier_labels)}  "
                   f"HF survivors {len(report.passed):4d}  "
                   f"(silently_wrong {row['hf_survivors_silently_wrong']}, "
                   f"bucket0 {row['hf_survivors_bucket0']})")
@@ -1131,13 +1153,18 @@ def step_precision(
     *,
     window_days: int = 1,
     sources: Sequence[str] = ("hf", "vllm", "sglang", "inferencex"),
-    recheck: bool = False,
+    recheck: bool | None = None,
 ) -> dict[str, Any]:
-    print(f"\n=== (B) PRECISION — live scans, window {window_days}d, "
-          f"recheck_known_architectures={recheck} ===")
-    runs: list[dict[str, Any]] = []
+    # None = whatever config.py ships, so the headline precision number always describes
+    # the system as delivered. Pass the flag to measure the other setting deliberately.
     cfg = measure_cfg(window_days=window_days, recheck=recheck)
-    tag = "recheck" if recheck else "asis"
+    effective = cfg.recheck_known_architectures
+    print(f"\n=== (B) PRECISION — live scans, window {window_days}d, "
+          f"recheck_known_architectures={effective}"
+          f"{'' if recheck is not None else ' (shipped default)'}, "
+          f"min_total_params={format_params(cfg.thresholds.min_total_params)} ===")
+    runs: list[dict[str, Any]] = []
+    tag = "recheck" if effective else "norecheck"
     for source in list(sources) + ["all"]:
         spec = list(sources) if source == "all" else [source]
         issues_dir = out / f"precision-{tag}-{source}"
@@ -1185,7 +1212,9 @@ def step_precision(
         })
 
     payload = {"step": "precision", "window_days": window_days,
-               "recheck_known_architectures": recheck, "runs": runs}
+               "recheck_known_architectures": effective,
+               "min_total_params": cfg.thresholds.min_total_params,
+               "shipped_cap": DEFAULTS.max_issues_per_run, "runs": runs}
     write_json(out, f"precision-{tag}-{window_days}d.json", payload)
     return payload
 
@@ -1228,8 +1257,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--curated-window-days", type=int, default=14,
                         help="window for the curated-source poll in the join step")
     parser.add_argument("--sources", default="hf,vllm,sglang,inferencex")
-    parser.add_argument("--recheck", action="store_true",
-                        help="precision step: set recheck_known_architectures=True")
+    parser.add_argument("--recheck", dest="recheck", action="store_true", default=None,
+                        help="precision step: force recheck_known_architectures=True")
+    parser.add_argument("--no-recheck", dest="recheck", action="store_false",
+                        help="precision step: force recheck_known_architectures=False")
     parser.add_argument("-v", "--verbose", action="count", default=0)
     args = parser.parse_args(argv)
 

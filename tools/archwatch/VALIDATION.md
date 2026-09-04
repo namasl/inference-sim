@@ -1,24 +1,60 @@
 # archwatch — validation findings (component J)
 
-**Ran:** 2026-09-04, against live HuggingFace and GitHub APIs (read-only).
-**Code under test:** worktree `feature/archwatch` at `ce1452c3`
-(`fix(archwatch): stop reading non-LM configs as novelty signals`), clean except for the
-harness itself.
+Everything here was measured against live HuggingFace and GitHub APIs (read-only) on
+2026-09-04, in **two rounds**. Round 1 measured the system as it stood and produced the
+threshold recommendations and bug reports. Those were then applied by their owners, and
+round 2 re-measured. **Both rounds are kept.** The before/after is the evidence that the
+fixes worked, so no round-1 number has been overwritten — every table and section says
+which round it belongs to.
+
+| | round 1 (pre-fix) | round 2 (post-fix) |
+|---|---|---|
+| code | `ce1452c3` (`fix: stop reading non-LM configs as novelty signals`) | `1675b896` + working-tree `config.py`/`novelty.py` |
+| `min_total_params` | 30B | **3B** |
+| `recheck_known_architectures` | False | **True** |
+| `max_issues_per_run` | 5 | **10** |
+| `MIN_FAMILY_KEY_LEN` | 3 | **4** |
+| union-find `arch:` edges | every `arch_ids` entry | **primary's family only** (`coherent_arch_ids`) |
+| artifacts | `/tmp/awbt` | `/tmp/awbt2` |
+
 **Harness:** `tests/backtest.py` — a script, never collected by pytest. Its pure logic is
-unit-tested in `tests/test_backtest.py` (34 tests). Full suite: **839 pass, 0 fail**.
-**Artifacts:** JSON per step in the `--out` directory (`/tmp/awbt` for this run).
-Nothing was written to `issues/`; every step used a temp directory.
+unit-tested in `tests/test_backtest.py` (37 tests). Full suite at the end of round 2:
+**863 pass, 0 fail**. Nothing was written to `issues/`; every step used a temp directory.
 
 Reproduce:
 
 ```
-.venv/bin/python tests/backtest.py all --out /tmp/awbt --window-days 7
-.venv/bin/python tests/backtest.py precision --out /tmp/awbt --window-days 7 --recheck
+.venv/bin/python tests/backtest.py all --out /tmp/awbt2 --window-days 7
+.venv/bin/python tests/backtest.py precision --out /tmp/awbt2 --window-days 7 --no-recheck
 ```
+
+The recall step pins `recheck_known_architectures` explicitly in both directions rather
+than reading `DEFAULTS`, so its two arms keep measuring two things now that the default has
+been flipped on its evidence. The precision step follows `DEFAULTS` unless told otherwise,
+so its headline number always describes the system as shipped.
 
 ---
 
-## Verdict in one paragraph
+## Verdict in one paragraph (round 2, post-fix)
+
+The pipeline works, the ranking is what makes it usable, and one false merge remains.
+Over a 7-day window 14,055 signals collapse to 7,074 candidates and **90 survivors**
+(156:1), of which the shipped cap of 10 shows **8 genuine frontier architectures, 1
+plausible-minor model and 1 noise item — 10% noise at the cap** against 59% across the
+whole survivor list. Five of the top six were assembled by the **cross-source join**
+(HuggingFace + vLLM, HuggingFace + InferenceX), so the join is not just working, it is
+carrying the top of the report. The single `silently_wrong` finding in the corpus now
+**ranks 9th of 90 and is therefore reported**; under the round-1 defaults two unrelated
+settings each independently hid it. Recall on the nine named frontier releases is **9/9**
+against the shipped surface, with all three seeded controls still correctly suppressed.
+Three of the four false merges round 1 found are structurally gone; **one survives** by a
+different mechanism (a `repo:` edge mined from a PR's prose), and it files Muse Glimmer
+under another model's name. The framework PR-title noise is gone entirely — vLLM now
+yields zero survivors per week rather than stubs titled *"gfx1250 on ROCM 10"*. What got
+worse is the tail: encoder and seq2seq models are now **12 of 53 noise survivors**, and T1
+fires on as little as one unparsed field.
+
+## Verdict in one paragraph (round 1, pre-fix — kept for the record)
 
 The pipeline works, and **the two most important shipped defaults are both wrong.**
 The novelty filter does suppress the HuggingFace firehose — 14,107 signals collapse to 37
@@ -36,7 +72,252 @@ file four unrelated architectures as one issue.
 
 ---
 
-## (A) Recall — would the filter have flagged these releases?
+# Round 2 — re-measurement after the fixes
+
+Same harness, same targets, same windows. Round 1's sections follow unchanged below.
+
+## Recall (round 2)
+
+**Unchanged, and now delivered by the shipped default.** Per-target recall (a target hits
+when any of its repos passes), re-measured against the fixed code:
+
+| arm | frontier releases | seeded controls |
+|---|---|---|
+| `recheck_off` (explicit False) | 0 / 9 | 0 / 3 (correct) |
+| `recheck_on` — **the shipped default now** | **9 / 9** | 0 / 3 (correct) |
+| `zero_day` | 9 / 9 | 3 / 3 |
+
+The 3B threshold is visible here too: every one of the twelve frontier repos now satisfies
+S1 as well as S2, where in round 1 `Qwen/Qwen3.5-9B` (8.21B) missed S1 and passed on S2+S4
+alone. The three seeded controls still die at `known_architecture_nothing_new` with zero
+unparsed fields and zero validator findings, so lowering the threshold did not blunt the
+discriminator. The five bucket-0 findings on frontier configs — the DeepSeek-V4 / Qwen3.5-MoE
+missing `intermediate_size` and MiniMax-M3's `swigluoai` — are unchanged; they are properties
+of the configs and of BLIS, not of these thresholds.
+
+## Precision under the shipped defaults (round 2)
+
+7-day window, all four sources, uncapped so the number describes the filter rather than
+the reporting budget (`recheck=True`, `min_total_params=3B`).
+
+```
+14,055 signals -> 7,074 candidates -> 90 survivors
+drops: no_config_uncorroborated 6,877 | insignificant 61 | not_a_language_model 32
+       known_architecture_nothing_new 8 | framework_no_architecture 5 | no_trigger 1
+GitHub budget: well within 400
+```
+
+### What the shipped cap of 10 actually shows
+
+| # | verdict | survivor | est. params | unparsed | triggers / significance | sources |
+|---|---|---|---|---|---|---|
+| 1 | **genuine** | `KimiK3ForCausalLM` | 5.47T | 32 | T1+T3+T4+T5 / S1+S2+S3+S4 | hf+inferencex |
+| 2 | **genuine** | `DeepseekV4ForCausalLM` (bucket 0) | 291B | 34 | T1-known-arch / all four | hf+vllm |
+| 3 | **genuine** | `Glm5NextForConditionalGeneration` (GLM-5.3-Flash) | 313B | 36 | T1-known-arch / all four | hf+vllm |
+| 4 | **genuine** | `HYV4ForCausalLM` (tencent/Hy4-preview) | 771B | 28 | T1-known-arch / all four | hf+vllm |
+| 5 | **genuine** | `Qwen4ExpForCausalLM` (Qwen3.8-Flash-Next) | 13.5B | 29 | T1-known-arch / all four | hf+vllm |
+| 6 | **genuine** | `K2HorizonForCausalLM` (IFM/K2-Horizon) | 9B | 8 | T1-known-arch / S1+S3+S4 | hf+vllm |
+| 7 | **genuine** | `Qwen3_5MoeForCausalLM` (bucket 0) | 34.1B | 13 | T1-known-arch / S1+S2+S4 | hf |
+| 8 | plausible-minor | `Spark2_5ForCausalLM` (bucket 0) | 3.17B | 5 | T1 / S1+S2+S4 | hf |
+| 9 | **genuine — `silently_wrong`** | `Qwen3NextForCausalLM` | 4.02B | 9 | T1-known-arch / S1 | hf |
+| 10 | noise | `BertForMaskedLM` | 236M | 4 | T1-known-arch / S2+S4 | hf |
+
+**8 genuine + 1 plausible-minor + 1 noise: 10% noise at the cap**, and the headline
+`silently_wrong` finding is inside it. Five of the top six are cross-source joins, which is
+the strongest evidence in either round that the union-find join earns its complexity: on its
+own, each HuggingFace signal for those releases is one more repo among 14,000, and each vLLM
+PR is one more PR. Joined, they are the top of the report.
+
+### Before / after
+
+| measurement | round 1 (30B, recheck=False, cap 5) | round 2 (3B, recheck=True, cap 10) |
+|---|---|---|
+| signals (7d) | 14,144 | 14,055 |
+| candidates | 6,993 | 7,074 |
+| survivors, uncapped | 37 | **90** |
+| genuine / minor / noise | 6 / 5 / 26 | **24 / 13 / 53** |
+| noise rate, uncapped | 70% | **59%** |
+| noise rate at the shipped cap | 20% (1 of 5) | **10% (1 of 10)** |
+| genuine frontier inside the cap | 3 | **8** |
+| `silently_wrong` reported | **0** | **1** |
+| bucket-0 stubs | 16 of 37 | 24 of 90 |
+| front-matter keys missing | 0 | 0 |
+
+### Noise rate per source (round 2, 7-day single-source scans)
+
+| source | signals | candidates | survivors | genuine | minor | noise | noise rate | round 1 |
+|---|---|---|---|---|---|---|---|---|
+| hf | 14,017 | 7,063 | 85 | 19 | 13 | 53 | **62%** | 70% |
+| vllm | 8 | 8 | **0** | 0 | 0 | 0 | **n/a — nothing emitted** | 100% |
+| sglang | 5 | 5 | 1 | 1 (`XllmForCausalLM`) | 0 | 0 | **0%** | 67% |
+| inferencex | 24 | 5 | 5 | 5 | 0 | 0 | **0%** | 0% |
+
+vLLM going from 1 survivor to 0 is the `framework_no_architecture` fix: its 8 signals now
+split into 5 `known_architecture_nothing_new` (real model PRs for architectures already
+seeded — correct) and 3 `framework_no_architecture` (kernel and backend PRs with no
+extractable architecture — also correct). Zero survivors is the right answer for a week in
+which vLLM added support only for things vLLM's own registry already lists.
+
+## `silently_wrong` (round 2)
+
+Still **exactly one** across the corpus, and still the same candidate — but now it is
+*reported* rather than suppressed:
+
+```
+Qwen3NextForCausalLM   from  arianraje/qwen3-4b-gdn-hybrid-*
+est_total_params: 4.02B   triggers: [T1-known-arch]   significance: [S1]   rank: 9 of 90
+silent_failures: moe_expert_count_resolvable + moe_total_required_when_active_present
+bucket0_failures: []      bucket: null      silently_wrong: true
+```
+
+| configuration | reported? | why not |
+|---|---|---|
+| round 1 shipped (`recheck=False`, 30B) | **no** | dropped at `known_architecture` |
+| `recheck=True`, 30B | **no** | dropped at `insignificant` (4.02B < 30B) |
+| **round 2 shipped (`recheck=True`, 3B)** | **yes, rank 9 of 90** | — |
+
+Both threshold changes were necessary and neither was sufficient. This is the finding class
+addendum 21 calls the pipeline's reason to exist, and it is now visible end to end.
+
+## False-merge audit (round 2)
+
+Join step, 14-day curated window plus the recall targets: **17 merges, 3 flagged** (round 1:
+16 merges, 8 flagged). All three remaining flags are legitimate same-family variant merges —
+`Qwen4Exp{ForCausalLM, ForConditionalGeneration, MTP}` (one release, three heads) and
+`DeepseekV4{ForCausalLM, ForConditionalGeneration}`.
+
+| round-1 false merge | status | evidence |
+|---|---|---|
+| DeepSeek V3 + V4 + Qwen3-MoE + Qwen3.5-MoE as one candidate, ranked first (SGLang #35634) | **GONE** | now three separate candidates; the joined set went 33 → 39 candidates as the blob split. `DeepseekV3ForCausalLM`, `DeepseekV4ForCausalLM` and `Qwen3_5MoeForConditionalGeneration` each keep their own findings |
+| `MinistralForCausalLM` fused with Qwen3.5-MoE and Bittensor spam via `family:asd` | **GONE** | `MIN_FAMILY_KEY_LEN` 3 → 4. `MinistralForCausalLM` is now one repo (`datahtarov/test1`); the `Affine-*` spam sits correctly under `Qwen3_5MoeForCausalLM`, which is what those repos actually are |
+| `DeepseekV32MTPModel` fused with `GlmMoeDsaForCausalLM` (vLLM #52861, a DSA routing backend PR) — found in round 1's replay | **GONE** | replay now yields them as two candidates, refs `52861` and `30519` |
+| Muse Glimmer filed under `DFlashLagunaForCausalLM` (SGLang #34262) | **SURVIVES, different mechanism** | see below |
+
+### The one that survives, and why the fix did not reach it
+
+The `arch:` leg of this merge *is* fixed: SGLang #34262 names
+`DFlashLagunaForCausalLM, MuseGlimmerForCausalLM, MuseGlimmerForConditionalGeneration`, and
+`coherent_arch_ids` now confines it to family `dflashlaguna`, ignoring the two Muse Glimmer
+names. But the merge re-forms one edge over:
+
+```
+sglang #35371  "DFlash2: local convolution + candidate selector"
+  arch_ids  = [DFlashLagunaForCausalLM]                        <- coherent, fine
+  model_ids = [z-lab/Qwen3.8-27B-DFlash2, RadixArk/Qwen3.8-27B-DSpark,
+               z-lab/Muse-Glimmer-30B-DFlash2, meta-models/Muse-Glimmer-30B]
+  edges     = ... ('repo', 'meta-models/muse-glimmer-30b') ...
+
+vllm  #51655  "Add Muse Glimmer model support"
+  arch_ids  = [MuseGlimmerForConditionalGeneration, MuseGlimmerForCausalLM]
+  model_ids = [meta-models/Muse-Glimmer-30B, meta-models/Muse-Glimmer-30B-assistant]
+  edges     = ... ('repo', 'meta-models/muse-glimmer-30b') ...
+
+-> one candidate, arch_id 'DFlashLagunaForCausalLM', refs 34262 + 35371 + 51655
+```
+
+A speculative-decoding PR names the **base model it drafts for**. That is a mention, not a
+claim of identity — and **addendum 16 already states exactly this principle**
+("a model id extracted from a PR diff or a changelog line is a *mention*, not the artifact")
+but scopes it only to `DERIVATIVE_PATTERNS`. The join applies no such distinction: `repo:`
+edges are emitted for framework `model_ids` as if they were artifacts. So the same class of
+bug — one signal mentioning several things it is not about — persists at the `repo:` edge
+after being closed at the `arch:` edge.
+
+The harm is unchanged from round 1: Muse Glimmer *is* surfaced, but under
+`issues/DFlashLagunaForCausalLM.md`, so a human looking for it will not find the file.
+Confining framework `repo:` edges the way `arch:` edges are now confined is the natural
+next step; component J has not attempted it (that is the join owner's file).
+
+### One new benign flag, and one correction to my own auditor
+
+* `GLM-5.2` fusing orgs `nvidia` and `amd` on `family:glm52` alone — InferenceX rows for
+  `nvidia/GLM-5.2-NVFP4` and `amd/GLM-5.2-MXFP4`. Two quantizers of one model, so merging is
+  correct; the heuristic fires because it cannot tell a repacker from a lab. Benign.
+* **My own audit heuristic was wrong after the fix and would have inverted this section's
+  conclusion.** `audit_merge` counted every entry of every signal's raw `arch_ids`, so a
+  *confined* multi-architecture signal still read as a fusion: the first re-run reported the
+  DeepSeek/Qwen merge as still present when it had in fact split into three candidates. It
+  now counts only the names `coherent_arch_ids` makes eligible to join. A second heuristic
+  was also over-eager: differing size tokens are expected when two scales of one release
+  share an `architectures[]` string (Qwen3.5-397B-A17B and Qwen3.5-122B-A10B are both
+  `Qwen3_5MoeForConditionalGeneration`, and one issue per architecture is the design), so it
+  now fires only when no `arch:` edge explains the merge. Three unit tests pin both
+  corrections.
+
+## Round-1 findings that are now fixed
+
+| round-1 finding | status in round 2 |
+|---|---|
+| 1. `recheck=False` gives 0/9 frontier recall | **fixed** — default True; recall 9/9, controls still suppressed |
+| 2. `min_total_params=30B` hides the only `silently_wrong` finding | **fixed** — 3B; it now ranks 9 of 90 |
+| 3. false merge reaching the output (`arch:` clique) | **fixed** for `arch:`; see the `repo:` leg above |
+| 4. a successful join can *destroy* a signal | **fixed** — `known_architecture` now exempts benchmark-source candidates. Re-verified on the same cached signals: HF + InferenceX for Kimi-K3 now survives at **both** recheck settings, where round 1 lost it at `recheck=False` |
+| 5. `framework_title_only` keyed on the wrong field | **fixed** — renamed `framework_no_architecture` and keyed on "no signal yielded an architecture". vLLM survivors 1 → 0; the *"gfx1250 on ROCM 10"*, *"Switch output projection gemm (oproj_a) to fp8"* and *"Find attention with a fuser…"* stubs are gone |
+| 7. `DERIVATIVE_PATTERNS` missing modern quant tokens | **fixed** — `nvfp4`, `mxfp4`, `-fp4`, `aqlm` added. `Glm5vForConditionalGeneration`, which reached round 1's survivor list only through `jarrelscy/GLM-5.3-Vision-NVFP4-AQLM-hybrid`, is no longer a survivor |
+
+## What still does not work (round 2)
+
+1. **One false merge survives, on the `repo:` edge** — mechanism, evidence and suggested
+   direction above. It is the same class of bug as the fixed one, at a different edge type.
+
+2. **Encoder and seq2seq noise got worse, not better: 12 of the 53 noise survivors (23%).**
+   `BertForMaskedLM`, `BertForTokenClassification`, `DistilBertForMaskedLM`,
+   `ModernBertForMaskedLM`, `RobertaForCausalLM`, `XLMRobertaForMaskedLM`,
+   `DebertaV2ForMaskedLM`, `QiushiDualPathDebertaV2ForMaskedLM`, `DesklibAIDetectionModelV2`,
+   `GPT2ForSequenceClassification`, `T5ForConditionalGeneration`, `Qwen3BidirectionalModel`.
+   Round 1 had 8 of 26. `recheck=True` made it worse because these families *are* seeded, so
+   the re-check path readmits them on any config drift, and the 3B threshold no longer
+   excludes them because they satisfy S4 on fine-tune download counts instead of S1. Round
+   1's diagnosis stands and is now more urgent: an encoder keeps all four core transformer
+   dimensions, so `lm_shape_evidence` cannot separate it from a decoder, and its
+   `hidden_act: "gelu"` reliably trips the fatal `swiglu_family_hidden_act` validator —
+   which for a 236M BERT means "this was never a decoder", not "BLIS cannot handle a novel
+   architecture". A positive decoder test is needed: `model_type` against a non-causal family
+   list (the spirit of `STRONG_NON_LM_MODEL_TYPES`) or an
+   `is_decoder` / `is_encoder_decoder` config check.
+
+3. **T1 fires on a single unparsed field, and on the known-architecture path that is almost
+   always config-authoring noise.** 10 of the 90 survivors reach the report with ≤2 unparsed
+   fields and no other trigger: `Qwen2ForCausalLM` (1), `OlmoeForCausalLM` (1),
+   `OlmoForCausalLM` (1), `Ministral3ForCausalLM` (1), `LlamaForCausalLM` (2 — on a 5.08M
+   toy), `Olmo3ForCausalLM` (2), `BertForTokenClassification` (2), `RobertaForCausalLM` (2),
+   `MinistralForCausalLM` (2), `Qwen3BidirectionalModel` (2). Meanwhile the **lowest**
+   unparsed-field count among the config-bearing genuine survivors is **8**
+   (`K2HorizonForCausalLM`), and the `silently_wrong` candidate has 9. A minimum of 3 unparsed
+   fields on the `T1-known-arch` path alone would drop all ten without touching a single
+   genuine survivor. It must **not** apply to T1 on a genuinely new architecture, and it must
+   **never** gate the silent-failure half of T1 — addendum 24's whole point is that a silent
+   misread can arrive with zero unparsed fields.
+
+4. **90 survivors a week is more than a human will read**, and the cap of 10 is now doing
+   heavy lifting: 80 candidates are dropped as `over_cap`. The cap is well placed (10% noise
+   inside it, 8 genuine frontier architectures), but "the filter produces 90 and we show 10"
+   means the ranking function, not the filter, is the component that decides what a human
+   sees. That is worth stating plainly because the ranking has had far less scrutiny than the
+   suppressors, and nothing in the run log tells you what the 80 dropped candidates were
+   without re-reading the JSON.
+
+5. **Unchanged from round 1, still open:** `InferenceXConnector` has no `until=` (addendum
+   12) and its `max_commits=80` silently truncated an 11-day window holding 133 commits, with
+   the truncation reaching only a log line rather than `RunSummary`; the InferenceX name
+   parser still emits arch ids like `2.7`, `2.7-Code` and `kimik2.6`; `CustomResearchModel`
+   still collapses 18 unrelated `model_type` values from dozens of orgs onto one generic
+   architecture string, showing that the architecture primary key only works when labs choose
+   distinctive class names.
+
+6. **A one-day window still measures only the noise floor.** Unchanged.
+
+---
+
+# Round 1 — the original measurement (pre-fix)
+
+Everything below was measured at `ce1452c3` with `min_total_params=30B`,
+`recheck_known_architectures=False`, `max_issues_per_run=5` and `MIN_FAMILY_KEY_LEN=3`. It is
+the evidence the fixes were made on and is kept unchanged.
+
+---
+
+## (A) Recall — would the filter have flagged these releases? (round 1)
 
 Targets resolved live on the Hub; the exact repo ids used are in `recall.json`. For each,
 the harness fetched the real `config.json` and Hub metadata by repo id and built the
@@ -69,6 +350,10 @@ measured in three arms:
 | `as_shipped` | the shipped config, `recheck_known_architectures=False` |
 | `recheck` | `recheck_known_architectures=True` |
 | `zero_day` | the target's own architecture strings removed from the seed set — the day before vLLM added support |
+
+(The harness now calls the first two `recheck_off` and `recheck_on` and pins both settings
+explicitly, because "as shipped" stopped meaning `False` once this measurement flipped the
+default. The arms themselves are identical.)
 
 `Surface.is_known_architecture` is exact lowercased membership, so removing the exact
 strings is a clean, narrow counterfactual that cannot perturb any other verdict.
@@ -134,7 +419,7 @@ metric fires elsewhere.
 
 ---
 
-## (B) Precision — live scans
+## (B) Precision — live scans (round 1)
 
 `detector.scan()`, uncapped (`max_issues_per_run=500`) so the measurement is of the filter
 and not of the reporting budget. Shipped defaults otherwise.
@@ -216,7 +501,7 @@ the noise floor. **Use the 7-day default.**
 
 ---
 
-## (C) GitHub-source historical replay
+## (C) GitHub-source historical replay (round 1)
 
 Window `2026-08-10 .. 2026-08-21`, chosen because a `gh api search/issues` query showed it
 contains several merged model-support PRs. `FrameworkConnector(until=...)` bounds it
@@ -261,7 +546,7 @@ directory suppressed all 10 as `already_reported`, 0 passing. Both work.
 
 ---
 
-## (D) Threshold calibration
+## (D) Threshold calibration (round 1)
 
 One live HF poll (2,494 signals, 1-day window incl. the trending sweep) reused across all
 16 sweep points, so every row differs only in the swept value. Recall measured in both the
@@ -345,11 +630,15 @@ max_issues_per_run: int = 10                 # was 5; see below
 `max_issues_per_run=5` is too small at `recheck=True`: 27 survivors means 22 `over_cap`
 drops per day, and the false-merged `MinistralForCausalLM` occupied slot 2 of 5 in the
 7-day run. 10 keeps the genuine frontier set inside the budget. (`config.py` is frozen — I
-have not changed it. These are recommendations for whoever owns it.)
+did not change it. These are recommendations for whoever owns it.)
+
+> **All three were applied** by `config.py`'s owner, with this evidence quoted in the code
+> comments. Round 2 above re-measures the result: recall 9/9, the `silently_wrong` finding
+> reported at rank 9 of 90, and 10% noise inside the cap.
 
 ---
 
-## (E) False-merge audit
+## (E) False-merge audit (round 1)
 
 `Candidate.join_edges` was inspected across every candidate in every run, with an
 over-eager pure heuristic (`audit_merge`) flagging: two distinct architecture spellings
@@ -440,7 +729,7 @@ the dedup key.
 
 ---
 
-## (F) `silently_wrong` — the headline metric
+## (F) `silently_wrong` — the headline metric (round 1)
 
 Counted from stub front matter, testing for **keys, not the schema string** (addendum 22 —
 which was already necessary: the emitter ships `archwatch/3` where the plan said
@@ -487,7 +776,7 @@ the argument for reporting it, not against.
 
 ---
 
-## What does NOT work
+## What did not work (round 1) — see round 2 above for status
 
 1. **`recheck_known_architectures=False` gives zero recall on every named frontier
    release.** Not degraded — zero. `0/9`. The cold-start seed set is regenerated from
@@ -569,7 +858,12 @@ the argument for reporting it, not against.
 
 ---
 
-## What I could not measure, and why
+---
+
+# Known limitations
+
+Carried forward from both rounds. Everything here is either unmeasured or unmeasurable with
+the method available, and none of it was closed by the fixes.
 
 * **A true HuggingFace historical replay.** No server-side date filter; a 30-day window is
   ~100,000 records behind the head of a `created_at`-descending listing. Replaced by the
@@ -585,13 +879,28 @@ the argument for reporting it, not against.
 * **S2's open-world path** (`min_org_top_downloads`, the org-download sweep). Every target
   and every survivor satisfied S2 by frontier-org membership or failed it outright; the
   sweep never decided an outcome, so `100_000` is untested.
-* **S4's threshold values.** S4 fired on 32 of 37 survivors, almost always via the trending
-  sweep or large fine-tune download counts, so `min_model_downloads`/`min_model_likes` were
-  not the binding constraint anywhere and could not be calibrated.
+* **S4's threshold values.** S4 fired on 32 of 37 round-1 survivors and 59 of 90 round-2
+  survivors, almost always via the trending sweep or large fine-tune download counts, so
+  `min_model_downloads`/`min_model_likes` were never the binding constraint and could not be
+  calibrated. Worth noting for round 2 specifically: S4 is now the most-fired significance
+  code, so a large share of the survivor tail is admitted by *fine-tune popularity* rather
+  than by anything about the architecture.
 * **Whether stage 2 reaches correct buckets.** That is component I's acceptance criterion and
   needs a human running the skill. What J verifies is the handshake: `split_stub` finds the
   marker, the appendix is empty on every stub written, and `bucket` is `0` or `null` only
-  (addendum 6) — 16 of 37 stubs carried `bucket: 0`, the rest `null`, never 1-3.
-* **Sustained behaviour over time.** Every number here is one or two windows on one day. The
-  dedup means the *second* week's survivor list is a different (and probably much smaller)
-  population, and nothing here measures that.
+  (addendum 6) — 16 of 37 round-1 stubs and 24 of 90 round-2 stubs carried `bucket: 0`, the
+  rest `null`, never 1-3. Required front-matter keys were present on every stub in both
+  rounds, tested by key rather than by `schema:` string (addendum 22 — necessary, since the
+  emitter ships `archwatch/3` where the plan said `archwatch/2`).
+* **Sustained multi-week behaviour, and the dedup's effect on it.** Every number in this
+  document is one or two windows on a single day, in each round. Because the stateless dedup
+  suppresses any architecture that already has a stub, the *second* week's survivor list is a
+  different and probably much smaller population than the first. Round 2's 90 survivors are a
+  cold-start number; the steady-state weekly number is unknown and could be far lower. Nothing
+  here measures it, and only running archwatch on a schedule for a month will.
+* **Whether the ranking function is right.** Round 2 makes it load-bearing — 90 survivors, 10
+  shown — but the suppressors have had far more scrutiny than `_strength()`. The cap's 10%
+  noise rate is one week's sample.
+* **The surviving `repo:`-edge false merge is characterized but not bounded.** One instance
+  was found and traced. How often a framework PR mentions a base model it is not about, across
+  a longer history, is unmeasured.

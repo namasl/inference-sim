@@ -36,8 +36,10 @@ see that function. ``evaluate()`` then, per candidate:
 =========================  ====================================================
 ``known_architecture``     ``surface.is_known_architecture(arch_id)`` — in the
                            cold-start seed set, so not news. Skipped when
-                           ``cfg.recheck_known_architectures`` is set; see
-                           "Re-checking known architectures" below.
+                           ``cfg.recheck_known_architectures`` is set (see
+                           "Re-checking known architectures" below) and when a
+                           ``BENCHMARK_SOURCES`` signal is present, so that a
+                           successful join cannot destroy the signal it joined.
 ``already_reported``       ``emitter.issue_exists(arch_id)`` — a stub is already
                            on disk. This *is* the dedup; the prototype keeps no
                            database. Delegated to the emitter so both sides share
@@ -48,9 +50,9 @@ see that function. ``evaluate()`` then, per candidate:
                            candidate is never dropped by vacuous truth, and ids merely
                            *mentioned* by a PR or changelog are not tested at all.
                            An **HF-noise suppressor**: see the exemption below.
-``framework_title_only``    Every signal is a framework ``title_only`` PR — model code
-                           touched, but no architecture name extractable from anywhere.
-                           A PR title is not a model.
+``framework_no_architecture``  Every signal is a framework PR and none yielded an
+                           architecture id at any strength — model code touched, but
+                           nothing nameable in it. A PR title is not a model.
 ``not_a_language_model``   Bucket 0 *and* two or more of the four core transformer
                            dimensions absent under every spelling. BLIS refuses it
                            because it is a speech/video/codec config, not because it is
@@ -83,7 +85,9 @@ Exemptions are logged.
 - **T2** a framework support PR (``vllm``/``sglang``) for this unseen architecture
 - **T3** a frontier org (``cfg.frontier_orgs``) publishing it
 - **T4** corroboration — the same architecture from >= 2 distinct sources
-- **T5** a curated benchmark entry (``inferencex``) for an unseen model. Kept separate
+- **T5** a curated benchmark entry (``inferencex``). The only numbered trigger that can
+  fire for a *known* architecture, because measured deployment is a different claim from
+  architectural novelty. Kept separate
   from T2 because the follow-ups differ: a framework PR hands you reference code, a
   benchmark row hands you performance numbers and no architecture. With the
   cross-source join most InferenceX signals merge into an HF or framework candidate and
@@ -145,6 +149,7 @@ __all__ = [
     "EvaluationReport",
     "join_signals",
     "signal_edges",
+    "coherent_arch_ids",
     "normalize_repo_key",
     "normalize_family_key",
     "evaluate",
@@ -203,12 +208,6 @@ CURATED_SOURCES: frozenset[str] = frozenset({"vllm", "sglang", "inferencex"})
 #: reference code to read, an InferenceX row hands you throughput numbers and no
 #: architecture at all. Collapsing them into one trigger would lose that in the report.
 BENCHMARK_SOURCES: frozenset[str] = frozenset({"inferencex"})
-
-#: Framework ``Signal.extra["signal_strength"]`` values, weakest last. ``title_only``
-#: means the connector found a PR that touches model code and matched a title pattern
-#: but could not extract any architecture name from the registry, the changed classes,
-#: the prose, or a new model file. There is no model in it — only a sentence.
-FRAMEWORK_STRENGTH_TITLE_ONLY = "title_only"
 
 #: The four dimensions every transformer language model declares under *some* spelling.
 #: Broader than :mod:`archwatch.sizing`'s chains on purpose: sizing answers "can BLIS
@@ -402,9 +401,17 @@ ARCH_CLASS_SUFFIXES: tuple[str, ...] = (
     "ForMaskedLM", "LMHeadModel", "MTPModel", "CausalLM", "MTP", "Model",
 )
 
-#: A family key shorter than this is too generic to be evidence — ``glm`` would merge
-#: every GLM release ever. Below the floor no family edge is emitted at all.
-MIN_FAMILY_KEY_LEN = 3
+#: A family key shorter than this is too generic to be evidence. Below the floor no
+#: family edge is emitted at all.
+#:
+#: Calibrated against the real targets, not chosen freely: the shortest family key any
+#: tracked frontier release produces is ``dsv4`` at four characters (``glm52`` is five,
+#: ``kimik3`` and ``qwen35`` six, ``minimaxm3`` nine), so five would break a real join.
+#: Four is therefore the ceiling, and it is also enough — the observed false merge came
+#: from a three-character key, ``family:asd``, which fused ``MinistralForCausalLM`` with
+#: Qwen3.5-MoE and some Bittensor spam. See
+#: test_the_family_key_floor_admits_every_real_frontier_family.
+MIN_FAMILY_KEY_LEN = 4
 
 _NON_ALNUM = re.compile(r"[^a-z0-9]+")
 
@@ -492,6 +499,42 @@ def alias_key(signal: Signal) -> tuple[str, str]:
     return normalize_family_key(bare), (bare or label)
 
 
+def coherent_arch_ids(signal: Signal) -> tuple[list[str], list[str]]:
+    """``(join_identity, ignored)`` — the arch names this Signal may join on, and the rest.
+
+    **This is the guard against transitive fusion, and it is load-bearing.** Union-find
+    membership is all-or-nothing: a Signal that offers an ``arch`` edge for each of N
+    names becomes a member of all N groups, which makes those groups one. So a Signal
+    naming several unrelated architectures does not merely mention them — it *fuses*
+    them, and everything joined to any of them.
+
+    That happened live. SGLang PR #35634 ("Add DeepEPv2 MoE A2A backend") is a *backend*
+    change, not a model addition, but it mines four architecture names, and the result
+    fused DeepSeek-V3 + DeepSeek-V4 + Qwen3-MoE + Qwen3.5-MoE into a single top-ranked
+    candidate whose findings described a model that does not exist.
+
+    The rule: a Signal's join identity is the family of its **primary** architecture.
+    Names in that family are join evidence; names outside it are ignored for joining
+    (they are still available to the emitter through the Signal itself). So
+    ``KimiK3ForCausalLM`` + ``KimiK3MTPModel`` — both ``kimik3`` — still merge, because
+    an MTP head ships with its release; ``DeepseekV3ForCausalLM`` + ``Qwen3MoeForCausalLM``
+    cannot, because a backend PR is not a claim that those are the same model.
+
+    When the primary's family key is unusable (below :data:`MIN_FAMILY_KEY_LEN`), only
+    the primary itself is join evidence: coherence cannot be checked, so nothing is
+    allowed to bridge on the strength of an unverifiable name.
+    """
+    arch_ids = [a.strip() for a in signal.arch_ids if a and a.strip()]
+    if not arch_ids:
+        return [], []
+    primary_family = normalize_family_key(arch_ids[0])
+    if not primary_family:
+        return arch_ids[:1], arch_ids[1:]
+    coherent = [a for a in arch_ids if normalize_family_key(a) == primary_family]
+    ignored = [a for a in arch_ids if a not in coherent]
+    return coherent, ignored
+
+
 def signal_edges(signal: Signal) -> list[tuple[str, str]]:
     """Every join edge a Signal offers, as namespaced ``(kind, key)`` pairs.
 
@@ -501,10 +544,15 @@ def signal_edges(signal: Signal) -> list[tuple[str, str]]:
     """
     edges: list[tuple[str, str]] = []
 
-    # (a) architecture identity — the strongest edge. Every arch_id, not just the
-    # primary: a framework PR mining both KimiK3ForCausalLM and KimiK3MTPModel from one
-    # patch should join either spelling seen elsewhere.
-    for arch in signal.arch_ids:
+    # (a) architecture identity — the strongest edge, restricted to the primary's
+    # family so one signal cannot fuse unrelated architectures. See coherent_arch_ids.
+    coherent, ignored = coherent_arch_ids(signal)
+    if ignored:
+        log.debug(
+            "signal %s#%s names %d architectures across families; joining only on %s, "
+            "ignoring %s for join purposes",
+            signal.source, signal.raw_ref, len(coherent) + len(ignored), coherent, ignored)
+    for arch in coherent:
         key = normalize_arch_key(arch)
         if key:
             edges.append(("arch", key))
@@ -515,15 +563,22 @@ def signal_edges(signal: Signal) -> list[tuple[str, str]]:
         if key:
             edges.append(("repo", key))
 
-    # (c) family name — bridges class names to human names. Fed only from
-    # architecture names and the display name; never from a repo basename, which
-    # would drop the org prefix and merge unrelated models across orgs.
-    family_sources = list(signal.arch_ids)
-    if signal.display_name:
-        display = signal.display_name.strip()
+    # (c) family name — bridges class names to human names. Fed only from architecture
+    # names and the display name; never from a repo basename, which would drop the org
+    # prefix and merge unrelated models across orgs.
+    #
+    # When the signal has an architecture, that is its identity and the display name is
+    # merely a title — a PR title mentioning some other model must not bridge to it. The
+    # display name is used only when no architecture is available at all, which is the
+    # alias path (InferenceX rows, framework PRs with nothing extractable).
+    if coherent:
+        family_sources = list(coherent)
+    elif signal.display_name:
         # An org-qualified display name stays org-qualified, so two orgs' identically
         # named models cannot meet here. A bare name can only ever match bare.
-        family_sources.append(display)
+        family_sources = [signal.display_name.strip()]
+    else:
+        family_sources = []
     for name in family_sources:
         key = normalize_family_key(name)
         if key:
@@ -1068,6 +1123,25 @@ def evaluate_detailed(
     # disagreeing with it.
     survivors: list[tuple[Candidate, LmShapeEvidence]] = []
     for cand in cands:
+        # --- source classes, computed once ---------------------------------
+        # curated  = somebody outside HF worked on this (reference code or a benchmark)
+        # benchmark = measured deployment specifically (T5's source)
+        curated = sorted({sg.source for sg in cand.signals} & CURATED_SOURCES)
+        benchmark = sorted({sg.source for sg in cand.signals} & BENCHMARK_SOURCES)
+
+        def exempt(reason: str, detail: str, sources: list[str]) -> bool:
+            """True when ``sources`` is non-empty and so spares the candidate from a drop.
+
+            Volume is bounded by the number of curated signals in a window (tens, not
+            thousands), so this is safe at INFO — and it is worth seeing: it says the
+            candidate survived only because someone outside HuggingFace worked on it.
+            """
+            if not sources:
+                return False
+            log.info("exempting %r from %s (%s also saw it): %s",
+                     cand.arch_id, reason, sources, detail)
+            return True
+
         # --- suppressors: cheap identity checks first -----------------------
         # A known architecture is normally dropped here, unexamined. That is the
         # filter's largest recall hole: configs gain fields between point releases
@@ -1076,11 +1150,20 @@ def evaluate_detailed(
         # an architecture already handled. cfg.recheck_known_architectures keeps such a
         # candidate alive for a T1-only re-examination (see the trigger phase below);
         # every other suppressor still applies to it.
+        #
+        # A benchmark signal also spares it, because otherwise a *successful join
+        # destroys a signal*: InferenceX's "Kimi-K3" passes alone on T5, but once joined
+        # to HF's moonshotai/Kimi-K3 the merged candidate adopts the seeded architecture
+        # name and dies here — so corroboration, which should strengthen a candidate,
+        # suppressed it instead. A SemiAnalysis entry is news about the *deployment* of a
+        # release, which is a different claim from "this architecture class is unknown to
+        # vLLM". Repeats are the dedup's job (already_reported), not this suppressor's.
         known = surface.is_known_architecture(cand.arch_id)
         if known and not cfg.recheck_known_architectures:
-            drop(cand, "suppressor", "known_architecture",
-                 f"{cand.arch_id!r} is in the cold-start seed set")
-            continue
+            detail = f"{cand.arch_id!r} is in the cold-start seed set"
+            if not exempt("known_architecture", detail, benchmark):
+                drop(cand, "suppressor", "known_architecture", detail)
+                continue
 
         if already_reported(cand.arch_id):
             drop(cand, "suppressor", "already_reported",
@@ -1088,31 +1171,36 @@ def evaluate_detailed(
             continue
 
         # --- a PR title is not a model -------------------------------------
-        # The framework connector emits title_only signals: a PR that touches model code
-        # and matched a title pattern, but from which no architecture name could be
-        # extracted from the registry, the changed classes, the prose, or a new model
-        # file. Those route through the alias path and key on the PR title, so T2 and S3
-        # always fire and the stub ends up named "Find attention with a fuser and attach
-        # vLLM's layer to it" or "gfx1250 on ROCM 10" — five out of five on a live run.
+        # A framework PR that touches model code and matches a title pattern, but from
+        # which no architecture name could be extracted, routes through the alias path
+        # and keys on the PR title. T2 and S3 then always fire, and the stub ends up
+        # named "Find attention with a fuser and attach vLLM's layer to it", "gfx1250 on
+        # ROCM 10", or "video embeds input" — all three observed on a live run.
         #
-        # Gated on the connector's own metadata rather than on whether the name reads
-        # like a sentence, and narrowed further than strictly necessary: it fires only
-        # when EVERY signal is a title_only framework signal. Any registry-,
-        # model_class-, prose- or new_model_file-strength signal, any HF config, any
-        # benchmark row, and the candidate is kept. A false suppression here is
-        # unrecoverable, so the rule refuses to guess.
+        # The test is "yields no architecture id", NOT the connector's strength label.
+        # Strength was the wrong field: those three stubs were new_model_file strength,
+        # not title_only. A PR that adds a model file without a nameable architecture is
+        # the same non-finding as one that only matched a title.
+        #
+        # Deliberately narrow, because a false suppression here is unrecoverable: it
+        # fires only when EVERY signal is a framework signal and the candidate reached
+        # the alias path, so no source anywhere produced an architecture name. Any HF
+        # config, any benchmark row, any arch-bearing signal spares it — including a
+        # genuine model with no architectures[] of its own (the Vela case).
         framework_sigs = [sg for sg in cand.signals if sg.source in FRAMEWORK_SOURCES]
         if (
             ALIAS_JOIN_MARKER in cand.triggers
             and framework_sigs
             and len(framework_sigs) == len(cand.signals)
-            and all(_signal_strength(sg) == FRAMEWORK_STRENGTH_TITLE_ONLY
-                    for sg in framework_sigs)
+            and not any(sg.arch_ids for sg in cand.signals)
         ):
-            drop(cand, "suppressor", "framework_title_only",
-                 f"only evidence is {len(framework_sigs)} title_only PR(s) with no "
-                 f"extractable architecture: "
-                 + "; ".join(f"{sg.source}#{sg.raw_ref}" for sg in framework_sigs))
+            drop(cand, "suppressor", "framework_no_architecture",
+                 f"only evidence is {len(framework_sigs)} framework PR(s) yielding no "
+                 f"architecture id: "
+                 + "; ".join(
+                     f"{sg.source}#{sg.raw_ref}"
+                     f"({_signal_strength(sg) or 'no strength'})"
+                     for sg in framework_sigs))
             continue
 
         # --- HF-noise suppressors, and the curated-source exemption ----------
@@ -1123,23 +1211,11 @@ def evaluate_detailed(
         # That choice outranks whatever HF repos happen to exist, so a candidate any
         # curated source has seen is exempt from this class of suppressor as a whole.
         #
-        # This is a class-wide rule rather than two independent conditions because the
-        # same bug appeared twice: applying an HF-noise test to a curated signal deletes
-        # the candidate before the trigger phase, so T2/T5 and S3 never get a say, and
-        # the purest zero-day evidence we have is the thing that gets thrown away.
-        curated = sorted({sg.source for sg in cand.signals} & CURATED_SOURCES)
-
-        def exempt(reason: str, detail: str) -> bool:
-            """True when a curated source spares the candidate from an HF-noise drop."""
-            if not curated:
-                return False
-            # Volume is bounded by the number of curated signals in the window (tens,
-            # not thousands), so this is safe at INFO — and it is worth seeing: it says
-            # this candidate survived only because someone outside HF worked on it.
-            log.info("exempting %r from %s (%s also saw it): %s",
-                     cand.arch_id, reason, curated, detail)
-            return True
-
+        # This is a class-wide rule rather than independent conditions because the same
+        # bug kept recurring: applying an HF-noise test to a curated signal deletes the
+        # candidate before the trigger phase, so T2/T5 and S3 never get a say, and the
+        # purest zero-day evidence we have is the thing that gets thrown away.
+        #
         # Only ids from ARTIFACT_SOURCES: a repo id from HF is the artifact, while one
         # mined from a PR diff or changelog line is a mention. Testing a mention would
         # let a PR titled "[Model] Support Qwen3-8B-GGUF loading" suppress the very
@@ -1149,14 +1225,14 @@ def evaluate_detailed(
             hits = [(mid, _derivative_match(mid)) for mid in model_ids]
             if all(pat for _, pat in hits):
                 detail = "; ".join(f"{mid} matches {pat!r}" for mid, pat in hits)
-                if not exempt("all_model_ids_derivative", detail):
+                if not exempt("all_model_ids_derivative", detail, curated):
                     drop(cand, "suppressor", "all_model_ids_derivative", detail)
                     continue
 
         config = cand.config
         if config is None and not cand.corroborated:
             detail = f"no config from any source and only {cand.sources} saw it"
-            if not exempt("no_config_uncorroborated", detail):
+            if not exempt("no_config_uncorroborated", detail, curated):
                 drop(cand, "suppressor", "no_config_uncorroborated", detail)
                 continue
 
@@ -1225,15 +1301,19 @@ def evaluate_detailed(
         # invisible-end-to-end failure as leaving silent_failures unpopulated.
         t1_evidence = bool(unparsed or silent)
         if known:
-            # Re-check path: T1 ONLY. T2/T3/T4/T5 would fire on every fine-tune of every
-            # seeded architecture — a frontier org republishing Llama is not news, and
-            # a vLLM PR touching an architecture vLLM already supports is not either.
-            # The one thing worth knowing is whether the config grew something BLIS
-            # cannot read, so that is the only question we ask. A seeded architecture
+            # Re-check path: T1, plus T5 when a benchmark saw it. T2/T3/T4 stay withheld
+            # because they would fire on every fine-tune of every seeded architecture —
+            # a frontier org republishing Llama is not news, and a vLLM PR touching an
+            # architecture vLLM already supports is not either. What IS worth knowing is
+            # whether the config grew something BLIS cannot read (a seeded architecture
             # that now trips a silent validator is exactly the trillion-parameter MoE
-            # simulating as dense behind one logrus.Warnf.
+            # simulating as dense behind one logrus.Warnf), and whether somebody measured
+            # it in production — a different claim from architectural novelty, and the
+            # reason the known_architecture suppressor exempts benchmark signals above.
             if t1_evidence:
                 fired.append(KNOWN_ARCH_TRIGGER)
+            if benchmark:
+                fired.append("T5")
         else:
             if t1_evidence:
                 fired.append("T1")
@@ -1256,8 +1336,9 @@ def evaluate_detailed(
                 # the re-check sweep (known, nothing new) from its yield (known,
                 # unparsed fields found) when the backtest calibrates the flag.
                 drop(cand, "trigger", "known_architecture_nothing_new",
-                     f"{cand.arch_id!r} is in the seed set and its config carries no "
-                     f"unparsed field and no silent-misread finding")
+                     f"{cand.arch_id!r} is in the seed set, its config carries no "
+                     f"unparsed field and no silent-misread finding, and no benchmark "
+                     f"source measured it")
             else:
                 drop(cand, "trigger", "no_trigger",
                      f"nothing new: sources={cand.sources}, unparsed_fields=[], "

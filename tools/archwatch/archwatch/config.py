@@ -26,6 +26,9 @@ DERIVATIVE_PATTERNS: tuple[str, ...] = (
     # bare "-4bit"/"-8bit" suffixes and a "-MLX" suffix (only the "mlx-" prefix
     # was covered), plus one abliteration brand.
     "-4bit", "-8bit", "-mlx", "heretic",
+    # Added after the backtest found these drifting out of sync with the
+    # connectors' own quant-suffix lists:
+    "nvfp4", "mxfp4", "-fp4", "aqlm",
 )
 
 # Deliberately NOT suppressed: "-mtp". Multi-token prediction is one of the
@@ -49,8 +52,17 @@ IGNORED_CONFIG_KEYS: set[str] = {
 class Thresholds:
     """Significance gate thresholds (S1-S4). Placeholders; calibrate by backtest."""
 
-    # S1 - scale
-    min_total_params: int = 30_000_000_000  # 30B total
+    # S1 - scale. Calibrated by the wave-6 backtest, not chosen.
+    #
+    # Measured: recall against the frontier target list is IDENTICAL from 1B to
+    # 400B, because every target also satisfies S2 by org — so this is a volume
+    # knob, not a recall knob, and it flattens above ~15B. The deciding evidence
+    # is at the other end: at >=7B it SUPPRESSES the only silently_wrong finding
+    # in 1,446 candidates/day (a 4.02B Qwen3-Next variant simulating a sparse MoE
+    # as dense). A threshold that filters out the single finding that justifies
+    # the pipeline is the wrong threshold, however reasonable "industry scale"
+    # sounded when I picked 30B.
+    min_total_params: int = 3_000_000_000  # 3B total
 
     # S2 - org track record (used when org is not in FRONTIER_ORGS)
     min_org_top_downloads: int = 100_000
@@ -63,7 +75,11 @@ class Thresholds:
 @dataclass
 class DetectorConfig:
     window_days: int = 7
-    max_issues_per_run: int = 5
+    # Raised from 5 on backtest evidence: at recheck=True the genuine frontier
+    # architectures number more than five per day, and a cap of 5 discards real
+    # findings. Noise at the cap was 20% while uncapped noise was 70% — the
+    # ranking does the work, so a slightly wider cap is cheap.
+    max_issues_per_run: int = 10
     thresholds: Thresholds = field(default_factory=Thresholds)
     frontier_orgs: set[str] = field(default_factory=lambda: set(FRONTIER_ORGS))
 
@@ -88,9 +104,14 @@ class DetectorConfig:
     # When True, known architectures are still re-checked for T1 (unparsed
     # config fields) instead of being dropped outright.
     #
-    # Default False until the wave-6 backtest measures both settings: the recall
-    # gained versus the noise added. This is a number to be measured, not chosen.
-    recheck_known_architectures: bool = False
+    # Measured by the backtest and turned ON. At False, frontier recall was 0/9
+    # and the five survivors contained ZERO genuine frontier architectures. At
+    # True it is 9/9, and the 5.4x extra volume (5 -> 27/day) is better volume:
+    # 17 genuine frontier architectures, 3 minor, 7 noise. Seeded controls
+    # (Qwen3-14B, Llama-3.1-70B, Mixtral-8x7B) still drop as
+    # known_architecture_nothing_new, so the recheck discriminates rather than
+    # simply readmitting everything.
+    recheck_known_architectures: bool = True
 
 
 DEFAULTS = DetectorConfig()

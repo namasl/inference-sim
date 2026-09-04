@@ -33,7 +33,9 @@ Kept continuously so the build is resumable if the session dies. Newest entries 
 - [x] C org-stats DONE
 - [x] G silent_failures + join_edges rendering DONE; fixture fiction purged
 - [x] F revisions DONE (join, T5, silent_failures, T1 widening) — 243 tests
-- [~] Wave 3: H detector + CLI launched
+- [x] Wave 3: H detector + CLI DONE
+- [x] Wave 4: I skill, J validation DONE
+- [~] Wave 5/6: fixes from validation landing; J re-measuring post-fix
 - [ ] Wave 3: H detector + CLI
 - [x] Wave 4a: I classifier skill (`skills/archwatch-deep-dive/SKILL.md`) — written by orchestrator
 - [ ] Wave 4b: J validation harness
@@ -514,3 +516,95 @@ which signal arrived on which edge — `family:` being the edge most likely to b
 the flat list plus the sources table already makes a false merge **detectable**, which is what the
 backtest needs; full diagnosability is refinement, and session time is better spent on validation.
 Recorded so it is a known limitation rather than an oversight.
+
+---
+
+## Validation results (wave 6) — the part to read first
+
+`VALIDATION.md` has the full report. The verdict: **the pipeline works, and the two most
+important defaults I chose were both wrong.**
+
+| Question | Measured answer |
+|---|---|
+| Does the filter suppress the HF firehose? | Yes — 14,144 signals → 37 survivors (380:1) |
+| Noise rate | 70% uncapped, **20% at the shipped cap** — the ranking earns its keep |
+| Per-source noise | inferencex **0%**, sglang 67%, hf 70%, vllm 100% |
+| Does the cross-source join actually join? | Yes — HF+vLLM → one `Qwen3.8-Flash-Next`; HF+InferenceX → one `Kimi-K3`; T4 fires on real data |
+| Frontier recall | **0/9** at my defaults; **9/9** with the recheck on |
+
+### The single most valuable result
+
+`silently_wrong = 1` in 1,446 candidates/day: a Qwen3-Next variant with
+`num_experts_per_tok=10` and no resolvable expert total, so **BLIS would simulate a sparse MoE
+as dense behind one warning line.** Zero unparsed fields, so only the widened T1 definition
+catches it at all.
+
+**Two unrelated defaults of mine each independently hid it.** `recheck=False` dropped it as a
+known architecture; `min_total_params=30B` dropped it as insignificant (it is 4.02B). I would
+have shipped a pipeline that filters out the one finding class justifying its existence — and
+neither default looked wrong when I chose it.
+
+### Thresholds are now measured, not guessed
+
+- `min_total_params` 30B → **3B**. Recall is *identical* from 1B to 400B (every target also
+  satisfies S2 by org), so this is a volume knob, not a recall knob. The deciding evidence is at
+  the other end: at ≥7B it suppresses the only `silently_wrong` finding.
+- `recheck_known_architectures` → **True**. At False the five survivors contained **zero** genuine
+  frontier architectures. The 5.4× extra volume is better volume: 17 genuine frontier
+  architectures, 3 minor, 7 noise. Seeded controls still drop as
+  `known_architecture_nothing_new`, so the recheck discriminates rather than readmitting
+  everything.
+- `max_issues_per_run` 5 → **10**.
+
+### A real BLIS finding, independently re-derived
+
+**Five of fifteen current frontier configs would make BLIS abort.** Four (DeepSeek-V4 Pro/Flash,
+Qwen3.5-397B/122B) carry only `moe_intermediate_size`, while `sim/latency/config.go:341` reads
+only `intermediate_size`/`ffn_hidden_size`, and `IntermediateDim <= 0` is fatal at
+`trained_physics_model.go:1027`. MiniMax-M3 uses `hidden_act: "swigluoai"`, outside the SwiGLU
+set. I verified both against the fork's source rather than taking the report's word.
+
+This is actionable BLIS work produced by the tool doing its job, and it is arguably worth more
+than the tool.
+
+### The false merge — and why my prediction was wrong
+
+I warned the agents that `family:` was the edge most likely to be wrong. It wasn't. The dominant
+mechanism was **one signal naming many architectures**: `signal_edges` emitted an `arch:` edge per
+`arch_id`, and a *backend* SGLang PR (#35634, DeepEPv2 A2A) fused DeepSeek-V3 + V4 + Qwen3-MoE +
+Qwen3.5-MoE into a single top-ranked candidate describing a model that does not exist.
+
+F's explanation of my error is the useful part: **union-find membership is all-or-nothing, so a
+signal offering N edges joins all N groups — which makes the strongest edge type also the most
+dangerous.** Fixed by making a signal's join identity the family of its *primary* architecture.
+F then closed a second bridge in the same mechanism that I had not spotted: an arch-bearing
+signal was also emitting a family edge from its *display name*, so a PR about DeepEP whose title
+happened to mention Kimi could bridge to Kimi. Verified both: the backend PR now yields separate
+candidates, and `KimiK3ForCausalLM`/`KimiK3MTPModel` still merge.
+
+### Other fixes from validation
+
+- **Corroboration was suppressing candidates.** InferenceX's `Kimi-K3` passes alone via T5, but
+  once joined to HF's repo the merged candidate adopted the seeded architecture name and died at
+  `known_architecture`. Fixed — and F caught that my instruction was only half a fix: without also
+  allowing T5 on the known-arch path, the exemption would have been inert.
+- **`framework_title_only` keyed on the wrong field** (my instruction was wrong): the failing class
+  is `arch_ids == []` at *any* strength, not `title_only` strength. Three `new_model_file` PRs had
+  become stubs titled *"gfx1250 on ROCM 10"*. F renamed the reason code to
+  `framework_no_architecture` since the old name had become false, and checked for stale
+  aggregations on the old string.
+- `MIN_FAMILY_KEY_LEN` 3 → **4**, calibrated against the real targets rather than picked: `dsv4` is
+  four characters, so five would have silently un-joined DeepSeek-V4.
+
+### Known limitations — what was NOT measured
+
+- **No true HF historical replay** (no server-side date filter; ~100k records behind head). Replaced
+  by direct config fetch, which measures the filter's decision but not the listing's behaviour.
+- **No true zero-day recall.** The seed set was harvested today, so it post-dates every release;
+  only a prospective run over a genuinely new model can measure this.
+- **S2's download threshold and S4's thresholds never bound** anything in these runs, so they are
+  still uncalibrated.
+- **Stage-2 bucket correctness is unverified.** J confirmed the handshake mechanically
+  (`split_stub` works, `bucket ∈ {0, null}`), but nobody has run the classifier skill on a real
+  stub and checked the verdicts. **This is the biggest untested surface in the project.**
+- No sustained multi-week behaviour under dedup.

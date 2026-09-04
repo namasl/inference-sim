@@ -17,7 +17,7 @@ import pytest
 
 from archwatch import emitter
 from archwatch.connectors.base import Candidate, Signal
-from archwatch.novelty import join_signals
+from archwatch.novelty import join_signals, signal_edges
 from archwatch.surface import Surface
 from tests.backtest import (
     REQUIRED_FM_KEYS,
@@ -151,15 +151,14 @@ def test_same_architecture_across_repos_merges_without_suspicion():
     assert not audit_merge(cands[0]).suspicious
 
 
-def test_multi_architecture_signal_fuses_unrelated_families_and_is_flagged():
-    """The live false merge this audit was written to catch.
+def _deepepv2_backend_pr() -> Signal:
+    """SGLang PR #35634, in the shape the connector really emitted it.
 
-    SGLang PR #35634 ("Add DeepEPv2 MoE A2A backend") is a *backend* change whose prose
-    names four unrelated architectures. ``signal_edges`` emits an ``arch:`` edge for
-    every ``arch_ids`` entry, so that one signal is a clique joining DeepSeek V3,
-    DeepSeek V4 and two Qwen families into a single Candidate.
+    "[Feature] Add DeepEPv2 (ElasticBuffer) MoE A2A backend" is an all-to-all *backend*
+    change, not a model addition. It touches one model-registry file, so the connector
+    mines four architecture names out of it — none of which the PR is *about*.
     """
-    bridge = Signal(
+    return Signal(
         source="sglang",
         observed_at=NOW,
         arch_ids=["DeepseekV3ForCausalLM", "DeepseekV4ForCausalLM",
@@ -167,25 +166,127 @@ def test_multi_architecture_signal_fuses_unrelated_families_and_is_flagged():
         display_name="DeepEPv2 (ElasticBuffer) MoE A2A backend",
         raw_ref="35634",
     )
+
+
+def test_one_signal_joins_only_within_its_primary_architectures_family():
+    """The invariant: co-listing names is not a claim that they are the same model.
+
+    Union-find membership is all-or-nothing, so a Signal offering an ``arch`` edge per
+    name is a *clique* over those names — it fuses them, and everything already joined to
+    any of them. Backtest measurement found that live: PR #35634 fused DeepSeek V3,
+    DeepSeek V4, Qwen3-MoE and Qwen3.5-MoE into one top-ranked candidate whose findings
+    described a model that does not exist.
+
+    Both halves of the distinction are asserted here, because pinning only the new count
+    would let a fix that simply stopped joining on ``arch_ids[1:]`` pass while breaking
+    the merge that *should* happen.
+    """
+    bridge = _deepepv2_backend_pr()
+
+    # Half 1 — different families must NOT fuse.
     cands = join_signals([
         hf_signal("deepseek-ai/DeepSeek-V4-Pro", "DeepseekV4ForCausalLM"),
         hf_signal("Qwen/Qwen3.5-397B-A17B", "Qwen3_5MoeForCausalLM"),
         bridge,
     ])
-    assert len(cands) == 1, "the bridging signal fuses DeepSeek and Qwen into one candidate"
+    by_arch = {c.arch_id: c for c in cands}
+    assert set(by_arch) == {
+        "DeepseekV4ForCausalLM", "Qwen3_5MoeForCausalLM", "DeepseekV3ForCausalLM",
+    }, "a backend PR must not fuse the architectures it happens to mention"
+    # Each real release keeps its own identity, findings and model ids.
+    assert by_arch["DeepseekV4ForCausalLM"].sources == ["hf"]
+    assert by_arch["Qwen3_5MoeForCausalLM"].sources == ["hf"]
+    # The PR still lands somewhere: on the family of the name it listed first, so the
+    # evidence is not discarded, merely confined.
+    assert by_arch["DeepseekV3ForCausalLM"].sources == ["sglang"]
+    # And nothing merged, so the auditor has nothing to flag.
+    assert not any(audit_merge(c).suspicious for c in cands)
+
+    # Half 2 — variant spellings of ONE release must still fuse. An MTP head ships with
+    # its release; two names, one model, one issue.
+    variants = Signal(
+        source="vllm",
+        observed_at=NOW,
+        arch_ids=["KimiK3ForCausalLM", "KimiK3MTPModel"],
+        display_name="Kimi K3",
+        raw_ref="53906",
+    )
+    merged = join_signals([hf_signal("moonshotai/Kimi-K3", "KimiK3MTPModel"), variants])
+    assert len(merged) == 1, "co-listed variant spellings of one release must merge"
+    assert set(merged[0].sources) == {"hf", "vllm"}, "and the merge is what lets T4 fire"
+
+
+def test_the_mechanism_that_confines_a_multi_architecture_signal():
+    """The guard above, at the level of the edges — so a regression names its own cause.
+
+    ``signal_edges`` is where the clique was formed, so it is where the fix has to hold.
+    A name outside the primary's family must contribute no edge of any kind: not ``arch``
+    (it would fuse directly) and not ``family`` (it would fuse one hop later).
+    """
+    edges = signal_edges(_deepepv2_backend_pr())
+    assert ("arch", "deepseekv3forcausallm") in edges
+    for leaked in ("deepseekv4forcausallm", "qwen3moeforcausallm", "qwen35moeforcausallm"):
+        assert ("arch", leaked) not in edges, leaked
+    for leaked in ("deepseekv4", "qwen3moe", "qwen35moe"):
+        assert ("family", leaked) not in edges, leaked
+
+    # A PR *title* must not bridge either: the display name is identity only on the alias
+    # path, where there is no architecture at all.
+    assert not any(kind == "family" and "deepepv2" in key for kind, key in edges)
+
+
+def test_two_sizes_sharing_one_architecture_string_are_not_flagged():
+    """One architecture, two scales, one issue — that is the design, not a false merge.
+
+    Qwen3.5-397B-A17B and Qwen3.5-122B-A10B both publish
+    ``Qwen3_5MoeForConditionalGeneration``. PLAN.md keys on the architecture, so merging
+    them is correct and the auditor must not cry wolf about the differing size tokens.
+    """
+    cands = join_signals([
+        hf_signal("Qwen/Qwen3.5-397B-A17B", "Qwen3_5MoeForConditionalGeneration"),
+        hf_signal("Qwen/Qwen3.5-122B-A10B", "Qwen3_5MoeForConditionalGeneration"),
+    ])
+    assert len(cands) == 1
     audit = audit_merge(cands[0])
-    assert audit.suspicious
-    assert any("distinct architecture spellings" in r for r in audit.reasons)
+    assert any(e.startswith("arch:") for e in audit.join_edges)
+    assert not audit.suspicious, audit.reasons
 
 
-def test_different_size_tokens_fused_is_flagged():
-    small = hf_signal("acme/Thing-9B", "ThingForCausalLM")
-    big = hf_signal("acme/Thing-397B", "ThingForCausalLM")
+def test_different_size_tokens_fused_without_an_architecture_edge_is_flagged():
+    """The case worth flagging: a size-blind key merged two scales of different models.
+
+    Both signals reach the alias path (no architecture at all) and share a display name,
+    so they meet on ``family:thing`` alone while their repo ids name different sizes. This
+    is the guard for the day a size token is added to ``QUANT_REPO_SUFFIXES`` or
+    ``VARIANT_REPO_SUFFIXES``.
+    """
+    small = Signal(source="inferencex", observed_at=NOW, display_name="Thing",
+                   model_ids=["acme/Thing-9B"], raw_ref="a")
+    big = Signal(source="inferencex", observed_at=NOW, display_name="Thing",
+                 model_ids=["acme/Thing-397B"], raw_ref="b")
     cands = join_signals([small, big])
     assert len(cands) == 1
     audit = audit_merge(cands[0])
+    assert not any(e.startswith("arch:") for e in audit.join_edges)
     assert audit.suspicious
     assert any("parameter-size tokens" in r for r in audit.reasons)
+
+
+def test_the_auditor_counts_only_join_eligible_architecture_names():
+    """A confined multi-architecture signal must not read as a merge.
+
+    Since the union-find fix a backend PR joins only within its primary's family, so the
+    names it merely mentions are not evidence of fusion. Counting them made the auditor
+    report the old DeepSeek/Qwen merge as still live after it had been fixed.
+    """
+    cands = join_signals([
+        hf_signal("deepseek-ai/DeepSeek-V3", "DeepseekV3ForCausalLM"),
+        _deepepv2_backend_pr(),
+    ])
+    assert len(cands) == 1, "the PR still joins DeepSeek V3, the family it named first"
+    audit = audit_merge(cands[0])
+    assert audit.arch_keys == ["deepseekv3forcausallm"]
+    assert not audit.suspicious, audit.reasons
 
 
 def test_family_only_merge_across_orgs_is_flagged():
