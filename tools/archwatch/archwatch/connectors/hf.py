@@ -135,6 +135,85 @@ NON_LM_LIBRARIES: frozenset[str] = frozenset({
     "peft", "adapter-transformers",
 })
 
+# ---------------------------------------------------------------------------
+# The *strong* evidence sets, used for repos that DO name an architecture.
+#
+# Naming an architecture is real evidence of being a model, so overriding it
+# takes more than the broad lists above: these are deliberately narrower.
+# A repo tagged for a language task is immune regardless of anything else —
+# a vision-language model is a language model as far as BLIS is concerned, and
+# those are the frontier releases we least want to lose.
+# ---------------------------------------------------------------------------
+
+#: Tasks a text-capable model could plausibly serve. Checked FIRST, so nothing
+#: below can drop a repo carrying one of these.
+LM_PIPELINE_TAGS_ALWAYS_KEEP: frozenset[str] = frozenset({
+    "text-generation", "text2text-generation", "image-text-to-text",
+    "video-text-to-text", "audio-text-to-text", "any-to-any",
+    "visual-question-answering", "document-question-answering",
+    "table-question-answering", "question-answering", "feature-extraction",
+    "fill-mask", "text-classification", "token-classification",
+    "sentence-similarity", "zero-shot-classification", "summarization",
+    "translation", "text-ranking", "image-to-text",
+})
+
+#: ``pipeline_tag`` values unambiguous enough to override an architecture name.
+#: Narrower than NON_LM_PIPELINE_TAGS: image-feature-extraction,
+#: image-text-to-video, tabular-*, time-series-forecasting and graph-ml are
+#: deliberately left out, since a text-capable model could carry them.
+STRONG_NON_LM_PIPELINE_TAGS: frozenset[str] = frozenset({
+    # image / video / 3D generation
+    "text-to-image", "image-to-image", "unconditional-image-generation",
+    "text-to-video", "image-to-video", "text-to-3d", "image-to-3d",
+    # vision understanding: output is labels, boxes or masks
+    "image-classification", "image-segmentation", "semantic-segmentation",
+    "object-detection", "zero-shot-object-detection",
+    "zero-shot-image-classification", "depth-estimation", "keypoint-detection",
+    "mask-generation", "video-classification",
+    # speech / audio: transcription and synthesis, not language modelling
+    "automatic-speech-recognition", "audio-classification", "audio-to-audio",
+    "text-to-speech", "text-to-audio", "voice-activity-detection",
+    # control
+    "robotics", "reinforcement-learning",
+})
+
+#: ``library_name`` values unambiguous enough to override an architecture name.
+#: Narrower than NON_LM_LIBRARIES: peft, adapter-transformers,
+#: sentence-transformers and the classical-ML libraries are left out — they host
+#: text models or merely wrap one, which is not the same as not being an LM.
+STRONG_NON_LM_LIBRARIES: frozenset[str] = frozenset({
+    "diffusers", "diffusion-single-file", "trellis",
+    "lerobot", "openpi", "stable-baselines3", "ml-agents", "sample-factory",
+    "unity-sentis",
+    "espnet", "speechbrain", "pyannote-audio", "asteroid", "k2", "gigaam",
+    "whisper.cpp", "sherpa-onnx", "audio.cpp",
+    "timm", "ultralytics", "segmentation-models-pytorch", "open_clip",
+    "doctr", "calamari", "paddleocr",
+})
+
+#: ``model_type`` values that identify a non-LM family. This exists because the
+#: worst offenders publish NO library_name and NO pipeline_tag at all — measured
+#: live, ``Sam3VideoModel`` and ``Wav2Vec2ForPreTraining`` reach the detector
+#: with the indexed config excerpt as their only metadata. ``model_type`` is in
+#: that excerpt already, so it costs nothing. Entries are HF's canonical family
+#: ids and every one is a vision or audio family; multimodal LLMs are unaffected
+#: because their top-level ``model_type`` is the LLM's own (``qwen3_vl``,
+#: ``gemma4``), never the vision tower's.
+STRONG_NON_LM_MODEL_TYPES: frozenset[str] = frozenset({
+    # speech / audio
+    "wav2vec2", "wav2vec2_bert", "wav2vec2_conformer", "hubert", "wavlm",
+    "unispeech", "unispeech_sat", "sew", "sew_d", "whisper", "speech_to_text",
+    "speecht5", "bark", "vits", "musicgen", "musicgen_melody", "encodec",
+    "audio_spectrogram_transformer", "clap", "vibevoice", "minimax_music3",
+    # vision: classification / detection / segmentation / depth
+    "vit", "deit", "beit", "swin", "swinv2", "convnext", "convnextv2",
+    "dinov2", "dinov3", "resnet", "detr", "yolos", "owlvit", "owlv2",
+    "segformer", "maskformer", "mask2former", "dpt", "depth_anything",
+    "videomae", "timesformer", "sam", "sam2", "sam3", "sam3_video",
+    # diffusion backbones
+    "unet_2d_condition", "stable_diffusion", "flux", "ltx_video",
+})
+
 #: ``pipeline_tag`` values that positively identify a non-language-model task.
 #: Text tasks an LM could plausibly serve (text-generation, translation,
 #: fill-mask, feature-extraction, image-text-to-text, ...) are excluded.
@@ -213,6 +292,33 @@ def is_non_lm_artifact(info: Any) -> bool:
         return True
     pipeline = (getattr(info, "pipeline_tag", None) or "").strip().lower()
     return pipeline in NON_LM_PIPELINE_TAGS
+
+
+def strong_non_lm_evidence(info: Any) -> str | None:
+    """Evidence strong enough to drop a repo that *does* name an architecture.
+
+    Returns a short human-readable reason, or None to keep. The order matters:
+    a language-task ``pipeline_tag`` short-circuits to None first, so no amount
+    of vision or audio metadata can drop a vision-language model.
+
+    Naming an architecture is genuine evidence of being a model, which is why
+    this consults narrower vocabularies than :func:`is_non_lm_artifact`. But an
+    architecture name is not evidence of being a *language* model —
+    ``Sam3VideoModel`` names one and is plainly not — so it does not override
+    unambiguous contrary evidence.
+    """
+    pipeline = (getattr(info, "pipeline_tag", None) or "").strip().lower()
+    if pipeline in LM_PIPELINE_TAGS_ALWAYS_KEEP:
+        return None
+    if pipeline in STRONG_NON_LM_PIPELINE_TAGS:
+        return f"pipeline_tag={pipeline}"
+    library = (getattr(info, "library_name", None) or "").strip().lower()
+    if library in STRONG_NON_LM_LIBRARIES:
+        return f"library_name={library}"
+    model_type = (_model_type_of(getattr(info, "config", None)) or "").lower()
+    if model_type in STRONG_NON_LM_MODEL_TYPES:
+        return f"model_type={model_type}"
+    return None
 
 
 def _model_type_of(config: dict[str, Any] | None) -> str | None:
@@ -651,33 +757,37 @@ class HFConnector:
 
     # -- assembly -----------------------------------------------------------
 
-    def _prefilter(self, infos: Sequence[Any]) -> tuple[list[Any], int, int]:
-        """Phase 1. Returns (survivors, derivative dropped, non-LM dropped).
+    def _prefilter(self, infos: Sequence[Any]) -> tuple[list[Any], int, int, int]:
+        """Phase 1. Returns (survivors, derivative, non-LM archless, non-LM with arch).
 
-        The two drop counts are reported separately because they are tuned
-        against different things: the derivative count against
-        ``DERIVATIVE_PATTERNS``, the non-LM count against the vocabularies
-        above. A single combined number would hide which list needs work.
+        The three drop counts are reported separately because each is tuned
+        against a different list — ``DERIVATIVE_PATTERNS``, the broad non-LM
+        vocabularies, and the narrow strong-evidence vocabularies. One combined
+        number would hide which list needs work.
         """
         survivors: list[Any] = []
-        n_derivative = n_non_lm = 0
+        n_derivative = n_non_lm = n_non_lm_arch = 0
         for info in infos:
             if is_derivative(info.id):
                 n_derivative += 1
                 continue
-            # Only judge modality when the listing excerpt names no architecture.
-            # An architecture is the pipeline's primary key: once we have one,
-            # the repo is the detector's business, whatever library shipped it.
-            if not architectures_of(getattr(info, "config", None)) and is_non_lm_artifact(info):
-                log.debug(
-                    "hf: dropping non-LM repo %s (library=%s pipeline=%s)",
-                    info.id, getattr(info, "library_name", None),
-                    getattr(info, "pipeline_tag", None),
-                )
+            strong = strong_non_lm_evidence(info)
+            if architectures_of(getattr(info, "config", None)):
+                # Naming an architecture is not a free pass: only unambiguous
+                # contrary evidence drops it, and a language-task tag never can.
+                if strong:
+                    log.debug("hf: dropping non-LM repo %s (named an architecture; %s)",
+                              info.id, strong)
+                    n_non_lm_arch += 1
+                    continue
+            elif strong or is_non_lm_artifact(info):
+                log.debug("hf: dropping non-LM repo %s (no architecture; library=%s pipeline=%s)",
+                          info.id, getattr(info, "library_name", None),
+                          getattr(info, "pipeline_tag", None))
                 n_non_lm += 1
                 continue
             survivors.append(info)
-        return survivors, n_derivative, n_non_lm
+        return survivors, n_derivative, n_non_lm, n_non_lm_arch
 
 
     def _to_signals(
@@ -687,10 +797,11 @@ class HFConnector:
         phase: str,
         ranks: dict[str, int] | None = None,
     ) -> list[Signal]:
-        survivors, n_derivative, n_non_lm = self._prefilter(infos)
+        survivors, n_derivative, n_non_lm, n_non_lm_arch = self._prefilter(infos)
         log.info(
-            "hf: pre-filter (%s) dropped %d derivative + %d non-LM of %d repos, %d survive",
-            phase, n_derivative, n_non_lm, len(infos), len(survivors),
+            "hf: pre-filter (%s) dropped %d derivative + %d non-LM (no architecture) "
+            "+ %d non-LM (named architecture) of %d repos, %d survive",
+            phase, n_derivative, n_non_lm, n_non_lm_arch, len(infos), len(survivors),
         )
 
         fetched: dict[str, dict[str, Any] | None] = {}
@@ -813,9 +924,14 @@ __all__ = [
     "HFConnector",
     "is_derivative",
     "is_non_lm_artifact",
+    "strong_non_lm_evidence",
     "architectures_of",
     "NON_LM_LIBRARIES",
     "NON_LM_PIPELINE_TAGS",
+    "STRONG_NON_LM_LIBRARIES",
+    "STRONG_NON_LM_PIPELINE_TAGS",
+    "STRONG_NON_LM_MODEL_TYPES",
+    "LM_PIPELINE_TAGS_ALWAYS_KEEP",
     "poll",
     "LIST_EXPAND",
     "DEFAULT_MAX_LIST",

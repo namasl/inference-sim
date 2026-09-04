@@ -1,0 +1,20 @@
+{
+  "architectures": ["Wav2Vec2ForPreTraining"],
+  "model_type": "wav2vec2",
+  "hidden_size": 768,
+  "num_hidden_layers": 12,
+  "num_attention_heads": 12,
+  "intermediate_size": 3072,
+  "vocab_size": 32,
+  "hidden_act": "gelu",
+  "torch_dtype": "float32",
+  "conv_dim": [512, 512, 512, 512, 512, 512, 512],
+  "conv_kernel": [10, 3, 3, 3, 3, 2, 2],
+  "conv_stride": [5, 2, 2, 2, 2, 2, 2],
+  "num_feat_extract_layers": 7,
+  "num_codevector_groups": 2,
+  "num_codevectors_per_group": 320,
+  "feat_extract_norm": "group",
+  "do_stable_layer_norm": false,
+  "num_negatives": 100
+}

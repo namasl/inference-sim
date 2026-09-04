@@ -1,0 +1,12 @@
+{
+  "architectures": ["VibeVoiceForASRStreamingTraining"],
+  "model_type": "vibevoice_asr",
+  "torch_dtype": "bfloat16",
+  "acoustic_vae_dim": 64,
+  "semantic_vae_dim": 128,
+  "acoustic_tokenizer_config": {"channels": 1, "conv_bias": true, "corpus_normalize": 0.0},
+  "semantic_tokenizer_config": {"channels": 1, "vae_dim": 128},
+  "diffusion_head_config": {"ddpm_num_steps": 1000, "head_layers": 4},
+  "streaming_chunk_frames": 25,
+  "sample_rate": 24000
+}

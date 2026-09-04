@@ -48,6 +48,13 @@ see that function. ``evaluate()`` then, per candidate:
                            candidate is never dropped by vacuous truth, and ids merely
                            *mentioned* by a PR or changelog are not tested at all.
                            An **HF-noise suppressor**: see the exemption below.
+``framework_title_only``    Every signal is a framework ``title_only`` PR — model code
+                           touched, but no architecture name extractable from anywhere.
+                           A PR title is not a model.
+``not_a_language_model``   Bucket 0 *and* two or more of the four core transformer
+                           dimensions absent under every spelling. BLIS refuses it
+                           because it is a speech/video/codec config, not because it is
+                           novel. See :class:`LmShapeEvidence`.
 ``structurally_identical``  A quantized repack of a known architecture: the class
                            name is a known one with a quantizer token spliced in,
                            or ``architectures[]`` names a known class and every
@@ -143,6 +150,8 @@ __all__ = [
     "evaluate",
     "evaluate_detailed",
     "structural_identity",
+    "lm_shape_evidence",
+    "LmShapeEvidence",
     "matched_gaps",
     "normalize_arch_key",
     "alias_key",
@@ -194,6 +203,51 @@ CURATED_SOURCES: frozenset[str] = frozenset({"vllm", "sglang", "inferencex"})
 #: reference code to read, an InferenceX row hands you throughput numbers and no
 #: architecture at all. Collapsing them into one trigger would lose that in the report.
 BENCHMARK_SOURCES: frozenset[str] = frozenset({"inferencex"})
+
+#: Framework ``Signal.extra["signal_strength"]`` values, weakest last. ``title_only``
+#: means the connector found a PR that touches model code and matched a title pattern
+#: but could not extract any architecture name from the registry, the changed classes,
+#: the prose, or a new model file. There is no model in it — only a sentence.
+FRAMEWORK_STRENGTH_TITLE_ONLY = "title_only"
+
+#: The four dimensions every transformer language model declares under *some* spelling.
+#: Broader than :mod:`archwatch.sizing`'s chains on purpose: sizing answers "can BLIS
+#: read this config?" and must not invent numbers BLIS could not have read, whereas this
+#: answers "is this a transformer LM at all?" and wants every plausible spelling. The
+#: two must not be merged — a config whose fields BLIS cannot read is exactly the
+#: interesting case, and collapsing the questions would hide it.
+LM_CORE_SHAPE_FIELDS: dict[str, tuple[str, ...]] = {
+    "num_hidden_layers": ("num_hidden_layers", "n_layer", "n_layers", "num_layers", "num_blocks"),
+    "hidden_size": ("hidden_size", "n_embd", "d_model", "dim", "model_dim"),
+    "num_attention_heads": ("num_attention_heads", "n_head", "n_heads", "num_heads", "num_q_heads"),
+    "intermediate_size": (
+        "intermediate_size", "ffn_hidden_size", "ffn_dim", "d_ff", "mlp_dim",
+        "moe_intermediate_size",
+    ),
+}
+
+#: How many of the four core dimensions must be absent, on a Bucket-0 config, before we
+#: conclude it never described a language model. Two, not one: a genuinely novel LM might
+#: omit an explicit FFN width, but a config missing two of the four is a different model
+#: class. The observed margin is wide — audio/video configs miss all four, while
+#: ``ParallaxOpen/Vela-Lumen-31M`` (nonstandard spellings throughout) misses none.
+MIN_MISSING_CORE_DIMS_FOR_NON_LM = 2
+
+#: A text model's tokenizer has thousands of entries. Below this, the "vocabulary" is a
+#: phoneme or codec codebook (``Wav2Vec2``'s is 32). Used only to withhold a *rank*
+#: bonus, never to suppress: a byte-level LM legitimately has ~256 tokens, and a false
+#: suppression is unrecoverable while a bad rank only costs cap space.
+LM_MIN_PLAUSIBLE_VOCAB = 1000
+
+#: Rank bonus for the finding class that justifies this pipeline: BLIS runs the config
+#: and reports confident nonsense. Larger than the Bucket-0 bonus because Bucket 0 is
+#: loud — the user sees an abort — while this is silent by construction.
+SILENTLY_WRONG_BUMP = 4
+
+#: Rank bonus for Bucket 0 on a config that really is a language model: BLIS refuses to
+#: run a model someone will want to run. Withheld when the config does not look like an
+#: LM, because there "BLIS refuses" means "this was never a language model".
+WOULD_NOT_RUN_LM_BUMP = 2
 
 #: Sources whose ``model_ids`` name an *artifact* rather than merely mentioning one.
 #: Only these are tested against DERIVATIVE_PATTERNS: a repo id from HuggingFace *is*
@@ -737,8 +791,88 @@ def _newest(cand: Candidate) -> float:
 
 
 # ---------------------------------------------------------------------------
+# Is this a language model at all?
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class LmShapeEvidence:
+    """Whether a config describes a transformer language model, by shape alone.
+
+    BLIS's shape validators turn out to be a decent LM detector, but the polarity is
+    counter-intuitive and getting it backwards is costly. For a speech or video repo,
+    Bucket 0 means *"this was never a language model"* — not "a novel architecture BLIS
+    cannot handle". Ranking those up put five audio and video repos at the top of a live
+    HuggingFace run and consumed the whole per-run cap, which is how the error was found.
+
+    So Bucket 0 splits in two, and only one half is interesting:
+
+    * core shape fields **absent** -> not a transformer LM -> suppress
+    * core shape fields **present and well-formed**, something else fatal (unrecognized
+      dtype, non-SwiGLU activation) -> a real LM BLIS refuses -> rank up
+    """
+
+    present: dict[str, str]  # canonical dimension -> the spelling actually found
+    missing: list[str]
+    vocab_size: int | None
+
+    @property
+    def looks_like_lm(self) -> bool:
+        """All four core dimensions resolve under some known spelling."""
+        return not self.missing
+
+    @property
+    def probably_not_lm(self) -> bool:
+        return len(self.missing) >= MIN_MISSING_CORE_DIMS_FOR_NON_LM
+
+    @property
+    def vocab_plausible(self) -> bool:
+        return self.vocab_size is not None and self.vocab_size >= LM_MIN_PLAUSIBLE_VOCAB
+
+    def describe(self) -> str:
+        found = ", ".join(f"{canon}<-{spelling}" for canon, spelling in self.present.items())
+        return (
+            f"core shape dimensions missing: {self.missing or 'none'}"
+            + (f"; found: {found}" if found else "")
+            + (f"; vocab_size={self.vocab_size}" if self.vocab_size is not None else "")
+        )
+
+
+def lm_shape_evidence(config: dict[str, Any] | None) -> LmShapeEvidence:
+    """Resolve the four core transformer dimensions under every known spelling.
+
+    Reads the pivoted config, so a multimodal wrapper is judged on its text tower rather
+    than on its top-level keys.
+    """
+    cfg = pivot_text_config(config) if config else {}
+    present: dict[str, str] = {}
+    missing: list[str] = []
+    for canonical, spellings in LM_CORE_SHAPE_FIELDS.items():
+        for spelling in spellings:
+            value = cfg.get(spelling)
+            if isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0:
+                present[canonical] = spelling
+                break
+        else:
+            missing.append(canonical)
+    vocab = cfg.get("vocab_size")
+    vocab_size = (
+        int(vocab)
+        if isinstance(vocab, (int, float)) and not isinstance(vocab, bool) and vocab > 0
+        else None
+    )
+    return LmShapeEvidence(present=present, missing=missing, vocab_size=vocab_size)
+
+
+# ---------------------------------------------------------------------------
 # Suppressors
 # ---------------------------------------------------------------------------
+
+
+def _signal_strength(signal: Signal) -> str:
+    """A framework Signal's ``extra["signal_strength"]``, or "" when absent."""
+    value = signal.extra.get("signal_strength")
+    return value if isinstance(value, str) else ""
 
 
 def _derivative_match(model_id: str) -> str | None:
@@ -867,21 +1001,39 @@ def _emitter_dedup(issues_dir: Path | None) -> Callable[[str], bool]:
 # ---------------------------------------------------------------------------
 
 
-def _strength(cand: Candidate) -> int:
+def _strength(cand: Candidate, lm: LmShapeEvidence | None = None) -> int:
     """Rank key: how much independent evidence backs this candidate.
 
     Triggers and corroboration weigh double because they are *independent* reasons to
-    look, whereas the significance signals largely covary (a frontier org's new model
-    is usually also big and usually also gets a vLLM PR). A Bucket-0 candidate gets a
-    bump: "BLIS would refuse to run this" is the one finding with a hard deadline.
+    look, whereas the significance signals largely covary (a frontier org's new model is
+    usually also big and usually also gets a vLLM PR).
+
+    The finding bonuses are ordered by how *quiet* the failure is, which is the opposite
+    of how loud it looks:
+
+    * ``silently_wrong`` (silent failures, clean Bucket 0) gets the largest bonus. BLIS
+      runs the config and reports confident nonsense; nothing else in the world warns
+      anyone. This is the class the pipeline exists for, and it previously got no bonus
+      at all while Bucket 0 got three.
+    * ``would_not_run`` on a config that really is an LM gets a smaller bonus. BLIS
+      refusing a model people will want to run is urgent, but it is at least visible.
+    * ``would_not_run`` on anything else gets nothing. For a speech or video repo,
+      Bucket 0 means "this was never a language model" — see :class:`LmShapeEvidence`.
+      Such candidates are normally suppressed outright; this covers the residue that
+      keeps all four core dimensions (an encoder, or a codec with a phoneme "vocabulary")
+      and so cannot be separated from a real LM by shape alone.
+
+    ``lm`` is passed in rather than recomputed so ranking cannot disagree with the
+    suppressor that used the same evidence.
     """
     real_triggers = [t for t in cand.triggers if t in TRIGGER_IDS]
-    return (
-        2 * len(real_triggers)
-        + len(cand.significance)
-        + 2 * len(cand.sources)
-        + (3 if cand.would_not_run else 0)
-    )
+    score = 2 * len(real_triggers) + len(cand.significance) + 2 * len(cand.sources)
+    if cand.silent_failures and not cand.bucket0_failures:
+        score += SILENTLY_WRONG_BUMP
+    elif cand.would_not_run:
+        if lm is not None and lm.looks_like_lm and lm.vocab_plausible:
+            score += WOULD_NOT_RUN_LM_BUMP
+    return score
 
 
 def evaluate_detailed(
@@ -911,7 +1063,10 @@ def evaluate_detailed(
         report.dropped.append(s)
         log.debug("%s", s)
 
-    survivors: list[Candidate] = []
+    # (candidate, lm-shape evidence) so ranking reuses exactly the evidence the
+    # not_a_language_model suppressor judged on, rather than recomputing and possibly
+    # disagreeing with it.
+    survivors: list[tuple[Candidate, LmShapeEvidence]] = []
     for cand in cands:
         # --- suppressors: cheap identity checks first -----------------------
         # A known architecture is normally dropped here, unexamined. That is the
@@ -930,6 +1085,34 @@ def evaluate_detailed(
         if already_reported(cand.arch_id):
             drop(cand, "suppressor", "already_reported",
                  f"a stub for {cand.arch_id!r} is already on disk")
+            continue
+
+        # --- a PR title is not a model -------------------------------------
+        # The framework connector emits title_only signals: a PR that touches model code
+        # and matched a title pattern, but from which no architecture name could be
+        # extracted from the registry, the changed classes, the prose, or a new model
+        # file. Those route through the alias path and key on the PR title, so T2 and S3
+        # always fire and the stub ends up named "Find attention with a fuser and attach
+        # vLLM's layer to it" or "gfx1250 on ROCM 10" — five out of five on a live run.
+        #
+        # Gated on the connector's own metadata rather than on whether the name reads
+        # like a sentence, and narrowed further than strictly necessary: it fires only
+        # when EVERY signal is a title_only framework signal. Any registry-,
+        # model_class-, prose- or new_model_file-strength signal, any HF config, any
+        # benchmark row, and the candidate is kept. A false suppression here is
+        # unrecoverable, so the rule refuses to guess.
+        framework_sigs = [sg for sg in cand.signals if sg.source in FRAMEWORK_SOURCES]
+        if (
+            ALIAS_JOIN_MARKER in cand.triggers
+            and framework_sigs
+            and len(framework_sigs) == len(cand.signals)
+            and all(_signal_strength(sg) == FRAMEWORK_STRENGTH_TITLE_ONLY
+                    for sg in framework_sigs)
+        ):
+            drop(cand, "suppressor", "framework_title_only",
+                 f"only evidence is {len(framework_sigs)} title_only PR(s) with no "
+                 f"extractable architecture: "
+                 + "; ".join(f"{sg.source}#{sg.raw_ref}" for sg in framework_sigs))
             continue
 
         # --- HF-noise suppressors, and the curated-source exemption ----------
@@ -1009,6 +1192,19 @@ def evaluate_detailed(
         cand.silent_failures = silent
         cand.est_total_params = est.total
         cand.est_active_params = est.active
+
+        # --- suppressor: not a language model (needs the findings) ----------
+        # Bucket 0 plus two or more of the four core transformer dimensions absent under
+        # every known spelling: this config never described a language model. Suppressed
+        # rather than merely down-ranked because these are pure noise AND they displace
+        # real findings — the live run's entire per-run cap went to audio and video repos
+        # while twelve other candidates were dropped as over_cap.
+        lm = lm_shape_evidence(config)
+        if bucket0 and lm.probably_not_lm:
+            drop(cand, "suppressor", "not_a_language_model",
+                 f"{len(bucket0)} Bucket-0 failure(s) and {lm.describe()} — BLIS refuses "
+                 f"it because it is not a transformer LM, not because it is novel")
+            continue
 
         # --- suppressor: structural identity (needs the findings) -----------
         why = structural_identity(cand.arch_id, config, unparsed, surface)
@@ -1097,12 +1293,16 @@ def evaluate_detailed(
                  f"downloads={downloads}, likes={likes}, orgs={sorted(_orgs(cand))}")
             continue
 
-        survivors.append(cand)
+        survivors.append((cand, lm))
 
     # --- rank, then cap ----------------------------------------------------
-    survivors.sort(key=lambda c: (-_strength(c), -_newest(c), c.arch_id.lower()))
-    report.passed = survivors[: max(0, cfg.max_issues_per_run)]
-    for cand in survivors[max(0, cfg.max_issues_per_run) :]:
+    ranked = sorted(
+        survivors,
+        key=lambda pair: (-_strength(*pair), -_newest(pair[0]), pair[0].arch_id.lower()),
+    )
+    cap = max(0, cfg.max_issues_per_run)
+    report.passed = [cand for cand, _ in ranked[:cap]]
+    for cand, lm in ranked[cap:]:
         report.dropped.append(
             Suppression(
                 cand.arch_id,
@@ -1110,13 +1310,13 @@ def evaluate_detailed(
                 "cap",
                 "over_cap",
                 f"passed but ranked below max_issues_per_run={cfg.max_issues_per_run} "
-                f"(strength {_strength(cand)})",
+                f"(strength {_strength(cand, lm)})",
             )
         )
-    if len(survivors) > len(report.passed):
+    if len(ranked) > len(report.passed):
         log.debug(
             "capped run: %d candidates passed, emitting the strongest %d",
-            len(survivors),
+            len(ranked),
             len(report.passed),
         )
     log.info("%s", report.summary())

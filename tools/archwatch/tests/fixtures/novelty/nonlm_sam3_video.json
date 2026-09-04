@@ -1,0 +1,18 @@
+{
+  "architectures": ["Sam3VideoModel"],
+  "model_type": "sam3_video",
+  "torch_dtype": "float32",
+  "vision_config": {
+    "hidden_size": 1152,
+    "image_size": 1024,
+    "num_attention_heads": 16,
+    "num_hidden_layers": 27,
+    "patch_size": 14
+  },
+  "prompt_encoder_config": {"hidden_size": 256, "image_size": 1024, "patch_size": 16},
+  "mask_decoder_config": {"hidden_size": 256, "num_multimask_outputs": 3},
+  "memory_attention_config": {"d_model": 256, "num_layers": 4},
+  "num_maskmem": 7,
+  "image_size": 1024,
+  "backbone_stride": 16
+}

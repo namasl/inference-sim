@@ -24,9 +24,12 @@ from archwatch.novelty import (
     KNOWN_ARCH_TRIGGER,
     SIGNIFICANCE_IDS,
     TRIGGER_IDS,
+    LmShapeEvidence,
+    _strength,
     evaluate,
     evaluate_detailed,
     join_signals,
+    lm_shape_evidence,
     normalize_family_key,
     normalize_repo_key,
     matched_gaps,
@@ -1954,3 +1957,249 @@ def test_the_exemption_does_not_bypass_the_non_hf_noise_suppressors():
         sig("vllm", arch="AwqWrappedForCausalLM", raw_ref="2"),
     ])
     assert reasons(repack) == ["structurally_identical"]
+
+
+# ---------------------------------------------------------------------------
+# Bucket 0 polarity: "BLIS refuses this" can mean "never a language model"
+# ---------------------------------------------------------------------------
+# A live HuggingFace run put five non-language models at the top — VibeVoice (ASR),
+# MiniMaxMusic3, PiiMasking, Sam3Video, Wav2Vec2 — every one ranked first *because* it
+# was bucket 0, consuming the entire per-run cap while twelve other candidates were
+# dropped as over_cap. For a speech or video repo, bucket 0 means the config was never
+# a transformer LM.
+
+NON_LM_NO_SHAPE_FIXTURES = [
+    "nonlm_sam3_video",
+    "nonlm_vibevoice_asr",
+    "nonlm_music_conditional",
+]
+
+
+@pytest.mark.parametrize("name", NON_LM_NO_SHAPE_FIXTURES)
+def test_lm_shape_evidence_finds_no_core_dimensions_in_a_non_lm_config(name):
+    ev = lm_shape_evidence(load(name))
+    assert ev.missing == [
+        "num_hidden_layers", "hidden_size", "num_attention_heads", "intermediate_size",
+    ]
+    assert ev.probably_not_lm
+    assert not ev.looks_like_lm
+    assert ev.vocab_size is None
+
+
+@pytest.mark.parametrize("name", NON_LM_NO_SHAPE_FIXTURES)
+def test_a_non_lm_bucket0_candidate_is_suppressed(name):
+    surf = surface(validator_failures=["num_hidden_layers must be > 0",
+                                       "hidden_size must be > 0"])
+    report = run([sig("hf", arch=load(name)["architectures"][0], org="somelab",
+                      model_ids=(f"somelab/{name}",), config=load(name),
+                      extra={"downloads": 500_000, "likes": 900})], surf=surf)
+    assert report.passed == []
+    assert reasons(report) == ["not_a_language_model"]
+    assert "not a transformer LM, not because it is novel" in report.dropped[0].detail
+
+
+def test_vela_lumen_is_a_real_lm_with_nonstandard_names_and_must_not_be_suppressed():
+    """The counter-case that constrains the whole rule. ParallaxOpen/Vela-Lumen-31M
+    declares ``model_type: small_lm``, no ``architectures[]``, and names its dimensions
+    ``d_model``/``n_layers``/``n_heads``/``ffn_dim``. It trips several bucket-0 failures
+    and is still a genuine language model — a false suppression here is unrecoverable.
+    """
+    ev = lm_shape_evidence(load("nonstandard_field_names"))
+    assert ev.missing == [], ev.describe()
+    assert ev.looks_like_lm and ev.vocab_plausible
+    assert ev.present["hidden_size"] == "d_model"
+    assert ev.present["num_hidden_layers"] == "n_layers"
+    assert ev.present["num_attention_heads"] == "n_heads"
+    assert ev.present["intermediate_size"] == "ffn_dim"
+
+    surf = surface(validator_failures=["num_hidden_layers must be > 0",
+                                       "hidden_size must be > 0",
+                                       "num_attention_heads must be > 0"])
+    report = run([sig("hf", display_name="ParallaxOpen/Vela-Lumen-31M",
+                      model_ids=("ParallaxOpen/Vela-Lumen-31M",), org="parallaxopen",
+                      config=load("nonstandard_field_names"),
+                      extra={"downloads": 50_000})], surf=surf)
+    assert "not_a_language_model" not in reasons(report)
+    assert [c.arch_id for c in report.passed] == ["Vela-Lumen-31M"]
+
+
+def test_a_real_lm_that_blis_refuses_is_still_suppressed_by_nothing_and_ranked_up():
+    """The other half of the split: every core dimension present and well-formed, but a
+    non-SwiGLU activation makes BLIS abort. A real LM someone will want to run."""
+    cfgj = dict(load("novel_arch_large"), hidden_act="gelu")
+    surf = surface(validator_failures=["unsupported activation 'gelu'; only SwiGLU-family"])
+    report = run([sig("hf", arch="GriffinMoeForCausalLM", org="someuni",
+                      model_ids=("someuni/griffin-158b",), config=cfgj)], surf=surf)
+    cand = report.passed[0]
+    assert cand.would_not_run
+    assert _strength(cand, lm_shape_evidence(cfgj)) > _strength(cand, None)
+
+
+def test_an_implausible_vocabulary_withholds_the_bucket0_rank_bonus():
+    """Wav2Vec2 keeps all four core dimensions, so shape cannot separate it from an LM —
+    but a 32-entry "vocabulary" is a phoneme set, not a tokenizer. It is not suppressed
+    (a byte-level LM legitimately has ~256 tokens), it just earns no bonus."""
+    ev = lm_shape_evidence(load("nonlm_wav2vec2_pretraining"))
+    assert ev.looks_like_lm, "shape alone cannot rule this out"
+    assert not ev.vocab_plausible
+    assert ev.vocab_size == 32
+
+    cand = Candidate(arch_id="Wav2Vec2ForPreTraining", display_name="w2v",
+                     signals=[sig("hf", arch="Wav2Vec2ForPreTraining")],
+                     triggers=["T1"], significance=["S4"],
+                     bucket0_failures=["unsupported activation 'gelu'"])
+    assert _strength(cand, ev) == _strength(cand, None), "no bucket-0 bonus"
+
+
+def test_silently_wrong_outranks_a_plain_would_not_run():
+    """The class that justifies this pipeline previously got no bonus while the loud
+    class got three. BLIS aborting is visible; BLIS lying is not."""
+    base = dict(arch_id="X", display_name="X", signals=[sig("hf", arch="X")],
+                triggers=["T1"], significance=["S1"])
+    quiet = Candidate(**base, silent_failures=["a sparse MoE simulates as dense"])
+    loud = Candidate(**base, bucket0_failures=["unsupported activation 'gelu'"])
+    lm = lm_shape_evidence(load("dense_llama31_70b"))
+    assert _strength(quiet, lm) > _strength(loud, lm)
+    assert quiet.would_not_run is False and loud.would_not_run is True
+
+
+def test_a_bucket0_finding_alongside_silent_ones_is_ranked_as_bucket0():
+    """"Clean bucket 0" is part of the silently_wrong definition: once BLIS aborts, the
+    loud problem is the one to fix first."""
+    both = Candidate(arch_id="X", display_name="X", signals=[sig("hf", arch="X")],
+                     triggers=["T1"], significance=["S1"],
+                     bucket0_failures=["vocab_size must be > 0"],
+                     silent_failures=["a sparse MoE simulates as dense"])
+    lm = lm_shape_evidence(load("dense_llama31_70b"))
+    assert _strength(both, lm) < _strength(
+        Candidate(arch_id="X", display_name="X", signals=[sig("hf", arch="X")],
+                  triggers=["T1"], significance=["S1"],
+                  silent_failures=["a sparse MoE simulates as dense"]), lm)
+
+
+def test_audio_and_video_repos_no_longer_crowd_out_a_frontier_release():
+    """The live regression, reproduced. All five non-LM repos are given enough popularity
+    to clear the significance gate; the frontier release must still make the cap."""
+
+    class NonLmBucket0(FakeSurface):
+        def check_hard_validators(self, config):
+            arch = (config.get("architectures") or [""])[0]
+            if arch.startswith(("Sam3", "VibeVoice", "MiniMaxMusic", "Wav2Vec2", "PiiMasking")):
+                return ["num_hidden_layers must be > 0", "hidden_size must be > 0"]
+            return []
+
+    noise = [
+        sig("hf", arch=load(n)["architectures"][0], org="somelab",
+            model_ids=(f"somelab/{n}",), config=load(n),
+            extra={"downloads": 900_000, "likes": 800})
+        for n in NON_LM_NO_SHAPE_FIXTURES
+        + ["nonlm_wav2vec2_pretraining", "nonlm_pii_masking_encoder"]
+    ]
+    frontier = sig("hf", arch="GriffinMoeForCausalLM", org="deepseek-ai",
+                   model_ids=("deepseek-ai/Griffin-158B",),
+                   config=load("novel_arch_large"))
+    report = run(noise + [frontier], surf=NonLmBucket0(known=SEED_SET),
+                 conf=cfg(max_issues_per_run=3))
+    assert "GriffinMoeForCausalLM" in [c.arch_id for c in report.passed]
+    assert reasons(report).count("not_a_language_model") == 3
+
+
+def test_lm_shape_evidence_reads_the_text_tower_of_a_multimodal_config():
+    ev = lm_shape_evidence(load("textconfig_only_frontier"))
+    assert ev.looks_like_lm and ev.vocab_plausible
+
+
+def test_lm_shape_evidence_tolerates_a_missing_config():
+    ev = lm_shape_evidence(None)
+    assert ev.probably_not_lm and ev.vocab_size is None
+
+
+def test_a_non_lm_config_that_blis_would_run_is_not_touched_by_this_suppressor():
+    """The suppressor is bucket-0-gated. Without a bucket-0 failure there is no evidence
+    to reinterpret, so the ordinary triggers and gate decide."""
+    report = run([sig("hf", arch="Sam3VideoModel", org="somelab",
+                      model_ids=("somelab/sam3",), config=load("nonlm_sam3_video"),
+                      extra={"downloads": 900_000})])
+    assert "not_a_language_model" not in reasons(report)
+
+
+# ---------------------------------------------------------------------------
+# framework_title_only: a PR title is not a model
+# ---------------------------------------------------------------------------
+
+
+def _title_only(title: str, ref: str = "1", source: str = "vllm") -> Signal:
+    return sig(source, display_name=title, raw_ref=ref,
+               extra={"signal_strength": "title_only", "pr_title": title})
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        "Find attention with a fuser and attach vLLM's layer to it",
+        "gfx1250 on ROCM 10",
+        "video embeds input",
+    ],
+)
+def test_a_title_only_pr_is_suppressed(title):
+    """These three became actual stub filenames on a live run."""
+    report = run([_title_only(title)])
+    assert report.passed == []
+    assert reasons(report) == ["framework_title_only"]
+    assert "no extractable architecture" in report.dropped[0].detail
+
+
+@pytest.mark.parametrize("strength", ["registry", "new_model_file", "model_class", "prose"])
+def test_a_stronger_framework_signal_still_passes(strength):
+    report = run([sig("vllm", display_name="[Model] Add something", raw_ref="1",
+                      extra={"signal_strength": strength})])
+    assert [c.triggers for c in report.passed] == [["T2", ALIAS_JOIN_MARKER]]
+
+
+def test_one_strong_signal_rescues_a_candidate_joined_with_title_only_prs():
+    strong = sig("vllm", display_name="K2Horizon", raw_ref="2",
+                 extra={"signal_strength": "registry"})
+    weak = _title_only("K2Horizon", ref="3")
+    report = run([weak, strong])
+    assert [c.arch_id for c in report.passed] == ["K2Horizon"]
+
+
+def test_a_title_only_pr_does_not_suppress_a_candidate_with_an_hf_config():
+    """Vela-shaped guard: a real model with no ``architectures[]`` also takes the alias
+    path, so the rule requires that EVERY signal be a title_only framework signal."""
+    weak = _title_only("Vela-Lumen-31M", ref="9")
+    weak.model_ids = ["ParallaxOpen/Vela-Lumen-31M"]  # connector mines ids from PR bodies
+    report = run(
+        [
+            weak,
+            sig("hf", display_name="ParallaxOpen/Vela-Lumen-31M",
+                model_ids=("ParallaxOpen/Vela-Lumen-31M",), org="parallaxopen",
+                config=load("nonstandard_field_names"), extra={"downloads": 50_000}),
+        ]
+    )
+    assert len(report.passed) + len(report.dropped) == 1, "premise: the two must merge"
+    assert "framework_title_only" not in reasons(report)
+    assert [c.arch_id for c in report.passed] == ["Vela-Lumen-31M"]
+
+
+def test_a_title_only_pr_does_not_suppress_a_candidate_with_a_benchmark_row():
+    report = run([_title_only("Nova-1", ref="9"),
+                  sig("inferencex", display_name="Nova-1", raw_ref="beef")])
+    assert "framework_title_only" not in reasons(report)
+
+
+def test_a_title_only_signal_carrying_an_arch_name_is_not_alias_path_and_passes():
+    """The rule is gated on the alias path: a class name is real evidence wherever the
+    connector found it."""
+    report = run([sig("vllm", arch="K2HorizonForCausalLM", raw_ref="1",
+                      display_name="some title",
+                      extra={"signal_strength": "title_only"})])
+    assert [c.arch_id for c in report.passed] == ["K2HorizonForCausalLM"]
+
+
+def test_a_framework_signal_with_no_strength_metadata_is_not_suppressed():
+    """Absent metadata must not read as title_only — a connector that omits the key
+    would otherwise have every candidate silently dropped."""
+    report = run([sig("vllm", display_name="Kimi-K3", raw_ref="1")])
+    assert "framework_title_only" not in reasons(report)
+    assert [c.arch_id for c in report.passed] == ["Kimi-K3"]

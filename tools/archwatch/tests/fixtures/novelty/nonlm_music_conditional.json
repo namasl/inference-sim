@@ -1,0 +1,10 @@
+{
+  "architectures": ["MiniMaxMusic3ForConditionalGeneration"],
+  "model_type": "minimax_music3",
+  "torch_dtype": "bfloat16",
+  "audio_encoder_config": {"hidden_size": 1024, "num_hidden_layers": 24, "num_mel_bins": 128},
+  "codec_config": {"codebook_size": 2048, "num_quantizers": 8, "frame_rate": 25},
+  "flow_matching_config": {"num_steps": 32, "sigma_min": 0.0001},
+  "sample_rate": 44100,
+  "max_duration_seconds": 240
+}

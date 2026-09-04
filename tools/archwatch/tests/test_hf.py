@@ -41,12 +41,17 @@ from archwatch.connectors.base import Signal
 from archwatch.connectors.hf import (
     DEFAULT_TRENDING_LIMIT,
     LIST_EXPAND,
+    LM_PIPELINE_TAGS_ALWAYS_KEEP,
     NON_LM_LIBRARIES,
     NON_LM_PIPELINE_TAGS,
+    STRONG_NON_LM_LIBRARIES,
+    STRONG_NON_LM_MODEL_TYPES,
+    STRONG_NON_LM_PIPELINE_TAGS,
     HFConnector,
     architectures_of,
     is_derivative,
     is_non_lm_artifact,
+    strong_non_lm_evidence,
 )
 
 FIXTURES = Path(__file__).parent / "fixtures" / "hf"
@@ -203,15 +208,23 @@ def window_since() -> datetime:
     return datetime(2026, 9, 3, tzinfo=timezone.utc)
 
 
+def keeps(raw: dict) -> bool:
+    """Whether phase 1 keeps this record — all three drops, mirroring _prefilter.
+
+    Derived from the fixture rather than hard-coded so the expectations track the
+    vocabularies instead of freezing today's counts.
+    """
+    if is_derivative(raw["id"]):
+        return False
+    info = _model_info(raw)
+    strong = strong_non_lm_evidence(info)
+    if architectures_of(raw.get("config")):
+        return strong is None
+    return not (strong or is_non_lm_artifact(info))
+
+
 def survivor_ids(records: list[dict]) -> set[str]:
-    """The repo ids phase 1 should keep — both drops applied, computed from the
-    fixture rather than hard-coded, so the expectation tracks the vocabularies."""
-    return {
-        r["id"]
-        for r in records
-        if not is_derivative(r["id"])
-        and not (not architectures_of(r.get("config")) and is_non_lm_artifact(_model_info(r)))
-    }
+    return {r["id"] for r in records if keeps(r)}
 
 
 # ---------------------------------------------------------------------------
@@ -415,7 +428,7 @@ def test_config_fetches_are_deduplicated_by_architecture():
     fetched_archs = [hub_arch[rid] for rid in fetcher.calls if hub_arch[rid]]
     assert len(fetched_archs) == len(set(fetched_archs)), "same architecture fetched twice"
 
-    survivors = [r for r in records if r["id"] in survivor_ids(records)]
+    survivors = [r for r in records if keeps(r)]
     distinct = {hub_arch[r["id"]] for r in survivors if hub_arch[r["id"]]}
     assert set(fetched_archs) == distinct, "every distinct architecture needs one fetch"
 
@@ -450,7 +463,7 @@ def test_config_failures_degrade_to_config_none(cfg):
         "OliviaRossi/QuadQwen": '{"architectures": ["Qwen3_5MoeForCausalLM",',  # truncated
         "VERBAREX/LuminoLex-1.5B-think": "[1, 2, 3]",  # valid JSON, wrong shape
         "ananjayram/Hana": None,  # fetcher legitimately has nothing
-        "Dexmal/DM05-MEM": RuntimeError("something nobody predicted"),
+        "Akahsizrr/Cyber-Prime-1-2.6B": RuntimeError("something nobody predicted"),
     }
     conn, _, fetcher = make_connector(
         _records("list_window.json"), cfg, fetcher=FixtureFetcher(overrides)
@@ -815,40 +828,48 @@ def test_archless_repos_without_non_lm_evidence_are_kept(cfg, repo_id, library, 
 @pytest.mark.parametrize(
     "repo_id, arch, evidence",
     [
+        # sentence-transformers hosts text encoders, so it is only weak evidence
         ("27aran/germantris-model", "BertModel", "library_name=sentence-transformers"),
-        ("huwenjie333/whisper-v3-ft-af51-0903", "WhisperForConditionalGeneration",
-         "pipeline_tag=automatic-speech-recognition"),
     ],
 )
-def test_repos_with_an_architecture_are_kept_whatever_the_library(cfg, repo_id, arch, evidence):
-    """An architecture is the primary key: once we have one, modality is moot.
+def test_weak_non_lm_evidence_does_not_override_an_architecture(cfg, repo_id, arch, evidence):
+    """The broad archless vocabularies do NOT get to drop an arch-bearing repo.
 
-    Both subjects would be dropped on their metadata alone, so this proves the
-    architecture check runs first rather than being incidental.
+    ``sentence-transformers`` and ``peft`` are in NON_LM_LIBRARIES but not in
+    STRONG_NON_LM_LIBRARIES: they host or wrap text models, which is not the
+    same as not being a language model.
     """
     records = _records("list_window.json")
     raw = next(r for r in records if r["id"] == repo_id)
     assert is_non_lm_artifact(_model_info(raw)), f"subject must carry {evidence}"
+    assert strong_non_lm_evidence(_model_info(raw)) is None, "evidence must be weak"
 
     conn, _, _ = make_connector(records, cfg)
     signals = {s.model_ids[0]: s for s in conn.poll(window_since())}
-    assert repo_id in signals, f"kept despite {evidence}, because it names {arch}"
+    assert repo_id in signals
     assert signals[repo_id].arch_ids == [arch]
 
 
-def test_prefilter_counts_the_two_drops_separately(cfg, caplog):
-    """Tuning DERIVATIVE_PATTERNS and the non-LM lists needs distinguishable counts."""
-    records = _records("list_window.json")
+def test_prefilter_counts_the_three_drops_separately(cfg, caplog):
+    """Each drop is tuned against a different list, so each needs its own count."""
+    records = _records("list_window.json") + [
+        dict(_records("arch_evidence_records.json")["cubert-gmbh/sam3"],
+             createdAt="2026-09-04T12:00:00.000Z"),
+    ]
     with caplog.at_level("INFO", logger="archwatch.connectors.hf"):
         conn, _, _ = make_connector(records, cfg)
         signals = conn.poll(window_since())
 
     line = next(m for m in caplog.messages if "pre-filter" in m)
     n_derivative = len([r for r in records if is_derivative(r["id"])])
-    n_non_lm = len(records) - n_derivative - len(signals)
-    assert n_derivative and n_non_lm, "fixture must exercise both drops"
+    n_arch = len([r for r in records if not is_derivative(r["id"])
+                  and architectures_of(r.get("config"))
+                  and strong_non_lm_evidence(_model_info(r))])
+    n_archless = len(records) - n_derivative - n_arch - len(signals)
+    assert n_derivative and n_archless and n_arch, "fixture must exercise all three"
     assert f"{n_derivative} derivative" in line
-    assert f"{n_non_lm} non-LM" in line
+    assert f"{n_archless} non-LM (no architecture)" in line
+    assert f"{n_arch} non-LM (named architecture)" in line
     assert f"of {len(records)} repos" in line
     assert f"{len(signals)} survive" in line
 
@@ -1257,3 +1278,181 @@ def test_org_falls_back_to_the_repo_namespace_lowercased():
                        clock=lambda: FIXED_NOW, org_downloads=False)
     signal = conn._to_signal(Info(), None, phase="window", observed_at=FIXED_NOW)
     assert signal.org == "mixedcase"
+
+
+# ---------------------------------------------------------------------------
+# strong non-LM evidence overrides an architecture name
+# ---------------------------------------------------------------------------
+#
+# arch_evidence_records.json holds real full-expand records for the five
+# architectures that consumed a live run's entire issue cap, plus two frontier
+# multimodal LLMs that must survive. Only `createdAt` is overridden, to place
+# them in the recorded window; the metadata under test is untouched.
+
+
+def arch_evidence(repo_id: str) -> dict:
+    return dict(_records("arch_evidence_records.json")[repo_id], createdAt=IN_WINDOW)
+
+
+@pytest.mark.parametrize(
+    "repo_id, arch, reason",
+    [
+        # ASR: names an architecture, tagged automatic-speech-recognition
+        ("microsoft/VibeVoice-ASR-Streaming-7B", "VibeVoiceForASRStreamingTraining",
+         "pipeline_tag=automatic-speech-recognition"),
+        # music generation: diffusers + text-to-audio
+        ("MiniMaxAI/MiniMax-Music3", "MiniMaxMusic3ForConditionalGeneration",
+         "pipeline_tag=text-to-audio"),
+        # video segmentation with NO library_name and NO pipeline_tag at all —
+        # model_type is the only evidence that exists
+        ("cubert-gmbh/sam3", "Sam3VideoModel", "model_type=sam3_video"),
+        ("hf-tiny-v2/tiny-random-Wav2Vec2ForPreTraining", "Wav2Vec2ForPreTraining",
+         "model_type=wav2vec2"),
+    ],
+)
+def test_arch_bearing_non_lm_repos_are_dropped(cfg, repo_id, arch, reason):
+    """The regression: these five ate a whole run's candidate cap."""
+    raw = arch_evidence(repo_id)
+    assert architectures_of(raw["config"]) == [arch], "subject must name an architecture"
+    assert strong_non_lm_evidence(_model_info(raw)) == reason
+
+    conn, _, fetcher = make_connector([raw], cfg)
+    assert conn.poll(window_since()) == []
+    assert fetcher.calls == [], "a dropped repo costs no config fetch"
+
+
+@pytest.mark.parametrize(
+    "repo_id, arch",
+    [
+        ("Qwen/Qwen3-VL-8B-Instruct", "Qwen3VLForConditionalGeneration"),
+        ("Qwen/Qwen3.5-9B", "Qwen3_5ForConditionalGeneration"),
+    ],
+)
+def test_multimodal_llms_are_never_dropped(cfg, repo_id, arch):
+    """A vision-language model IS a language model for BLIS's purposes.
+
+    Both subjects are tagged ``image-text-to-text``, which is in
+    LM_PIPELINE_TAGS_ALWAYS_KEEP and therefore short-circuits every drop rule.
+    These are the frontier releases the whole pipeline exists to catch.
+    """
+    raw = arch_evidence(repo_id)
+    assert raw["pipeline_tag"] == "image-text-to-text"
+    assert strong_non_lm_evidence(_model_info(raw)) is None
+
+    conn, _, _ = make_connector([raw], cfg)
+    (signal,) = conn.poll(window_since())
+    assert signal.arch_ids == [arch]
+
+
+def test_a_language_task_tag_beats_every_other_signal():
+    """The keep-set is checked first, so no vision/audio evidence can override it."""
+
+    class Info:
+        def __init__(self, pipeline=None, library=None, model_type=None):
+            self.id = "x/y"
+            self.pipeline_tag, self.library_name = pipeline, library
+            self.config = {"architectures": ["FooForCausalLM"]}
+            if model_type:
+                self.config["model_type"] = model_type
+
+    for tag in sorted(LM_PIPELINE_TAGS_ALWAYS_KEEP):
+        assert strong_non_lm_evidence(
+            Info(pipeline=tag, library="diffusers", model_type="wav2vec2")
+        ) is None, f"{tag} must be immune"
+
+    # without the language tag, each of the three sources drops it on its own
+    assert strong_non_lm_evidence(Info(pipeline="text-to-image")) == "pipeline_tag=text-to-image"
+    assert strong_non_lm_evidence(Info(library="diffusers")) == "library_name=diffusers"
+    assert strong_non_lm_evidence(Info(model_type="wav2vec2")) == "model_type=wav2vec2"
+    assert strong_non_lm_evidence(Info()) is None
+
+
+def test_strong_evidence_required_tags_and_libraries_are_present():
+    """The set the coordinator specified, asserted explicitly so it cannot drift."""
+    required_tags = {
+        "text-to-image", "image-to-image", "automatic-speech-recognition",
+        "audio-classification", "text-to-audio", "text-to-video",
+        "video-classification", "image-classification", "object-detection",
+        "depth-estimation", "robotics", "reinforcement-learning",
+    }
+    assert required_tags <= STRONG_NON_LM_PIPELINE_TAGS
+    required_libs = {"diffusers", "lerobot", "stable-baselines3", "espnet",
+                     "speechbrain", "timm"}
+    assert required_libs <= STRONG_NON_LM_LIBRARIES
+
+
+def test_strong_sets_are_narrower_than_the_archless_sets():
+    """Overriding an architecture name demands more evidence than filling a blank."""
+    assert STRONG_NON_LM_PIPELINE_TAGS < NON_LM_PIPELINE_TAGS
+    # these stay out of the strong set: they host or wrap text models
+    for weak in ("peft", "adapter-transformers", "sentence-transformers",
+                 "sklearn", "spacy", "flair", "setfit", "bertopic"):
+        assert weak in NON_LM_LIBRARIES
+        assert weak not in STRONG_NON_LM_LIBRARIES
+    # ... and these tags a text-capable model could plausibly carry
+    for weak in ("image-feature-extraction", "image-text-to-video",
+                 "tabular-classification", "time-series-forecasting", "graph-ml"):
+        assert weak in NON_LM_PIPELINE_TAGS
+        assert weak not in STRONG_NON_LM_PIPELINE_TAGS
+
+
+def test_no_drop_vocabulary_ever_intersects_the_keep_set():
+    """The single invariant that protects every frontier multimodal release."""
+    for name, vocab in (("strong pipeline", STRONG_NON_LM_PIPELINE_TAGS),
+                        ("broad pipeline", NON_LM_PIPELINE_TAGS)):
+        overlap = vocab & LM_PIPELINE_TAGS_ALWAYS_KEEP
+        assert not overlap, f"{name} tags would drop a language model: {overlap}"
+
+
+def test_model_type_evidence_covers_only_vision_and_audio_families():
+    """No LM family may appear in the model_type drop list."""
+    lm_families = {
+        "llama", "qwen2", "qwen3", "qwen3_5", "qwen3_vl", "gemma3", "gemma4",
+        "mistral", "mixtral", "deepseek_v3", "deepseek_v4", "glm4", "glm5_next",
+        "phi3", "falcon", "gpt2", "gpt_neox", "bert", "roberta", "t5",
+        "kimi_k3", "olmoe", "nemotron_h", "minimax_h3", "small_lm",
+    }
+    assert lm_families.isdisjoint(STRONG_NON_LM_MODEL_TYPES)
+    # every model_type present in the recorded fixtures that we keep must be safe
+    for fixture in ("list_window.json", "list_trending.json"):
+        for raw in _records(fixture):
+            if keeps(raw) and architectures_of(raw.get("config")):
+                info = _model_info(raw)
+                assert strong_non_lm_evidence(info) is None
+
+
+def test_musicgen_in_the_window_fixture_is_dropped_on_model_type_alone(cfg):
+    """A real repo with an architecture and no library or pipeline metadata."""
+    raw = next(r for r in _records("list_window.json")
+               if r["id"] == "Renarovich12/musicgen-melody")
+    assert raw.get("library_name") is None and raw.get("pipeline_tag") is None
+    assert architectures_of(raw["config"]) == ["MusicgenMelodyForConditionalGeneration"]
+    assert strong_non_lm_evidence(_model_info(raw)) == "model_type=musicgen_melody"
+
+    conn, _, _ = make_connector(_records("list_window.json"), cfg)
+    assert "Renarovich12/musicgen-melody" not in {
+        s.model_ids[0] for s in conn.poll(window_since())
+    }
+
+
+def test_robotics_and_asr_repos_in_the_window_fixture_are_dropped(cfg):
+    """Real arch-bearing repos the old rule let through."""
+    conn, _, _ = make_connector(_records("list_window.json"), cfg)
+    emitted = {s.model_ids[0] for s in conn.poll(window_since())}
+    for repo_id in ("huwenjie333/whisper-v3-ft-af51-0903",
+                    "Dexmal/DM05-MEM",
+                    "twanghcmut/GR00T-N1.7-ALOHA-RightArm-Multitask"):
+        assert repo_id not in emitted
+    # the language models around them are untouched
+    for repo_id in ("foranyone2026/Kimi-K3", "foranyone/GLM-5.3-BF16",
+                    "Openintelligent123/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16"):
+        assert repo_id in emitted
+
+
+def test_strong_filter_applies_to_the_trending_sweep(cfg):
+    conn, _, _ = make_connector(
+        _records("list_trending.json") + [arch_evidence("cubert-gmbh/sam3")], cfg
+    )
+    emitted = {s.model_ids[0] for s in conn.poll_trending(limit=25)}
+    assert "cubert-gmbh/sam3" not in emitted
+    assert "Qwen/Qwen3.8-Flash-Next" in emitted
