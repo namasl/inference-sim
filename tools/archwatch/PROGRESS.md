@@ -31,7 +31,8 @@ Kept continuously so the build is resumable if the session dies. Newest entries 
 - [x] `PLAN.md`
 - [x] **Wave 2 COMPLETE** — B, C, D, E, F, G all landed and committed. 573 tests green.
 - [x] C org-stats DONE
-- [~] Revisions in flight: F (union-find join, T5), G (silent_failures)
+- [x] G silent_failures rendering DONE
+- [~] Revisions in flight: F (union-find join, T5)
 - [~] Wave 3: H detector + CLI launched
 - [ ] Wave 3: H detector + CLI
 - [x] Wave 4a: I classifier skill (`skills/archwatch-deep-dive/SKILL.md`) — written by orchestrator
@@ -343,3 +344,29 @@ C also caught a flaw in its own test scaffolding worth recording: its first fake
 being handed the window fixture as though it were an org's catalogue. It rewrote the fake to
 dispatch the way the real endpoint does. Tests that pass for the wrong reason are the most
 expensive kind, and catching one in your own work is harder than catching it in someone else's.
+
+### G — silent-failure rendering: accepted, and it found a real vulnerability
+
+82 tests. The dangerous class now leads the document: a `**Verdict:**` line as the first bullet of
+the header block, then a `## Silently wrong today — BLIS runs this and reports confident nonsense`
+section placed *above* the bucket-0 verdict (asserted by a test comparing section indices, not by
+eye). Bucket 0 has three distinct wordings so it can never read as healthy — the clean-bucket-plus-
+silent-failures case renders as "this is the dangerous case, not the safe one."
+
+**The vulnerability G found is worth recording.** Verbatim third-party prose containing the literal
+stage-2 marker would split the stub at the wrong point, letting a later write silently drop real
+stage-2 analysis. That is an injection through a data channel whose format we control, arriving
+from an external source we quote by design — and it existed because I specified "render the prose
+verbatim" without thinking about the marker. Fixed with a defang pass, verified: the marker does
+not survive.
+
+**A careful fixture correction, too.** G changed the Kimi fixture's `n_routed_experts` to
+`moe_num_experts` because `n_routed_experts` **is** in BLIS's real alias set — using it as the
+"unrecognized spelling" example would have baked a false claim into a golden file that later
+readers would trust. I verified this independently: `n_routed_experts` appears three times in the
+harvested surface. Getting a fixture *factually* right, not merely self-consistent, is a
+distinction that matters for goldens.
+
+Accepted G's recommendation that **`silently_wrong` — not `bucket == 0` — is the metric the
+backtest should headline**, and recorded it as a binding addendum for J. Bucket 0 is the loud class
+that would have been caught anyway.

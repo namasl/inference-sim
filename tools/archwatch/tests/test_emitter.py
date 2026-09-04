@@ -81,13 +81,28 @@ def kimi_candidate() -> Candidate:
         evidence="MODELS.md diff adds the model with a first perf row",
         raw_ref="9f2c1ab",
         extra={
-            "perf": {
-                "hardware": "8xH200",
-                "output_tok_per_s": 1840.0,
-                "ttft_ms_p50": 412,
-                "cost_per_mtok_usd": 0.61,
-                "notes": "vLLM 0.11.1, tp8, 1k/1k in/out",
-            }
+            # Documented shape: a list of dicts, hardware possibly None, float metrics,
+            # free-text notes.
+            "perf": [
+                {
+                    "hardware": "8xH200",
+                    "output_tok_per_s": 1840.0,
+                    "ttft_ms_p50": 412.0,
+                    "cost_per_mtok_usd": 0.61,
+                    "notes": "vLLM 0.11.1, tp8, 1k/1k in/out",
+                },
+                {
+                    "hardware": None,
+                    "output_tok_per_s": 2310.0,
+                    "notes": "vendor-claimed, hardware unstated",
+                },
+            ],
+            "perf_notes": (
+                "Kimi K3 moves to 896 routed experts with 8 active, and replaces most "
+                "full-attention layers with KDA layers that hold no KV cache at all.\n"
+                "Only every fourth layer keeps a conventional KV cache, which is where the "
+                "memory-per-token win comes from."
+            ),
         },
     )
     return Candidate(
@@ -97,6 +112,7 @@ def kimi_candidate() -> Candidate:
         triggers=["T1", "T3", "T4"],
         significance=["S1", "S2", "S3"],
         unparsed_fields=[
+            "moe_num_experts",
             "n_group",
             "topk_group",
             "mtp_num_layers",
@@ -105,6 +121,16 @@ def kimi_candidate() -> Candidate:
             "attention_sink_tokens",
         ],
         bucket0_failures=[],
+        # Nothing fatal, and BLIS is still wrong: the dangerous combination.
+        silent_failures=[
+            'MoE signalled but the expert count spelling "moe_num_experts" is not in '
+            "ResolveNumExperts's alias set -> the 896 experts are never resolved and a 1T "
+            "sparse model is sized and simulated as dense, behind one logrus.Warnf "
+            "(sim/latency/kv_capacity.go:552)",
+            "KDA / linear-attention layers are charged as full attention in step time and "
+            "weights; no config field tells BLIS otherwise "
+            "(sim/latency/trained_physics_model.go:297)",
+        ],
         est_total_params=1_026_000_000_000,
         est_active_params=38_400_000_000,
     )
@@ -141,6 +167,10 @@ def bucket0_candidate() -> Candidate:
             "sim/latency/trained_physics_model.go:615",
             "num_key_value_heads is 0; must be > 0 (sim/latency/config.go:419-431)",
         ],
+        silent_failures=[
+            "linear_attn_config.full_attn_layers lists 4 of 48 layers; the other 44 are "
+            "charged as full attention in KV capacity (sim/latency/kv_capacity.go:125)",
+        ],
         est_total_params=71_000_000_000,
         est_active_params=71_000_000_000,
     )
@@ -171,8 +201,85 @@ def framework_only_candidate() -> Candidate:
                 raw_ref="vllm#22001",
             ),
         ],
-        triggers=["T2", "T4"],
+        triggers=["T2", "T4", "T5"],
         significance=["S3"],
+    )
+
+
+def known_arch_drift_candidate() -> Candidate:
+    """A known architecture whose config grew fields BLIS does not parse (T1-known-arch),
+    with silent failures, verbatim vendor prose, and a perf row of unstated hardware."""
+    return Candidate(
+        arch_id="Qwen3NextForCausalLM",
+        display_name="Qwen3.8-Flash-Next",
+        signals=[
+            Signal(
+                source="hf",
+                observed_at=PINNED - timedelta(hours=3),
+                arch_ids=["Qwen3NextForCausalLM"],
+                model_type="qwen3_next",
+                model_ids=["qwen/Qwen3.8-Flash-Next"],
+                org="qwen",
+                display_name="Qwen3.8-Flash-Next",
+                config=_load_config("qwen3next_config.json"),
+                urls={"hf": "https://huggingface.co/qwen/Qwen3.8-Flash-Next"},
+                evidence=(
+                    "Known architecture string, but the config carries new Mamba and MTP keys"
+                ),
+                raw_ref="qwen/Qwen3.8-Flash-Next",
+                extra={"downloads": 88123, "likes": 2140},
+            ),
+            Signal(
+                source="inferencex",
+                observed_at=PINNED - timedelta(days=3),
+                arch_ids=["Qwen3NextForCausalLM"],
+                display_name="Qwen3.8-Flash-Next",
+                urls={"commit": "https://github.com/SemiAnalysisAI/InferenceX/commit/4d10ce7"},
+                evidence="perf-changelog.yaml adds the model with a throughput row",
+                raw_ref="4d10ce7",
+                extra={
+                    "perf": [
+                        {
+                            "hardware": "8xB200",
+                            "output_tok_per_s": 5120.0,
+                            "ttft_ms_p50": 190.0,
+                            "notes": "sglang nightly, tp8",
+                        },
+                        {
+                            "hardware": None,
+                            "output_tok_per_s": 6400.0,
+                            "notes": "vendor claim, hardware unstated",
+                        },
+                    ],
+                    "perf_notes": (
+                        "Qwen3.8-Flash-Next keeps the Mamba SSM state from the previous "
+                        "generation and adds a built-in MTP module, so the served token rate "
+                        "runs well ahead of what the layer count alone would suggest.\n"
+                        "\n"
+                        "Only the gated full-attention layers hold a KV cache; the SSM layers "
+                        "carry fixed-size state instead."
+                    ),
+                },
+            ),
+        ],
+        triggers=["T1-known-arch", "T4"],
+        significance=["S2", "S3"],
+        unparsed_fields=[
+            "linear_conv_kernel_dim",
+            "mamba_state_size",
+            "mamba_num_heads",
+            "mtp_num_layers",
+            "shared_expert_intermediate_size",
+        ],
+        silent_failures=[
+            "Mamba/SSM layers carry fixed-size state, but BLIS sizes every layer's KV cache "
+            "as full attention: KV bytes per token over-counted ~7x "
+            "(sim/latency/kv_capacity.go:91)",
+            "The built-in MTP module is not modelled at all; accepted-token throughput is "
+            "under-reported with no warning",
+        ],
+        est_total_params=402_000_000_000,
+        est_active_params=17_500_000_000,
     )
 
 
@@ -180,6 +287,7 @@ CASES = {
     "KimiK3ForCausalLM": kimi_candidate,
     "WeirdActForCausalLM": bucket0_candidate,
     "MysteryNetForCausalLM": framework_only_candidate,
+    "Qwen3NextForCausalLM": known_arch_drift_candidate,
 }
 
 
@@ -250,10 +358,16 @@ def test_naive_observed_at_is_treated_as_utc() -> None:
 
 
 def test_no_timestamp_outside_front_matter() -> None:
-    """Volatile values are confined to the front matter, per PLAN.md."""
+    """Volatile values are confined to the front matter, per PLAN.md.
+
+    Quoted third-party prose is exempt: it is rendered verbatim, so if a vendor's
+    changelog names a date that date stays. Blockquoted lines are therefore dropped
+    before the scan; every line archwatch writes itself is checked.
+    """
     for build in CASES.values():
         text = emitter.render(build(), detected_at=PINNED)
         body = text.split("---\n", 2)[2]
+        body = "\n".join(ln for ln in body.splitlines() if not ln.startswith(">"))
         assert not re.search(r"\d{4}-\d{2}-\d{2}", body), body
         assert "09:30" not in body
 
@@ -310,7 +424,8 @@ def test_front_matter_carries_findings_and_perf() -> None:
     assert front["has_config"] is True
     assert front["orgs"] == ["moonshotai"]
     assert front["perf"][0]["source"] == "inferencex"
-    assert front["perf"][0]["value"]["output_tok_per_s"] == 1840.0
+    assert front["perf"][0]["value"][0]["output_tok_per_s"] == 1840.0
+    assert front["perf"][0]["value"][1]["hardware"] is None
     assert front["urls"]["pr"].endswith("/pull/21877")
 
 
@@ -351,7 +466,7 @@ def test_body_states_the_required_findings() -> None:
     assert "## Why it fired" in text
     assert "**T1**" in text and "**T4**" in text
     assert "**S3**" in text
-    assert "no hard validator failed" in text
+    assert "this is the dangerous case, not the safe one" in text
     assert "- `mtp_num_layers`" in text
     assert "1.03T" in text and "1,026,000,000,000" in text
     assert "38.4B" in text
@@ -363,7 +478,7 @@ def test_body_states_the_required_findings() -> None:
 def test_bucket0_failures_are_listed_verbatim() -> None:
     cand = bucket0_candidate()
     text = emitter.render(cand, detected_at=PINNED)
-    assert "**No — bucket 0.** 3 hard validator failures" in text
+    assert "**No — bucket 0.** 3 fatal validator failures" in text
     for failure in cand.bucket0_failures:
         assert failure in text
     assert "Bucket 0 is already established" in text
@@ -415,6 +530,240 @@ def test_stage2_placeholder_is_present_and_last() -> None:
     assert "**Status: not yet run.**" in text
     assert emitter.STAGE2_MARKER in text
     assert text.rstrip().endswith(emitter.STAGE2_MARKER)
+
+
+# ---------------------------------------------------------------------------
+# Silent failures — the highest-value finding class
+# ---------------------------------------------------------------------------
+
+
+def test_silent_failures_are_louder_than_the_bucket0_verdict() -> None:
+    cand = kimi_candidate()
+    text = emitter.render(cand, detected_at=PINNED)
+    heading = "## Silently wrong today — BLIS runs this and reports confident nonsense"
+    assert heading in text
+    # Prominence: its own top-level section, ahead of the bucket-0 verdict.
+    assert text.index(heading) < text.index("## Deterministic findings (stage 1)")
+    for failure in cand.silent_failures:
+        assert failure in text
+    assert "a wrong answer nobody is told about" in text
+    assert "that is exactly what makes this dangerous" in text
+
+
+def test_clean_bucket0_with_silent_failures_never_reads_as_healthy() -> None:
+    text = emitter.render(kimi_candidate(), detected_at=PINNED)
+    bucket = text.split("### Bucket 0")[1].split("###")[0]
+    assert "dangerous case, not the safe one" in bucket
+    assert "silent" in bucket
+    assert "no hard validator failed" not in bucket
+    assert "no fatal validator failed, and no silent failure" not in bucket
+
+
+def test_clean_candidate_says_both_classes_are_clear() -> None:
+    cand = kimi_candidate()
+    cand.silent_failures = []
+    text = emitter.render(cand, detected_at=PINNED)
+    assert "## Silently wrong today" not in text
+    assert "no fatal validator failed, and no silent failure was found either" in text
+
+
+def test_fatal_and_silent_are_reported_as_separate_classes() -> None:
+    text = emitter.render(bucket0_candidate(), detected_at=PINNED)
+    assert "## Silently wrong today" in text
+    assert "**also** fails hard validators" in text
+    assert "Separately, 1 **silent** failure" in text
+    assert "**No — bucket 0.** 3 fatal validator failures" in text
+
+
+def test_silent_section_absent_when_there_are_none() -> None:
+    assert "## Silently wrong today" not in emitter.render(
+        framework_only_candidate(), detected_at=PINNED
+    )
+
+
+def test_front_matter_counts_silent_failures() -> None:
+    kimi = _front_matter(emitter.render(kimi_candidate(), detected_at=PINNED))
+    assert len(kimi["silent_failures"]) == 2
+    assert "ResolveNumExperts" in kimi["silent_failures"][0]
+    assert kimi["silently_wrong"] is True  # clean bucket 0 + silent failures
+    assert kimi["bucket"] is None
+
+    fatal = _front_matter(emitter.render(bucket0_candidate(), detected_at=PINNED))
+    assert len(fatal["silent_failures"]) == 1
+    # Fatal failures announce themselves, so this is not the silent-danger class.
+    assert fatal["silently_wrong"] is False
+    assert fatal["bucket"] == 0
+
+    thin = _front_matter(emitter.render(framework_only_candidate(), detected_at=PINNED))
+    assert thin["silent_failures"] == []
+    assert thin["silently_wrong"] is False
+
+
+def test_candidate_without_the_silent_failures_field_still_renders() -> None:
+    """getattr fallback: a Candidate built against the older contract must not crash."""
+
+    class Older:
+        arch_id = "OldContractForCausalLM"
+        display_name = "Old Contract"
+        signals: list = []
+        triggers = ["T1"]
+        significance = ["S1"]
+        unparsed_fields = ["mystery_field"]
+        bucket0_failures: list = []
+        est_total_params = None
+        est_active_params = None
+        sources: list = []
+        corroborated = False
+        config = None
+
+    text = emitter.render(Older())  # type: ignore[arg-type]
+    assert "## Silently wrong today" not in text
+    assert _front_matter(text)["silent_failures"] == []
+
+
+@pytest.mark.parametrize(
+    "build, expected",
+    [
+        (kimi_candidate, "**runs this and reports wrong numbers** — 2 silent failures"),
+        (bucket0_candidate, "would **not run** this config (3 fatal failures)"),
+        (framework_only_candidate, "not checked — no `config.json` available yet"),
+    ],
+)
+def test_verdict_line(build, expected: str) -> None:
+    assert expected in emitter.render(build(), detected_at=PINNED)
+
+
+def test_verdict_line_when_everything_is_clear() -> None:
+    cand = kimi_candidate()
+    cand.silent_failures = []
+    assert "no fatal or silent validator failure found" in emitter.render(
+        cand, detected_at=PINNED
+    )
+
+
+# ---------------------------------------------------------------------------
+# Trigger vocabulary beyond T1-T4
+# ---------------------------------------------------------------------------
+
+
+def test_t5_gets_a_human_label() -> None:
+    text = emitter.render(framework_only_candidate(), detected_at=PINNED)
+    assert "- **T5** — a curated benchmark / analyst entry names a model we had not seen" in text
+
+
+def test_known_arch_drift_is_not_advertised_as_a_new_architecture() -> None:
+    cand = known_arch_drift_candidate()
+    text = emitter.render(cand, detected_at=PINNED)
+    assert "# [archwatch] Qwen3NextForCausalLM (Qwen3.8-Flash-Next) — known architecture, " \
+        "config grew fields BLIS does not parse" in text
+    assert "new architecture detected" not in text
+    assert "> **This is not a new architecture.**" in text
+    assert "already in BLIS's known set" in text
+    assert "- **T1-known-arch** — an architecture BLIS already knows, re-checked" in text
+    assert _front_matter(text)["known_arch_drift"] is True
+
+
+def test_a_genuinely_new_arch_keeps_the_new_architecture_framing() -> None:
+    text = emitter.render(kimi_candidate(), detected_at=PINNED)
+    assert "— new architecture detected" in text
+    assert "This is not a new architecture" not in text
+    assert _front_matter(text)["known_arch_drift"] is False
+
+
+def test_known_arch_drift_alongside_a_novelty_trigger_stays_new() -> None:
+    """T1 and T1-known-arch together are contradictory; the novel framing wins, and the
+    known-arch callout is still shown so a human sees the conflict."""
+    cand = known_arch_drift_candidate()
+    cand.triggers = ["T1", "T1-known-arch"]
+    text = emitter.render(cand, detected_at=PINNED)
+    assert "— new architecture detected" in text
+    assert "> **This is not a new architecture.**" in text
+    assert _front_matter(text)["known_arch_drift"] is False
+
+
+def test_alias_join_renders_as_a_marker_not_a_trigger() -> None:
+    cand = framework_only_candidate()
+    cand.triggers = ["T2", "alias-join"]
+    text = emitter.render(cand, detected_at=PINNED)
+    assert "**Markers** (how this candidate was assembled, not why it matters):" in text
+    assert "- **`alias-join`** — no signal carried an `architectures[]` entry" in text
+    # Not mixed in with the reasons it is interesting.
+    triggers_block = text.split("**Triggers**")[1].split("**Significance**")[0]
+    assert "alias-join" not in triggers_block
+    front = _front_matter(text)
+    assert front["markers"] == ["alias-join"]
+    assert front["triggers"] == ["T2", "alias-join"]  # kept verbatim for the backtest
+
+
+def test_markers_absent_when_none_apply() -> None:
+    assert "**Markers**" not in emitter.render(kimi_candidate(), detected_at=PINNED)
+
+
+# ---------------------------------------------------------------------------
+# Verbatim third-party prose (extra["perf_notes"])
+# ---------------------------------------------------------------------------
+
+
+def test_perf_notes_are_quoted_verbatim_and_attributed() -> None:
+    text = emitter.render(known_arch_drift_candidate(), detected_at=PINNED)
+    assert "## Third-party mechanism notes (verbatim)" in text
+    assert "**their words, unverified, not archwatch's analysis.**" in text
+    assert "**InferenceX** (`4d10ce7`):" in text
+    assert "> Qwen3.8-Flash-Next keeps the Mamba SSM state from the previous generation " \
+        "and adds a built-in MTP module, so the served token rate runs well ahead of what " \
+        "the layer count alone would suggest." in text
+    assert "> Only the gated full-attention layers hold a KV cache; the SSM layers carry " \
+        "fixed-size state instead." in text
+    assert _front_matter(text)["has_perf_notes"] is True
+
+
+def test_perf_notes_sit_next_to_the_perf_numbers() -> None:
+    text = emitter.render(kimi_candidate(), detected_at=PINNED)
+    assert text.index("## Reported performance numbers") < text.index(
+        "## Third-party mechanism notes"
+    )
+    assert text.index("## Third-party mechanism notes") < text.index("## Stage 2 — deep dive")
+    assert "> Kimi K3 moves to 896 routed experts with 8 active" in text
+    assert "KDA layers that hold no KV cache at all." in text
+
+
+def test_perf_notes_absent_when_no_source_carried_any() -> None:
+    text = emitter.render(bucket0_candidate(), detected_at=PINNED)
+    assert "## Third-party mechanism notes" not in text
+    assert _front_matter(text)["has_perf_notes"] is False
+
+
+def test_perf_notes_accept_a_list_of_blocks() -> None:
+    cand = framework_only_candidate()
+    cand.signals[0].extra["perf_notes"] = ["first block", "second block"]
+    text = emitter.render(cand, detected_at=PINNED)
+    assert "> first block" in text
+    assert "> second block" in text
+
+
+def test_perf_notes_cannot_forge_the_stage2_marker(tmp_path: Path) -> None:
+    """Verbatim prose is quoted, but a marker inside it would break the stub/appendix
+    split — so it is de-fanged."""
+    cand = framework_only_candidate()
+    cand.signals[0].extra["perf_notes"] = f"sneaky {emitter.STAGE2_MARKER} prose"
+    text = emitter.render(cand, detected_at=PINNED)
+    assert text.count(emitter.STAGE2_MARKER) == 1
+    assert "archwatch_stage2_append-below" in text
+    stub, tail = emitter.split_stub(text)
+    assert tail.strip() == ""
+
+    path = emitter.write_issue(cand, tmp_path, detected_at=PINNED).path
+    with path.open("a", encoding="utf-8") as fh:
+        fh.write("\n## Stage 2 analysis\n\nBucket 3.\n")
+    assert emitter.write_issue(cand, tmp_path, detected_at=PINNED).status == "unchanged"
+    assert "Bucket 3." in path.read_text(encoding="utf-8")
+
+
+def test_perf_table_orders_hardware_first_and_notes_last() -> None:
+    text = emitter.render(known_arch_drift_candidate(), detected_at=PINNED)
+    header = [ln for ln in text.splitlines() if ln.startswith("| `hardware`")][0]
+    assert header == "| `hardware` | `output_tok_per_s` | `ttft_ms_p50` | `notes` |"
+    assert "| — | 6400.0 | — | vendor claim, hardware unstated |" in text
 
 
 # ---------------------------------------------------------------------------

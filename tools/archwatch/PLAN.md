@@ -462,3 +462,21 @@ original plan left ambiguous. They are binding.
     truth) and `benchmarks/single_node/agentic/*.sh` (real serve flags: attention backend, KV
     dtype, `max-model-len`, MoE backend). Both are richer BLIS validation input than changelog
     prose.
+
+## Contract addenda, round 4 (binding on component J)
+
+21. **`silently_wrong` is the backtest's headline metric — not `bucket == 0`.** The emitter
+    derives it as `silent_failures and not bucket0_failures`: BLIS accepts the config, runs, and
+    reports confident nonsense with no error to show for it. Bucket 0 is the *loud* class that
+    would have been noticed anyway; `silently_wrong: true` is the class that justifies this
+    pipeline's existence. It is a plain boolean in the front matter, so J needs no taxonomy
+    knowledge to count it.
+
+22. **Front matter is `schema: archwatch/2`. Test for keys, not for the version string.** The
+    schema will grow additively; a version pin turns every future field addition into a J failure.
+
+23. **Third-party prose is defanged before rendering.** Verbatim changelog text containing the
+    literal stage-2 marker would split the stub at the wrong point and let a later write silently
+    drop real analysis — an injection through a data channel we control the format of. The emitter
+    rewrites `archwatch:stage2:` in all third-party text. Any future component that embeds
+    external text into a file with structural markers must do the same.

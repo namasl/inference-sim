@@ -16,11 +16,24 @@ Layout of a rendered file::
     # [archwatch] <arch_id> — ...
     ## Sources
     ## Why it fired
+    ## Silently wrong today                  (only when silent_failures is non-empty)
     ## Deterministic findings (stage 1)
     ## Config at a glance
     ## Reported performance numbers          (only when a source carried some)
+    ## Third-party mechanism notes           (only when a source carried perf_notes)
     ## Stage 2 — deep dive
     <!-- archwatch:stage2:append-below -->
+
+Two failure classes, kept strictly apart because they need opposite reactions:
+
+``bucket0_failures``
+    Fatal. BLIS refuses the config. Loud and self-announcing, so it is *not* the
+    dangerous case — someone will notice.
+``silent_failures``
+    BLIS runs, logs a warning at most, and reports confidently wrong numbers. This is
+    the reason the pipeline exists, so it is rendered above the bucket-0 verdict and
+    a clean bucket 0 next to a non-empty ``silent_failures`` is called out explicitly
+    as the dangerous combination.
 
 Everything above the append marker is the stage-1 stub and is regenerated from the
 Candidate. Stage 2 appends *below* the marker; :func:`write_issue` preserves
@@ -68,8 +81,10 @@ __all__ = [
 #: Everything after this line belongs to stage 2 and is never regenerated.
 STAGE2_MARKER = "<!-- archwatch:stage2:append-below -->"
 
-#: Bumped when the front-matter shape changes, so the backtest can adapt.
-SCHEMA = "archwatch/1"
+#: Bumped when the front-matter shape changes, so the backtest can adapt. Changes are
+#: additive: /2 added silent_failures, silently_wrong, known_arch_drift, markers and
+#: has_perf_notes to /1. Readers should test for keys, not pin the version.
+SCHEMA = "archwatch/2"
 
 TRIGGER_DESCRIPTIONS: dict[str, str] = {
     "T1": "new architecture whose config carries fields BLIS does not parse "
@@ -77,7 +92,25 @@ TRIGGER_DESCRIPTIONS: dict[str, str] = {
     "T2": "a framework support PR (vLLM / SGLang) for an architecture we had not seen",
     "T3": "a frontier org published a new architecture",
     "T4": "corroboration: two or more independent sources named the same architecture",
+    "T5": "a curated benchmark / analyst entry names a model we had not seen",
+    "T1-known-arch": "an architecture BLIS already knows, re-checked: its config has grown "
+    "fields BLIS does not parse (config drift, not a new architecture)",
 }
+
+#: Codes that describe *how the candidate was assembled*, not why it is interesting.
+#: They arrive mixed into Candidate.triggers; the front matter keeps the list verbatim
+#: and also splits them out under "markers" so the backtest need not know the taxonomy.
+MARKER_DESCRIPTIONS: dict[str, str] = {
+    "alias-join": "no signal carried an `architectures[]` entry, so these signals were "
+    "joined on a normalized display name — the `arch_id` above is that alias key, not a "
+    "string read out of a config",
+}
+
+#: Triggers that assert the architecture itself is new. "T1-known-arch" contradicts
+#: them, and T4 (corroboration) asserts nothing about novelty on its own.
+NOVEL_ARCH_TRIGGERS: frozenset[str] = frozenset({"T1", "T2", "T3", "T5"})
+
+KNOWN_ARCH_TRIGGER = "T1-known-arch"
 
 SIGNIFICANCE_DESCRIPTIONS: dict[str, str] = {
     "S1": "scale: estimated total parameters at or above the threshold",
@@ -224,11 +257,33 @@ def _human_count(n: int | None) -> str:
     return f"{sign}{v}"
 
 
+def _defang(text: str) -> str:
+    """Neutralize a stage-2 append marker embedded in third-party text.
+
+    Source prose is rendered verbatim. If it ever contained the literal marker, the
+    stub/appendix split would cut in the wrong place and a later write could drop real
+    analysis, so the colons are rewritten and the marker stops matching.
+    """
+    return text.replace("archwatch:stage2:", "archwatch_stage2_")
+
+
+def _blockquote(text: str) -> list[str]:
+    """Quote third-party prose verbatim, one ``>`` line per source line."""
+    out: list[str] = []
+    for line in _defang(text).replace("\r\n", "\n").replace("\r", "\n").split("\n"):
+        stripped = line.rstrip()
+        out.append("> " + stripped if stripped else ">")
+    while out and out[-1] == ">":
+        out.pop()
+    return out or [">"]
+
+
 def _cell(value: Any) -> str:
     """Make a value safe to drop inside a markdown table cell."""
     if value is None:
         return "—"
     text = value if isinstance(value, str) else _scalar(value)
+    text = _defang(text)
     text = text.replace("\r\n", " ").replace("\n", " ").replace("\r", " ")
     text = text.replace("|", "\\|")
     text = re.sub(r"\s{2,}", " ", text).strip()
@@ -358,17 +413,70 @@ def _all_urls(cand: Candidate) -> dict[str, str]:
     return dict(sorted(out.items()))
 
 
-def _perf_entries(cand: Candidate) -> list[tuple[Signal, Any]]:
+def _extras(cand: Candidate, key: str) -> list[tuple[Signal, Any]]:
+    """Every ``signal.extra[key]`` that carries something, in signal order."""
     out: list[tuple[Signal, Any]] = []
     for s in _signals(cand):
         extra = s.extra or {}
         if not isinstance(extra, dict):
             continue
-        perf = extra.get("perf")
-        if perf in (None, {}, [], ""):
+        value = extra.get(key)
+        if value is None or (isinstance(value, (str, list, tuple, dict, set)) and not value):
             continue
-        out.append((s, perf))
+        out.append((s, value))
     return out
+
+
+def _perf_entries(cand: Candidate) -> list[tuple[Signal, Any]]:
+    """``extra["perf"]``: documented as a list of dicts, each with ``hardware`` (possibly
+    None), unit-bearing float metrics and free-text ``notes``. Older/odd shapes still
+    render — see :func:`_perf_rows`."""
+    return _extras(cand, "perf")
+
+
+def _perf_note_entries(cand: Candidate) -> list[tuple[Signal, list[str]]]:
+    """``extra["perf_notes"]``: verbatim third-party prose, one or more blocks."""
+    out: list[tuple[Signal, list[str]]] = []
+    for signal, value in _extras(cand, "perf_notes"):
+        if isinstance(value, str):
+            blocks = [value]
+        elif isinstance(value, (list, tuple)):
+            blocks = [v if isinstance(v, str) else _scalar(v) for v in value]
+        else:
+            blocks = [_scalar(value)]
+        blocks = [b for b in (b.strip() for b in blocks) if b]
+        if blocks:
+            out.append((signal, blocks))
+    return out
+
+
+def _silent_failures(cand: Candidate) -> list[str]:
+    """``Candidate.silent_failures``: BLIS runs, warns at most, and is wrong.
+
+    Read through ``getattr`` so a Candidate built before the field existed still
+    renders instead of raising.
+    """
+    return [str(f) for f in (getattr(cand, "silent_failures", None) or [])]
+
+
+def _silently_wrong(cand: Candidate) -> bool:
+    """The dangerous combination: nothing fatal, so nothing announces the problem."""
+    return bool(_silent_failures(cand)) and not cand.bucket0_failures
+
+
+def _trigger_split(cand: Candidate) -> tuple[list[str], list[str]]:
+    """(triggers, markers) — markers describe how the candidate was assembled."""
+    triggers: list[str] = []
+    markers: list[str] = []
+    for code in cand.triggers or []:
+        (markers if code in MARKER_DESCRIPTIONS else triggers).append(str(code))
+    return triggers, markers
+
+
+def _is_known_arch_drift(cand: Candidate) -> bool:
+    """True when this is config drift in an architecture BLIS already knows."""
+    triggers = set(cand.triggers or [])
+    return KNOWN_ARCH_TRIGGER in triggers and not (triggers & NOVEL_ARCH_TRIGGERS)
 
 
 def _bucket(cand: Candidate) -> int | None:
@@ -399,11 +507,17 @@ def _front_matter(cand: Candidate, detected_at: datetime) -> str:
         "detected_at": _iso(detected_at),
         "sources": list(cand.sources),
         "triggers": list(cand.triggers or []),
+        "markers": _trigger_split(cand)[1],
         "significance": list(cand.significance or []),
         # 0 = proven not to run by the deterministic validators.
         # null = undetermined; stage 2 assigns 1, 2 or 3.
         "bucket": _bucket(cand),
         "bucket0_failures": [str(f) for f in (cand.bucket0_failures or [])],
+        # BLIS runs and is wrong. Counted separately from bucket0_failures on purpose.
+        "silent_failures": _silent_failures(cand),
+        # True = silent failures with a clean bucket 0: wrong numbers, nothing announced.
+        "silently_wrong": _silently_wrong(cand),
+        "known_arch_drift": _is_known_arch_drift(cand),
         "unparsed_fields": [str(f) for f in (cand.unparsed_fields or [])],
         "est_total_params": cand.est_total_params,
         "est_active_params": cand.est_active_params,
@@ -413,6 +527,7 @@ def _front_matter(cand: Candidate, detected_at: datetime) -> str:
         "orgs": _orgs(cand),
         "urls": _all_urls(cand),
         "has_config": cand.config is not None,
+        "has_perf_notes": bool(_perf_note_entries(cand)),
         "perf": perf,
         "stage2": "pending",
         "dry_run": True,
@@ -425,12 +540,47 @@ def _front_matter(cand: Candidate, detected_at: datetime) -> str:
 # ---------------------------------------------------------------------------
 
 
+def _verdict_line(cand: Candidate) -> str:
+    """One-line deterministic verdict for the skim-reader."""
+    silent = _silent_failures(cand)
+    fatal = list(cand.bucket0_failures or [])
+    if fatal and silent:
+        return (
+            f"- **Verdict:** BLIS would **not run** this config "
+            f"({len(fatal)} fatal {_plural(len(fatal), 'failure')}), and it also carries "
+            f"{len(silent)} **silent** {_plural(len(silent), 'failure')}"
+        )
+    if fatal:
+        return (
+            f"- **Verdict:** BLIS would **not run** this config — {len(fatal)} fatal "
+            f"validator {_plural(len(fatal), 'failure')} (bucket 0)"
+        )
+    if silent:
+        return (
+            f"- **Verdict:** BLIS **runs this and reports wrong numbers** — "
+            f"{len(silent)} silent {_plural(len(silent), 'failure')}, no error raised"
+        )
+    if cand.config is None:
+        return "- **Verdict:** not checked — no `config.json` available yet"
+    return (
+        "- **Verdict:** BLIS would run this config; no fatal or silent validator failure "
+        "found (stage 2 still judges fidelity)"
+    )
+
+
+def _plural(n: int, word: str) -> str:
+    return word if n == 1 else word + "s"
+
+
 def _header(cand: Candidate) -> list[str]:
     name = cand.display_name or cand.arch_id
     title = f"# [archwatch] {cand.arch_id}"
     if name and name != cand.arch_id:
         title += f" ({name})"
-    title += " — new architecture detected"
+    if _is_known_arch_drift(cand):
+        title += " — known architecture, config grew fields BLIS does not parse"
+    else:
+        title += " — new architecture detected"
 
     sources = ", ".join(SOURCE_LABELS.get(s, s) for s in cand.sources) or "none recorded"
     lines = [
@@ -439,6 +589,7 @@ def _header(cand: Candidate) -> list[str]:
         "Stage-1 stub, generated by `archwatch` from deterministic checks only — no LLM ran, "
         "and nothing here was posted anywhere. Tracking only.",
         "",
+        _verdict_line(cand),
         f"- **Architecture:** `{cand.arch_id}` (the pipeline's primary key)",
     ]
     if name and name != cand.arch_id:
@@ -493,8 +644,17 @@ def _sources_section(cand: Candidate) -> list[str]:
 
 
 def _why_section(cand: Candidate) -> list[str]:
-    lines = ["## Why it fired", "", "**Triggers** (any one is enough):", ""]
-    triggers = list(cand.triggers or [])
+    lines = ["## Why it fired", ""]
+    triggers, markers = _trigger_split(cand)
+    if KNOWN_ARCH_TRIGGER in triggers:
+        lines += [
+            f"> **This is not a new architecture.** `{KNOWN_ARCH_TRIGGER}` fired: "
+            f"`{cand.arch_id}` is already in BLIS's known set. What changed is the "
+            "*config* — it now carries fields BLIS does not parse. Read this as drift in "
+            "a family we thought we supported, not as a new model class.",
+            "",
+        ]
+    lines += ["**Triggers** (any one is enough):", ""]
     if triggers:
         for code in triggers:
             desc = TRIGGER_DESCRIPTIONS.get(code, "no description on file")
@@ -509,7 +669,51 @@ def _why_section(cand: Candidate) -> list[str]:
             lines.append(f"- **{code}** — {desc}")
     else:
         lines.append("- _none recorded_ (the candidate was emitted without a significance code)")
+    if markers:
+        lines += ["", "**Markers** (how this candidate was assembled, not why it matters):", ""]
+        for code in markers:
+            desc = MARKER_DESCRIPTIONS.get(code, "no description on file")
+            lines.append(f"- **`{code}`** — {desc}")
     lines.append("")
+    return lines
+
+
+def _silent_failures_section(cand: Candidate) -> list[str]:
+    """The loudest section in the stub, and deliberately above the bucket-0 verdict.
+
+    Fatal failures announce themselves; these do not. Rendered only when there is
+    something to report, so it never cries wolf.
+    """
+    silent = _silent_failures(cand)
+    if not silent:
+        return []
+    n = len(silent)
+    lines = [
+        "## Silently wrong today — BLIS runs this and reports confident nonsense",
+        "",
+        f"**{n} silent validator {_plural(n, 'failure')}.** BLIS does not crash, does not "
+        "refuse the config and does not raise an error. It logs a warning at most, then "
+        "reports numbers that are wrong. This is the failure class archwatch exists to "
+        "catch: a wrong answer nobody is told about.",
+        "",
+    ]
+    lines += [f"- {f}" for f in silent]
+    lines.append("")
+    if cand.bucket0_failures:
+        lines += [
+            "> This candidate **also** fails hard validators (bucket 0, below). The fatal "
+            "failures will be noticed on their own; the silent ones above will not.",
+            "",
+        ]
+    else:
+        lines += [
+            "> **The bucket-0 verdict below is clean, and that is exactly what makes this "
+            "dangerous.** The config sails through validation, so nothing downstream ever "
+            "signals a problem — BLIS will happily produce numbers, and they will be wrong. "
+            "Treat any BLIS output for this architecture as unusable until stage 2 says "
+            "otherwise.",
+            "",
+        ]
     return lines
 
 
@@ -523,28 +727,43 @@ def _findings_section(cand: Candidate) -> list[str]:
         "### Bucket 0 — would BLIS accept this config?",
         "",
     ]
+    silent = _silent_failures(cand)
     if cand.bucket0_failures:
         n = len(cand.bucket0_failures)
         lines += [
-            f"**No — bucket 0.** {n} hard validator "
-            f"{'failure' if n == 1 else 'failures'}; BLIS would reject or mis-size this model "
-            "before any simulation:",
+            f"**No — bucket 0.** {n} fatal validator "
+            f"{_plural(n, 'failure')}; BLIS would refuse this config before any simulation:",
             "",
         ]
         lines += [f"- {f}" for f in cand.bucket0_failures]
         lines.append("")
+        if silent:
+            lines += [
+                f"Separately, {len(silent)} **silent** "
+                f"{_plural(len(silent), 'failure')} — see the section above.",
+                "",
+            ]
     elif cand.config is None:
         lines += [
             "**Not checked** — no `config.json` was obtainable for this architecture, so the "
-            "hard validators could not run. Bucket is left undetermined.",
+            "validators could not run. Bucket is left undetermined.",
+            "",
+        ]
+    elif silent:
+        lines += [
+            "**Yes, BLIS would run it — and this is the dangerous case, not the safe one.** "
+            f"No *fatal* validator failed, but {len(silent)} **silent** "
+            f"{_plural(len(silent), 'failure')} were found above: BLIS accepts the config, "
+            "runs, and reports wrong numbers with no error to show for it. A clean bucket 0 "
+            "here means nothing will ever tell you.",
             "",
         ]
     else:
         lines += [
-            "**Yes — no hard validator failed.** BLIS would load this config and produce "
-            "numbers. Whether those numbers are *right* is exactly what stage 2 decides: "
-            "unknown fields are dropped silently, so a clean pass here is not a clean bill "
-            "of health.",
+            "**Yes — no fatal validator failed, and no silent failure was found either.** "
+            "BLIS would load this config and produce numbers. Whether those numbers are "
+            "*right* is still stage 2's call: unknown fields are dropped silently, so a "
+            "clean pass here is not a clean bill of health.",
             "",
         ]
 
@@ -647,6 +866,9 @@ def _perf_rows(payload: Any) -> list[str]:
                 for k in item:
                     if k not in keys:
                         keys.append(str(k))
+            # Documented shape: hardware identifies the row, notes is free text.
+            order = {k: i for i, k in enumerate(keys)}
+            keys.sort(key=lambda k: (k == "notes", k != "hardware", order[k]))
             lines = [
                 "| " + " | ".join(f"`{_cell(k)}`" for k in keys) + " |",
                 "| " + " | ".join("---" for _ in keys) + " |",
@@ -657,6 +879,33 @@ def _perf_rows(payload: Any) -> list[str]:
             return lines
         return [f"- {_cell(i)}" for i in items]
     return [f"- {_cell(payload)}"]
+
+
+def _perf_notes_section(cand: Candidate) -> list[str]:
+    """Verbatim third-party prose. Often names the mechanism before any config is public,
+    which is exactly what stage 2 needs — so it is quoted, attributed, and never
+    paraphrased."""
+    entries = _perf_note_entries(cand)
+    if not entries:
+        return []
+    lines = [
+        "## Third-party mechanism notes (verbatim)",
+        "",
+        "Quoted from the source's own changelog or write-up — **their words, unverified, "
+        "not archwatch's analysis.** Notes like these routinely name a mechanism days "
+        "before a config is public, so read them as the earliest available hint about what "
+        "stage 2 will have to model.",
+        "",
+    ]
+    for signal, blocks in entries:
+        label = SOURCE_LABELS.get(signal.source, signal.source)
+        ref = f" (`{signal.raw_ref}`)" if signal.raw_ref else ""
+        lines.append(f"**{label}**{ref}:")
+        lines.append("")
+        for block in blocks:
+            lines += _blockquote(block)
+            lines.append("")
+    return lines
 
 
 def _stage2_section(cand: Candidate) -> list[str]:
@@ -709,9 +958,11 @@ def render(cand: Candidate, *, detected_at: datetime | None = None) -> str:
     parts += _header(cand)
     parts += _sources_section(cand)
     parts += _why_section(cand)
+    parts += _silent_failures_section(cand)
     parts += _findings_section(cand)
     parts += _config_section(cand)
     parts += _perf_section(cand)
+    parts += _perf_notes_section(cand)
     parts += _stage2_section(cand)
     text = "\n".join(parts)
     return text if text.endswith("\n") else text + "\n"
