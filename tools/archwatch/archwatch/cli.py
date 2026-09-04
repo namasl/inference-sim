@@ -143,12 +143,23 @@ def build_parser() -> argparse.ArgumentParser:
         help="cap on stubs written this run (default: "
         f"{DetectorConfig().max_issues_per_run})",
     )
-    scan.add_argument(
+    # Both directions, because the default is a calibration result rather than a
+    # permanent decision: the backtest moved it from False to True, and reproducing
+    # either arm of that measurement from the CLI needs the flag to work both ways.
+    recheck = scan.add_mutually_exclusive_group()
+    recheck.add_argument(
         "--recheck-known",
         action="store_true",
-        help="also re-check architectures already in the seed set for unparsed config "
-        "fields (T1-known-arch). Closes the filter's largest recall hole at a cost "
-        "in noise; the backtest measures both settings.",
+        default=None,
+        help="re-check architectures already in the seed set for unparsed config "
+        "fields (T1-known-arch) — the silent-wrong-numbers case arriving disguised as "
+        f"something already supported (default: {DetectorConfig().recheck_known_architectures})",
+    )
+    recheck.add_argument(
+        "--no-recheck-known",
+        action="store_false",
+        dest="recheck_known",
+        help="drop seeded architectures unexamined, before any config analysis",
     )
     scan.add_argument(
         "--no-trending",
@@ -275,8 +286,9 @@ def cmd_scan(args: argparse.Namespace, out: Any = None) -> int:
             print("archwatch scan: --max-issues must not be negative", file=sys.stderr)
             return 1
         cfg = replace(cfg, max_issues_per_run=args.max_issues)
-    if args.recheck_known:
-        cfg = replace(cfg, recheck_known_architectures=True)
+    if args.recheck_known is not None:
+        # None means "neither flag given": keep the calibrated default.
+        cfg = replace(cfg, recheck_known_architectures=bool(args.recheck_known))
 
     try:
         summary = detector.scan(

@@ -194,7 +194,23 @@ def pr_signal(
 
 @pytest.fixture
 def cfg() -> DetectorConfig:
-    return DetectorConfig(window_days=1, thresholds=Thresholds(), max_issues_per_run=5)
+    """Every knob these tests' assertions depend on, pinned explicitly.
+
+    Not ``DetectorConfig()``. The thresholds are calibration outputs and they move:
+    the wave-6 backtest took ``min_total_params`` 30B -> 3B,
+    ``recheck_known_architectures`` False -> True and ``max_issues_per_run`` 5 -> 10,
+    and three tests here silently changed meaning — one of them had been asserting
+    that a known architecture is suppressed, which is no longer what the shipped
+    default does at all. A test that inherits a tunable default is asserting the
+    calibration, not the code. Tests that are *about* a setting name it themselves;
+    both settings of ``recheck_known_architectures`` are covered below.
+    """
+    return DetectorConfig(
+        window_days=1,
+        max_issues_per_run=5,
+        thresholds=Thresholds(min_total_params=30_000_000_000),
+        recheck_known_architectures=False,
+    )
 
 
 def run(**kw):
@@ -600,7 +616,11 @@ def test_scan_against_the_real_support_surface(tmp_path):
     Reads files; no network. A stub surface can agree with a bug in itself, so at
     least one test has to use the real seed set and the real parsed-field list.
     """
-    cfg = DetectorConfig(window_days=1)
+    # The S1 threshold is named here because this test asserts S1 fired: inheriting a
+    # calibration output would make the assertion mean "whatever S1 does this week".
+    cfg = DetectorConfig(
+        window_days=1, thresholds=Thresholds(min_total_params=30_000_000_000)
+    )
     config = dict(BIG_CONFIG)
     config["architectures"] = ["ArchwatchTestNetForCausalLM"]
     del config["novel_mechanism_dim"]
@@ -622,8 +642,15 @@ def test_scan_against_the_real_support_surface(tmp_path):
     assert cand.bucket0_failures == []
 
 
-def test_scan_suppresses_a_known_architecture_using_the_real_seed_set(tmp_path):
-    cfg = DetectorConfig(window_days=1)
+def test_scan_suppresses_a_known_architecture_when_the_recheck_is_off(tmp_path):
+    """Suppression-of-a-known-architecture, pinned to the setting that produces it.
+
+    ``recheck_known_architectures`` is passed here rather than inherited: the shipped
+    default is now True, under which this candidate deliberately does NOT drop (see
+    the next test). Inheriting the default would have turned this assertion into
+    "whatever the current calibration does", which is the opposite of a regression test.
+    """
+    cfg = DetectorConfig(window_days=1, recheck_known_architectures=False)
     config = dict(BIG_CONFIG, architectures=["LlamaForCausalLM"])
     signal = hf_signal(arch="LlamaForCausalLM", config=config)
     summary = detector.scan(
@@ -638,12 +665,63 @@ def test_scan_suppresses_a_known_architecture_using_the_real_seed_set(tmp_path):
     assert list(tmp_path.glob("*.md")) == []
 
 
+def test_scan_rechecks_a_known_architecture_when_the_recheck_is_on(tmp_path):
+    """The shipped default: a seeded architecture whose config grew a field BLIS
+    cannot read still reaches a stub, tagged apart from a genuinely new architecture.
+
+    This is the mode the backtest measured and turned on (frontier recall 0/9 -> 9/9),
+    so it needs a wiring test of its own rather than being reachable only by default.
+    The trigger code must be the known-arch one: "an architecture BLIS thinks it
+    supports has silently grown an unparsed field" is a different finding for a human
+    than "an architecture BLIS has never seen".
+    """
+    cfg = DetectorConfig(window_days=1, recheck_known_architectures=True)
+    config = dict(BIG_CONFIG, architectures=["LlamaForCausalLM"])
+    summary = detector.scan(
+        cfg,
+        connectors=[FakeConnector("hf", [hf_signal(arch="LlamaForCausalLM", config=config)])],
+        out_dir=tmp_path,
+        now=NOW,
+        trending=False,
+    )
+    assert [c.arch_id for c in summary.passed] == ["LlamaForCausalLM"]
+    cand = summary.passed[0]
+    assert cand.unparsed_fields == ["novel_mechanism_dim"]
+    assert "T1-known-arch" in cand.triggers
+    assert "T1" not in cand.triggers  # not a new architecture, and must not read as one
+    assert (tmp_path / "LlamaForCausalLM.md").is_file()
+
+
+def test_the_recheck_still_drops_a_seeded_architecture_with_an_inert_config(tmp_path):
+    """The recheck must discriminate, not readmit everything it re-examines.
+
+    Its own suppression reason, distinct from ``known_architecture``, is what lets the
+    run log price the sweep: how much volume it costs against how much it finds.
+    """
+    cfg = DetectorConfig(window_days=1, recheck_known_architectures=True)
+    inert = {k: v for k, v in BIG_CONFIG.items() if k != "novel_mechanism_dim"}
+    inert["architectures"] = ["LlamaForCausalLM"]
+    summary = detector.scan(
+        cfg,
+        connectors=[FakeConnector("hf", [hf_signal(arch="LlamaForCausalLM", config=inert)])],
+        out_dir=tmp_path,
+        now=NOW,
+        trending=False,
+    )
+    assert summary.passed == []
+    assert list(summary.suppressed_by_reason) == ["known_architecture_nothing_new"]
+    assert list(tmp_path.glob("*.md")) == []
+
+
 # ---------------------------------------------------------------------------
 # the run log
 # ---------------------------------------------------------------------------
 
 
 def test_run_log_carries_aggregates_and_unabridged_detail(tmp_path, cfg):
+    """The exact numbers here are readable only because ``cfg`` pins every knob they
+    depend on (see the fixture). ``test_run_log_counts_tally_whatever_the_filter_does``
+    covers the same log with assertions that survive re-calibration."""
     conns = [
         FakeConnector("hf", [hf_signal(), hf_signal(arch="LlamaForCausalLM", model_id="a/b")]),
         FakeConnector("vllm", error=RuntimeError("403 rate limited")),
@@ -691,31 +769,90 @@ def test_run_log_carries_aggregates_and_unabridged_detail(tmp_path, cfg):
     assert data["config"]["max_issues_per_run"] == 5
     assert data["config"]["thresholds"]["min_total_params"] == 30_000_000_000
 
+    assert data["config"]["recheck_known_architectures"] is False
+
     row = data["issues"][0]
     assert row["arch_id"] == "NovelMechForCausalLM"
     assert row["status"] == "created" and row["path"].endswith(".md")
     assert row["rank"] == 1 and row["bucket"] is None
 
 
-def test_run_log_never_drops_a_suppression_record(tmp_path, cfg):
-    """Unabridged is the requirement: counts cannot answer "which one did we miss?"."""
+def test_run_log_accounts_for_every_candidate_exactly_once(tmp_path, cfg):
+    """Unabridged is the requirement: counts cannot answer "which one did we miss?".
+
+    Asserted as an invariant rather than a headcount — every candidate leaves exactly
+    one trace, either in ``issues`` or in ``suppressions``, and nothing is elided or
+    double-counted. That property is what makes the log usable for calibration, and it
+    has to hold at *any* threshold, which is why this test does not name a number the
+    backtest is still moving.
+    """
+    archs = [f"Cand{i}ForCausalLM" for i in range(40)]
     signals = [
-        hf_signal(arch=f"Known{i}ForCausalLM", model_id=f"org{i}/model-{i}")
-        for i in range(40)
+        hf_signal(arch=arch, model_id=f"org{i}/model-{i}")
+        for i, arch in enumerate(archs)
     ]
     summary = run(
         cfg=cfg,
         connectors=[FakeConnector("hf", signals)],
         out_dir=tmp_path,
-        surface=FakeSurface(known=tuple(f"Known{i}ForCausalLM" for i in range(40))),
+        # Half the corpus is already in the seed set, so both outcomes are exercised.
+        surface=FakeSurface(known=tuple(archs[:20])),
     )
     data = json.loads(summary.write_run_log(tmp_path / "log").read_text())
-    assert data["counts"]["suppressed"] == 40
-    assert data["counts"]["suppressed_by_reason"] == {"known_architecture": 40}
-    assert len(data["suppressions"]) == 40
-    assert {s["arch_id"] for s in data["suppressions"]} == {
-        f"Known{i}ForCausalLM" for i in range(40)
-    }
+    counts = data["counts"]
+
+    assert counts["candidates"] == len(archs)
+    assert counts["passed"] + counts["suppressed"] == counts["candidates"]
+    assert len(data["suppressions"]) == counts["suppressed"]  # nothing abridged
+    assert len(data["issues"]) == counts["passed"]
+
+    # Every record is attributable and machine-readable.
+    for record in data["suppressions"]:
+        assert record["reason"] and record["stage"] and record["detail"]
+        assert record["arch_id"]
+    assert sum(counts["suppressed_by_reason"].values()) == counts["suppressed"]
+    assert sum(counts["suppressed_by_stage"].values()) == counts["suppressed"]
+
+    # No candidate is lost, and none is recorded on both sides of the ledger.
+    passed_ids = {row["arch_id"] for row in data["issues"]}
+    dropped_ids = {record["arch_id"] for record in data["suppressions"]}
+    assert passed_ids | dropped_ids == set(archs)
+    assert not passed_ids & dropped_ids
+
+
+def test_run_log_counts_tally_whatever_the_filter_does(tmp_path):
+    """The same invariants under the shipped defaults, which no test should pin.
+
+    ``DetectorConfig()`` on purpose: if a future calibration makes the aggregate counts
+    stop adding up, this fails without anyone having to remember to re-derive a
+    hard-coded number.
+    """
+    archs = ["LlamaForCausalLM", "NovelMechForCausalLM", "MysteryNetForCausalLM"]
+    signals = [
+        hf_signal(arch=arch, config=dict(BIG_CONFIG, architectures=[arch]),
+                  model_id=f"moonshotai/{arch}-70B")
+        for arch in archs
+    ]
+    # detector.scan directly, not the run() helper: this test wants the real surface
+    # and the real defaults, which is exactly what the helper substitutes away.
+    summary = detector.scan(
+        DetectorConfig(),
+        connectors=[FakeConnector("hf", signals)],
+        out_dir=tmp_path,
+        now=NOW,
+        trending=False,
+    )
+    data = summary.as_dict()
+    counts = data["counts"]
+    assert counts["candidates"] == len(archs)
+    assert counts["passed"] + counts["suppressed"] == counts["candidates"]
+    assert len(data["suppressions"]) == counts["suppressed"]
+    assert sum(counts["suppressed_by_reason"].values()) == counts["suppressed"]
+    assert sum(counts["written"].values()) == counts["passed"]
+    assert counts["signals"] == sum(counts["signals_by_source"].values())
+    # Whatever fired, it is recorded per code and never exceeds the candidate count.
+    for code, n in {**counts["triggers"], **counts["significance"]}.items():
+        assert 0 < n <= counts["passed"], code
 
 
 def test_run_log_does_not_overwrite_a_same_second_run(tmp_path, cfg):

@@ -393,12 +393,40 @@ def test_scan_max_issues_caps_what_is_written(tmp_path, fake_sources, capsys):
     assert len(list(out.glob("*.md"))) == 1
 
 
-def test_scan_recheck_known_flag_reaches_the_config(tmp_path, fake_sources, capsys):
-    assert cli.main(
-        ["scan", "--out", str(tmp_path / "i"), "--recheck-known", "--no-runlog", "--json"]
-    ) == 0
-    data = json.loads(capsys.readouterr().out)
-    assert data["config"]["recheck_known_architectures"] is True
+@pytest.mark.parametrize(
+    "flag, expected",
+    [
+        ("--recheck-known", True),
+        ("--no-recheck-known", False),
+        (None, None),  # neither flag: whatever the calibrated default is
+    ],
+)
+def test_scan_recheck_known_flags_reach_the_config(
+    tmp_path, fake_sources, capsys, flag, expected
+):
+    """Both directions, and the untouched default.
+
+    Asserting only ``--recheck-known -> True`` stopped proving anything the day the
+    backtest flipped the default to True: the flag and the default agreed, so a broken
+    flag would have looked identical. The no-flag case is compared against
+    ``DetectorConfig()`` rather than a literal, so re-calibration cannot make this test
+    lie either.
+    """
+    from archwatch.config import DetectorConfig as Cfg
+
+    argv = ["scan", "--out", str(tmp_path / "i"), "--no-runlog", "--json"]
+    if flag:
+        argv.append(flag)
+    assert cli.main(argv) == 0
+    got = json.loads(capsys.readouterr().out)["config"]["recheck_known_architectures"]
+    assert got is (Cfg().recheck_known_architectures if expected is None else expected)
+
+
+def test_scan_recheck_flags_are_mutually_exclusive(tmp_path, capsys):
+    with pytest.raises(SystemExit) as exc:
+        cli.main(["scan", "--recheck-known", "--no-recheck-known"])
+    assert exc.value.code == 2
+    assert "not allowed with" in capsys.readouterr().err
 
 
 def test_scan_no_trending_is_passed_through(tmp_path, monkeypatch, capsys):
