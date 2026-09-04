@@ -88,6 +88,14 @@ class Candidate:
     triggers: list[str] = field(default_factory=list)  # e.g. ["T1", "T4"]
     significance: list[str] = field(default_factory=list)  # e.g. ["S1", "S3"]
 
+    # Which join edges merged this candidate's signals, e.g.
+    # ["arch:kimik3forcausallm", "repo:moonshotai/kimi-k3"]. Signals are joined by
+    # union-find over architecture id, normalized repo id, and normalized family
+    # name, so a FALSE merge silently fuses two distinct architectures into one
+    # report — worse than emitting two. These edges are the audit trail that makes
+    # such a merge detectable, so they are reported, not just logged.
+    join_edges: list[str] = field(default_factory=list)
+
     # findings from the deterministic checks (no LLM involved)
     unparsed_fields: list[str] = field(default_factory=list)
 

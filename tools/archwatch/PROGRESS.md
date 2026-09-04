@@ -360,13 +360,67 @@ from an external source we quote by design — and it existed because I specifie
 verbatim" without thinking about the marker. Fixed with a defang pass, verified: the marker does
 not survive.
 
-**A careful fixture correction, too.** G changed the Kimi fixture's `n_routed_experts` to
-`moe_num_experts` because `n_routed_experts` **is** in BLIS's real alias set — using it as the
-"unrecognized spelling" example would have baked a false claim into a golden file that later
-readers would trust. I verified this independently: `n_routed_experts` appears three times in the
-harvested surface. Getting a fixture *factually* right, not merely self-consistent, is a
-distinction that matters for goldens.
+**A fixture correction that was right in intent and wrong in fact — and my verification of it was
+incomplete.** G changed the Kimi fixture's `n_routed_experts` to `moe_num_experts`, reasoning that
+`n_routed_experts` is in BLIS's real alias set and so cannot serve as the "unrecognized spelling"
+example. That premise is correct. But `moe_num_experts` **is also in the alias set** — it is there
+for Dbrx. BLIS's ground truth (`sim/latency/config.go:92-98`) lists `num_experts`,
+`moe_num_experts`, `n_routed_experts`, `num_local_experts`, `num_routed_experts`.
+
+So the golden swapped one recognized alias for another and asserted something false. **I confirmed
+G's premise without checking its conclusion** — I verified `n_routed_experts` really is an alias
+and stopped there, which is exactly the kind of half-verification that lets an error through two
+reviewers. Genuinely unrecognized spellings, measured against the loaded surface:
+`num_moe_experts`, `expert_count`, `n_group_experts`. Being sent back with instructions to quote
+the real alias list in the rendered text, so a future reader can check the claim instead of
+trusting it.
 
 Accepted G's recommendation that **`silently_wrong` — not `bucket == 0` — is the metric the
 backtest should headline**, and recorded it as a binding addendum for J. Bucket 0 is the loud class
 that would have been caught anyway.
+
+### F — union-find join: accepted, with three fixes routed back
+
+226 tests. T4 fires for the first time: a real three-source merge produced
+`joined 3 signals from ['hf','inferencex','vllm'] into 'KimiK3ForCausalLM' via
+arch:kimik3forcausallm, repo:moonshotai/kimi-k3` with `T=['T1','T2','T3','T4','T5']`.
+
+F's three false-merge guards are the right instincts, and I want them on record because the
+union-find join is the riskiest thing in the design: the family edge is never fed from a repo
+basename (which is the only thing stopping two labs' `Mystery-8B` from collapsing); an
+org-qualified display name stays qualified; and **no key strips a size token**, since merging
+`Qwen3-8B` with `Qwen3-30B` would be the worst false merge available.
+
+**Accepted a deviation from my instruction.** I asked for every multi-signal merge logged at INFO.
+F pointed out that a `LlamaForCausalLM` candidate joins every Llama fine-tune in the window, so
+that is hundreds of lines a day burying the one-line summary. It logs **cross-source** merges at
+INFO and same-source at DEBUG — which is better than what I asked for, because cross-source merges
+are exactly the set corroboration rests on and the set a false merge would corrupt.
+
+F also noted, unprompted, that for the **second** time its own unit tests had ratified a design
+that only failed against real connector data — one test literally asserted
+`test_join_uses_only_the_primary_arch_id`, the opposite of correct behavior.
+
+### The gap that no component test could catch
+
+`silent_failures` was **never populated by anything.** F correctly filled `bucket0_failures` from
+`check_hard_validators()` (verified: no leak between the two sets), but nothing anywhere assigned
+`silent_failures`. Meanwhile G had built the stub's most prominent section around it — rendered
+above the bucket-0 verdict, framed as "BLIS runs this and reports confident nonsense."
+
+**So the pipeline's highest-value finding class was invisible end to end, and every test passed.**
+G's tests passed because its fixtures set the field by hand. F's passed because it never claimed to
+populate it. The 649-test suite passed. Only running the real surface against a real config through
+the real filter exposed it.
+
+That is the clearest argument yet for the validation wave: per-component confidence is not
+integration evidence, and this build has now produced three bugs of exactly that shape (the T2
+suppressor, the cross-source join, and this one).
+
+### A principle, extracted after hitting it three times
+
+Curated-source signals kept getting deleted by suppressors written for HuggingFace noise. Rather
+than patch a third instance, it is now a rule: **a candidate with any `vllm`/`sglang`/`inferencex`
+signal is exempt from HF-noise suppressors as a class** — both `no_config_uncorroborated` and
+`all_model_ids_derivative`. A human wrote that code or ran that benchmark, and that choice outranks
+the shape of whatever HF repos happen to exist.
