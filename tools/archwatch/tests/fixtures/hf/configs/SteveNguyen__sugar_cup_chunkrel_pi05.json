@@ -1,0 +1,94 @@
+{
+ "action_expert_variant": "gemma_300m",
+ "action_feature_names": [
+  "x",
+  "y",
+  "z",
+  "ax",
+  "ay",
+  "az",
+  "strategy",
+  "closure"
+ ],
+ "chunk_size": 50,
+ "compile_mode": "max-autotune",
+ "compile_model": false,
+ "device": "cuda",
+ "dtype": "bfloat16",
+ "empty_cameras": 0,
+ "freeze_vision_encoder": false,
+ "gradient_checkpointing": true,
+ "image_resolution": [
+  224,
+  224
+ ],
+ "input_features": {
+  "observation.images.cam0": {
+   "shape": [
+    3,
+    360,
+    480
+   ],
+   "type": "VISUAL"
+  },
+  "observation.state": {
+   "shape": [
+    2
+   ],
+   "type": "STATE"
+  }
+ },
+ "license": null,
+ "max_action_dim": 32,
+ "max_period": 4.0,
+ "max_state_dim": 32,
+ "min_period": 0.004,
+ "n_action_steps": 50,
+ "n_obs_steps": 1,
+ "normalization_mapping": {
+  "ACTION": "QUANTILES",
+  "STATE": "QUANTILES",
+  "VISUAL": "IDENTITY"
+ },
+ "num_inference_steps": 10,
+ "optimizer_betas": [
+  0.9,
+  0.95
+ ],
+ "optimizer_eps": 1e-08,
+ "optimizer_grad_clip_norm": 1.0,
+ "optimizer_lr": 2.5e-05,
+ "optimizer_weight_decay": 0.01,
+ "output_features": {
+  "action": {
+   "shape": [
+    8
+   ],
+   "type": "ACTION"
+  }
+ },
+ "paligemma_variant": "gemma_2b",
+ "pretrained_path": "lerobot/pi05_base",
+ "pretrained_revision": null,
+ "private": null,
+ "push_to_hub": true,
+ "relative_exclude_joints": [
+  "gripper"
+ ],
+ "repo_id": "SteveNguyen/sugar_cup_chunkrel_pi05",
+ "rtc_config": null,
+ "scheduler_decay_lr": 1e-05,
+ "scheduler_decay_steps": 100000,
+ "scheduler_warmup_steps": 4000,
+ "tags": null,
+ "time_sampling_beta_alpha": 1.5,
+ "time_sampling_beta_beta": 1.0,
+ "time_sampling_offset": 0.001,
+ "time_sampling_scale": 0.999,
+ "tokenizer_max_length": 200,
+ "train_expert_only": false,
+ "type": "pi05",
+ "use_amp": false,
+ "use_peft": false,
+ "use_relative_actions": false
+}

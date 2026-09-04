@@ -29,7 +29,7 @@ Kept continuously so the build is resumable if the session dies. Newest entries 
 - [x] Scaffolding, `pyproject.toml`, venv
 - [x] Frozen contracts: `archwatch/connectors/base.py`, `archwatch/config.py`
 - [x] `PLAN.md`
-- [~] Wave 2: **G emitter DONE**; **C hf DONE** (resumed for a non-LM pre-filter); B, D, E, F in flight
+- [~] Wave 2: **G emitter DONE**; **C hf** (non-LM filter in; org-stats owed); **F novelty DONE** (resumed for recall fix); B, D, E in flight
 - [ ] Wave 3: H detector + CLI
 - [x] Wave 4a: I classifier skill (`skills/archwatch-deep-dive/SKILL.md`) — written by orchestrator
 - [ ] Wave 4b: J validation harness
@@ -133,3 +133,74 @@ as a gap, but to encode the real two-key resolution so the validator is not dead
   only `architectures`/`model_type`/`dtype`/`text_config`/`vision_config` at the top level.
   Without the pivot, T1 fires on every multimodal frontier release and sizing returns `None` for
   exactly the models S1 must catch.
+
+### F — novelty + sizing: complete, accepted (resumed for a recall fix)
+
+147 tests green. Sizing validated against **published** parameter counts, not asserted loosely:
+Llama-3.1-70B 70.55B vs 70.55B (four significant figures), Mixtral-8x7B +0.0%, DeepSeek-V3
++0.0% total / +1.5% active, Qwen3-30B-A3B +0.1%.
+
+The Llama-4-Scout miss (−6.7% total, −34.5% active) is a genuine limitation handled the right
+way — tested explicitly rather than hidden. Llama-4 runs an always-on shared expert per MoE
+layer that **nothing in `config.json` declares**, so no config-only estimator can see it. Total
+still clears any plausible S1 threshold; the active figure should not be quoted for that family.
+
+### The most valuable finding so far: a suppressor that could not work as specified
+
+F caught that my structural-identity suppressor was **unimplementable as worded** — "same
+`architectures[]` with differences confined to `quantization_config`" presumes a reference config
+for the known architecture, and nothing in the pipeline has one. Worse, the obvious reading
+*fails on the exact case it targets*: an FP8 repack inherits its base's unparsed fields, and the
+real surface reports `['decoder_sparse_step','norm_topk_prob']` for **any** Qwen3-MoE config.
+
+It found this only by running against the real `surface.py` instead of its own stub — which is
+the difference between a test that passes and a test that means something. Fixed with two
+branches: name-based (strip quantizer tokens, `Qwen3MoeFp8ForCausalLM` → `Qwen3MoeForCausalLM`)
+and config-based (known base named, novelty confined to the quant block). Both require the base
+to be *identifiable*, which is what stops it swallowing a real frontier release shipping FP8.
+
+### A real recall hole, now being closed rather than noted
+
+F's second finding is one I acted on. Suppressor #1 (`is_known_architecture`) drops a candidate
+**before any config analysis** — but a point release can add config fields under an *unchanged*
+architecture string, and BLIS silently drops fields it does not parse. So the "silent wrong
+numbers" case can arrive disguised as a known architecture, and archwatch never looks.
+
+Added `recheck_known_architectures` to `DetectorConfig` (default `False`) and tasked F to
+implement a T1-only re-check for known architectures, with a distinct suppression reason so the
+run log separates "known, nothing new" from "known, unparsed fields found". **The wave-6 backtest
+measures both settings** — recall gained vs noise added — before we pick a default.
+
+### Declined deliberately
+
+F's finding #3 asked for a `Candidate` field to carry `surface.match_gaps()` output into the
+stub. Declined: a keyword match rendered into the report would read as analysis while being only
+a string match, and the stage-2 skill reads `known-gaps.yaml` directly anyway.
+
+### C — non-LM pre-filter: accepted, with an honest negative result
+
+73 tests green. Vocabularies (39 libraries, 31 pipeline tags) chosen against a **live day's
+histogram**, not from memory, and everything ambiguous is documented as deliberately excluded:
+`transformers`, `pytorch`, `keras`, `nemo`, runtime/format labels, and every one-off vendor
+library observed live — because an unrecognized library from an unexpected lab *is* the zero-day
+case.
+
+**The honest headline: the filter only closes about a fifth of the gap.** 1,171 of ~1,690
+archless survivors publish neither `library_name` nor `pipeline_tag`, so under the
+"only drop on positive evidence" rule every one is kept. C also measured whether extending to
+`tags` would help and reported that it would **not** (tags carry no modality information for
+those repos), declining to write code that looks like it helps. That is the right instinct.
+
+Live: 3,564 repos → 682 derivative → 326 non-LM → **2,556 survive** (1,189 naming an
+architecture, 125 distinct).
+
+I checked whether the remaining ~1,367 archless signals are actually a problem and concluded
+they are not: F's `no_config_uncorroborated` suppressor already drops them, F now aggregates
+suppression logging, and continuing to emit them preserves the corroboration path — an archless
+HF repo can still be rescued if InferenceX or a vLLM PR names the same model. So the volume is
+harmless and the design stands. Declined C's offered `extra["lm_evidence"]` field on YAGNI
+grounds since F already buckets by reason.
+
+Accepted C's own judgment call to apply the filter to `poll_trending()` as well: a trending
+*language* model always carries an architecture in the listing excerpt and so can never be
+wrongly dropped, while a trending diffusion checkpoint is junk to the detector either way.

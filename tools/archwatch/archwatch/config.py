@@ -70,5 +70,21 @@ class DetectorConfig:
     # Cap on how many HF configs to fetch per poll (rate-limit guard).
     max_hf_config_fetches: int = 200
 
+    # Closes the filter's largest recall hole, at a cost in precision.
+    #
+    # Normally a candidate whose architecture is already known is suppressed
+    # before any config analysis. But a point release can add config fields under
+    # an UNCHANGED architecture string — and BLIS silently drops fields it does
+    # not parse. That is precisely the "silent wrong numbers" failure this whole
+    # system exists to catch, arriving disguised as a known architecture, where
+    # archwatch never looks.
+    #
+    # When True, known architectures are still re-checked for T1 (unparsed
+    # config fields) instead of being dropped outright.
+    #
+    # Default False until the wave-6 backtest measures both settings: the recall
+    # gained versus the noise added. This is a number to be measured, not chosen.
+    recheck_known_architectures: bool = False
+
 
 DEFAULTS = DetectorConfig()

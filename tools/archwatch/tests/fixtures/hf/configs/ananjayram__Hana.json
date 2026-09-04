@@ -1,0 +1,25 @@
+{
+ "architectures": [
+  "TinyMoeForCausalLM"
+ ],
+ "auto_map": {
+  "AutoConfig": "configuration_tiny_moe.TinyMoeConfig",
+  "AutoModelForCausalLM": "modeling_tiny_moe.TinyMoeForCausalLM"
+ },
+ "block_size": 512,
+ "d_model": 512,
+ "dense_ffn_dim": 1536,
+ "dropout": 0.0,
+ "dtype": "float32",
+ "expert_ffn_dim": 768,
+ "model_type": "tiny_moe",
+ "n_heads": 8,
+ "n_layers": 8,
+ "num_experts": 8,
+ "tie_word_embeddings": false,
+ "top_k": 2,
+ "transformers_version": "5.16.1",
+ "use_cache": false,
+ "use_moe": true,
+ "vocab_size": 50257
+}

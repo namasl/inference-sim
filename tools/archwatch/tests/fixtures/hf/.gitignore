@@ -1,0 +1,6 @@
+# The repository root .gitignore ignores "*.json" wholesale (see its "data files"
+# section, which then re-includes specific BLIS testdata paths). These files are
+# recorded HuggingFace API payloads that tests/test_hf.py replays offline, so
+# they must be committed or the test suite cannot run from a clean checkout.
+!*.json
+!configs/*.json

@@ -1,0 +1,116 @@
+{
+ "action_decode_transform": null,
+ "balance_dataset_weights": true,
+ "balance_trajectory_weights": true,
+ "base_model_path": "nvidia/GR00T-N1.7-3B",
+ "batch_size": 32,
+ "chunk_size": 32,
+ "dataloader_num_workers": 8,
+ "dataset_paths": null,
+ "device": "cuda:0",
+ "drifting_gen_per_label": 8,
+ "drifting_microbatch": 64,
+ "drifting_perdim_loss": true,
+ "drifting_scale_mode": "adaptive",
+ "drifting_temperatures": [
+  0.02,
+  0.05,
+  0.2
+ ],
+ "drifting_variance_anchor_weight": 0.0,
+ "drifting_variance_target": 0.024,
+ "embodiment_tag": "new_embodiment",
+ "image_crop_size_override": null,
+ "image_size": [
+  256,
+  256
+ ],
+ "image_target_size_override": [
+  128,
+  128
+ ],
+ "input_features": {
+  "observation.images.top": {
+   "shape": [
+    3,
+    480,
+    640
+   ],
+   "type": "VISUAL"
+  },
+  "observation.images.wrist": {
+   "shape": [
+    3,
+    480,
+    640
+   ],
+   "type": "VISUAL"
+  },
+  "observation.state": {
+   "shape": [
+    6
+   ],
+   "type": "STATE"
+  }
+ },
+ "license": null,
+ "lora_alpha": 16,
+ "lora_dropout": 0.1,
+ "lora_full_model": false,
+ "lora_rank": 0,
+ "max_action_dim": 132,
+ "max_state_dim": 132,
+ "max_steps": 10000,
+ "model_params_fp32": true,
+ "n_action_steps": 32,
+ "n_obs_steps": 1,
+ "normalization_mapping": {
+  "ACTION": "IDENTITY",
+  "STATE": "IDENTITY",
+  "VISUAL": "IDENTITY"
+ },
+ "num_inference_timesteps": null,
+ "optimizer_betas": [
+  0.9,
+  0.999
+ ],
+ "optimizer_eps": 1e-08,
+ "optimizer_lr": 0.0001,
+ "optimizer_weight_decay": 1e-05,
+ "output_dir": "./tmp/gr00t",
+ "output_features": {
+  "action": {
+   "shape": [
+    6
+   ],
+   "type": "ACTION"
+  }
+ },
+ "pretrained_path": "geonmin-kim/GR00T-Mfm_cft-Dreset_vertical_merged-step3000",
+ "pretrained_revision": null,
+ "private": null,
+ "push_to_hub": false,
+ "relative_exclude_joints": [],
+ "repo_id": null,
+ "report_to": "wandb",
+ "resume": false,
+ "rtc_ramp_rate": null,
+ "save_steps": 1000,
+ "tags": null,
+ "tokenizer_assets_repo": null,
+ "tune_diffusion_model": true,
+ "tune_llm": false,
+ "tune_projector": true,
+ "tune_top_llm_layers": 0,
+ "tune_visual": false,
+ "tune_vlln": true,
+ "type": "groot",
+ "use_amp": false,
+ "use_bf16": true,
+ "use_drifting_loss": false,
+ "use_flash_attention": false,
+ "use_peft": false,
+ "use_relative_actions": false,
+ "video_backend": "decord",
+ "warmup_ratio": 0.05
+}

@@ -1,0 +1,22 @@
+{
+ "activation": "silu",
+ "d_model": 512,
+ "dropout": 0.0,
+ "intermediate_size": 1536,
+ "loop_mode": "per_layer",
+ "max_seq_len": 512,
+ "model_type": "small_lm",
+ "n_heads": 8,
+ "n_kv_heads": 4,
+ "n_layers": 6,
+ "n_loops": 1,
+ "noise_conditioning": false,
+ "norm_eps": 1e-05,
+ "norm_type": "rmsnorm",
+ "rope_theta": 10000.0,
+ "rope_type": "neox",
+ "use_qk_norm": false,
+ "vocab_size": 24189,
+ "weight_tying": true,
+ "zero_init_output": true
+}
