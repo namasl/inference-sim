@@ -1,0 +1,19 @@
+{
+ "_meta": {
+  "what": "GitHub's 403 rate-limit response body + headers, used to drive the partial-results test.",
+  "source": "https://docs.github.com/rest/overview/rate-limits-for-the-rest-api"
+ },
+ "status": 403,
+ "headers": {
+  "x-ratelimit-limit": "5000",
+  "x-ratelimit-remaining": "0",
+  "x-ratelimit-used": "5000",
+  "x-ratelimit-reset": "1788561120",
+  "x-ratelimit-resource": "core"
+ },
+ "json": {
+  "message": "API rate limit exceeded for user ID 1234567.",
+  "documentation_url": "https://docs.github.com/rest/overview/rate-limits-for-the-rest-api",
+  "status": "403"
+ }
+}

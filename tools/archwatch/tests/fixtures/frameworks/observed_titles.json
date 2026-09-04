@@ -1,0 +1,1108 @@
+{
+ "_meta": {
+  "what": "Every merged-PR title returned by the recorded title searches, plus real titles seen outside those windows. `model_support` is present only where the classification was hand-verified against the PR diff.",
+  "captured_by": "tests/fixtures/frameworks/capture.py",
+  "repos": [
+   "vllm-project/vllm",
+   "sgl-project/sglang"
+  ],
+  "windows": [
+   "2026-07-27T00:00:00Z..2026-08-01T00:00:00Z",
+   "2026-08-28T00:00:00Z..2026-09-04T00:00:00Z"
+  ],
+  "n_titles": 206,
+  "finding": "No real merged vLLM or SGLang PR title in this corpus contains an architecture class name (XxxForCausalLM); a GitHub search for `ForCausalLM in:title` over all merged PRs in both repos returns 0 hits. Titles carry marketing names ('GLM-5.3-Flash', 'Kimi K3'); architecture names have to come from the diff."
+ },
+ "cases": [
+  {
+   "repo": "sgl-project/sglang",
+   "number": 25545,
+   "title": "[Spec] Add `trtllm_mha` support for Gemma 4 MTP draft attention backend"
+  },
+  {
+   "repo": "sgl-project/sglang",
+   "number": 26928,
+   "title": "feat: SM120 (Blackwell Desktop) support for GLM-5.1 inference"
+  },
+  {
+   "repo": "sgl-project/sglang",
+   "number": 28691,
+   "title": "Add LFM2.5 embedding model support"
+  },
+  {
+   "repo": "sgl-project/sglang",
+   "number": 29016,
+   "title": "Add SM90 FP8 MegaMoE support for DeepSeek-V4"
+  },
+  {
+   "repo": "sgl-project/sglang",
+   "number": 29718,
+   "title": "[MoE] Make simulated expert routing support DP>1, and fuse into one triton kernel"
+  },
+  {
+   "repo": "sgl-project/sglang",
+   "number": 29735,
+   "title": "[GDN] Support FlashInfer GDN prefill with extra-buffer radix cache"
+  },
+  {
+   "repo": "sgl-project/sglang",
+   "number": 29799,
+   "title": "support rust sglang server"
+  },
+  {
+   "repo": "sgl-project/sglang",
+   "number": 30240,
+   "title": "Fix DeepSeek V4 loading with RunAI Model Streamer."
+  },
+  {
+   "repo": "sgl-project/sglang",
+   "number": 30256,
+   "title": "Add Mooncake tenant id support"
+  },
+  {
+   "repo": "sgl-project/sglang",
+   "number": 30482,
+   "title": "[4/N][CP] Support interleave strategy for cp v2"
+  },
+  {
+   "repo": "sgl-project/sglang",
+   "number": 30825,
+   "title": "[FullCG] Support chunked cached-prefix prefill"
+  },
+  {
+   "repo": "sgl-project/sglang",
+   "number": 30872,
+   "title": "Enable multimodal prefill BCG for VL and audio models"
+  },
+  {
+   "repo": "sgl-project/sglang",
+   "number": 30988,
+   "title": "[LoRA] Support LoRA under the breakable/full prefill CUDA graph"
+  },
+  {
+   "repo": "sgl-project/sglang",
+   "number": 31031,
+   "title": "[Intel GPU] Align XPU toml file for rust support"
+  },
+  {
+   "repo": "sgl-project/sglang",
+   "number": 31041,
+   "title": "[Spec] Add LFM2 and LFM2-MoE DSpark speculative decoding support"
+  },
+  {
+   "repo": "sgl-project/sglang",
+   "number": 31220,
+   "title": "Qwen3.5-MoE: support modelopt_fp4 checkpoints that quantize attention (+ load baked FP8 KV scales)"
+  },
+  {
+   "repo": "sgl-project/sglang",
+   "number": 31280,
+   "title": "[NPU] Acc fix for afmoe model introduced by topk refactor."
+  },
+  {
+   "repo": "sgl-project/sglang",
+   "number": 31320,
+   "title": "[NPU] [Diffusion] support distributed inference pipeline for GLM-Image "
+  },
+  {
+   "repo": "sgl-project/sglang",
+   "number": 31382,
+   "title": "[Qwen3.5][MTP] Support FlashInfer CuTe DSL for online NVFP4 draft MoE"
+  },
+  {
+   "repo": "sgl-project/sglang",
+   "number": 31538,
+   "title": "[diffusion] support resident layers for DiT"
+  },
+  {
+   "repo": "sgl-project/sglang",
+   "number": 31778,
+   "title": "Enhance NPU support, CUDA graph features, and bug fixes"
+  },
+  {
+   "repo": "sgl-project/sglang",
+   "number": 31840,
+   "title": "[Inkling] Add minimal DFLASH support"
+  },
+  {
+   "repo": "sgl-project/sglang",
+   "number": 31859,
+   "title": "Support fastsafetensors no-GDS loading and page-cache release"
+  },
+  {
+   "repo": "sgl-project/sglang",
+   "number": 31989,
+   "title": "feat: Support nvidia/MiniMax-M3-NVFP4"
+  },
+  {
+   "repo": "sgl-project/sglang",
+   "number": 32375,
+   "title": "model: support EmbeddingGemma"
+  },
+  {
+   "repo": "sgl-project/sglang",
+   "number": 32401,
+   "title": "[Model] Support standalone text-only Qwen3.5 checkpoints"
+  },
+  {
+   "repo": "sgl-project/sglang",
+   "number": 32457,
+   "title": "[Model] Serve bare Qwen3Model backbone natively as an embedding model"
+  },
+  {
+   "repo": "sgl-project/sglang",
+   "number": 32595,
+   "title": "Support SGLANG_SIMULATE_ACC_LEN for DFLASH"
+  },
+  {
+   "repo": "sgl-project/sglang",
+   "number": 32612,
+   "title": "Support DCP for Kimi Linear model"
+  },
+  {
+   "repo": "sgl-project/sglang",
+   "number": 32617,
+   "title": "[Kimi K3] Support parser auto-detection"
+  },
+  {
+   "repo": "sgl-project/sglang",
+   "number": 32625,
+   "title": "Fix attention backends for models with per-layer head counts (num_attention_heads_per_layer)"
+  },
+  {
+   "repo": "sgl-project/sglang",
+   "number": 32647,
+   "title": "[NPU] [DOC] update supported features on ascend npu"
+  },
+  {
+   "repo": "sgl-project/sglang",
+   "number": 32649,
+   "title": "add NPU GSM8K accuracy tests for 7 models"
+  },
+  {
+   "repo": "sgl-project/sglang",
+   "number": 32676,
+   "title": "support regex that compatible with python re lib however apply more l\u2026"
+  },
+  {
+   "repo": "sgl-project/sglang",
+   "number": 32692,
+   "title": "[gdn] support replayssm with extra buffer"
+  },
+  {
+   "repo": "sgl-project/sglang",
+   "number": 32733,
+   "title": "[CPU] Support FP8 KV cache"
+  },
+  {
+   "repo": "sgl-project/sglang",
+   "number": 32743,
+   "title": "[diffusion] fix: dual-DiT models crash with (1,)-placeholder weights after compile-time offload"
+  },
+  {
+   "repo": "sgl-project/sglang",
+   "number": 32818,
+   "title": "[Fix] Route asymmetric-KV models to fa4 on SM100 and pin MiMoV2 FP8 MoE to flashinfer_trtllm"
+  },
+  {
+   "repo": "sgl-project/sglang",
+   "number": 32828,
+   "title": "[Kimi] Support DCP + DSpark (ported from kimi-k3 branch)"
+  },
+  {
+   "repo": "sgl-project/sglang",
+   "number": 32835,
+   "title": "[docs] Rotate popular models on the landing pages, lead the Cookbook nav with Kimi"
+  },
+  {
+   "repo": "sgl-project/sglang",
+   "number": 32836,
+   "title": "Add diffusion cookbook model tags"
+  },
+  {
+   "repo": "sgl-project/sglang",
+   "number": 32837,
+   "title": "feat: support Kimi Linear PD disaggregation with DCP"
+  },
+  {
+   "repo": "sgl-project/sglang",
+   "number": 32914,
+   "title": "[fix]reject media input for text-only models"
+  },
+  {
+   "repo": "sgl-project/sglang",
+   "number": 32916,
+   "title": "[diffusion][docs] Fix Cosmos3 model sizes"
+  },
+  {
+   "repo": "sgl-project/sglang",
+   "number": 32971,
+   "title": "[unified-memory] Support MLA-hybrid-Mamba (Kimi-Linear) on the Triton backend"
+  },
+  {
+   "repo": "sgl-project/sglang",
+   "number": 33025,
+   "title": "[Kimi K3] Add reasoning, tool-call, and OpenAI serving support"
+  },
+  {
+   "repo": "sgl-project/sglang",
+   "number": 33037,
+   "title": "[Fix] Disable --enable-symm-mem under CUDA graphs on Kimi hybrid models"
+  },
+  {
+   "repo": "sgl-project/sglang",
+   "number": 33046,
+   "title": "[unified-memory] Support fa3, the default MLA backend on pre-Blackwell hosts"
+  },
+  {
+   "repo": "sgl-project/sglang",
+   "number": 33131,
+   "title": "feat(cookbook): add DGX Spark support for Inkling-Small"
+  },
+  {
+   "repo": "sgl-project/sglang",
+   "number": 33173,
+   "title": "docs: rewrite the runtime-context skill for the namespace-bag config model"
+  },
+  {
+   "repo": "sgl-project/sglang",
+   "number": 33237,
+   "title": "[FlashInfer V0.6.18] feat(dsv4): support --dsa-topk-backend flashinfer with fused top-k"
+  },
+  {
+   "repo": "sgl-project/sglang",
+   "number": 33926,
+   "title": "[DCP] Support decode context parallelism on the trtllm_mla decode path"
+  },
+  {
+   "repo": "sgl-project/sglang",
+   "number": 34602,
+   "title": "feat(unified-memory): dense KV views for uniform-row MHA/SWA models"
+  },
+  {
+   "repo": "sgl-project/sglang",
+   "number": 34639,
+   "title": "[BugFix] Allow model_loader_extra_config with remote_instance + modelexpress backend"
+  },
+  {
+   "repo": "sgl-project/sglang",
+   "number": 35154,
+   "title": "fix(unified-memory): four boot/correctness fixes on the hybrid model paths"
+  },
+  {
+   "repo": "sgl-project/sglang",
+   "number": 35177,
+   "title": "feat(unified-memory): three sub-pools for mamba + hybrid-SWA models"
+  },
+  {
+   "repo": "sgl-project/sglang",
+   "number": 35451,
+   "title": "[Feature] Support PP in full prefill CUDA graphs"
+  },
+  {
+   "repo": "sgl-project/sglang",
+   "number": 35453,
+   "title": "[Fix] Support LSE on the RadixAttention extra-kwargs graph path"
+  },
+  {
+   "repo": "sgl-project/sglang",
+   "number": 35613,
+   "title": "[diffusion] refactor: scope model-specific API parameters"
+  },
+  {
+   "repo": "sgl-project/sglang",
+   "number": 35628,
+   "title": "[AMD] Increase gfx950 DSA model indexer topk_transform kernel occupancy"
+  },
+  {
+   "repo": "sgl-project/sglang",
+   "number": 35739,
+   "title": "[multimodal] Fix NVFP4 diffusion models on sm_120 (RTX PRO 6000 / RTX 50xx)"
+  },
+  {
+   "repo": "sgl-project/sglang",
+   "number": 35751,
+   "title": "[XPU] Support GPT-OSS MXFP4 checkpoints on Intel XPU"
+  },
+  {
+   "repo": "sgl-project/sglang",
+   "number": 35877,
+   "title": "[Intel GPU] Add rust support to XPU docker images"
+  },
+  {
+   "repo": "sgl-project/sglang",
+   "number": 36248,
+   "title": "[PP] Support prefill CUDA graph proxy tensors"
+  },
+  {
+   "repo": "sgl-project/sglang",
+   "number": 36403,
+   "title": "Support speculative decoding with unified SWA memory"
+  },
+  {
+   "repo": "sgl-project/sglang",
+   "number": 36504,
+   "title": "[diffusion][kernel] support transposed residual-gate add"
+  },
+  {
+   "repo": "sgl-project/sglang",
+   "number": 36630,
+   "title": "[Sampling] Capture masks from sampler support"
+  },
+  {
+   "repo": "sgl-project/sglang",
+   "number": 36699,
+   "title": "xpu: record per-model metrics to jsonl for nightly dashboard"
+  },
+  {
+   "repo": "sgl-project/sglang",
+   "number": 36735,
+   "title": "[multimodal_gen] feat: support key masks on USPAttention's replicated-prefix path"
+  },
+  {
+   "repo": "sgl-project/sglang",
+   "number": 36755,
+   "title": "Fix DFLASH aux hidden-state capture on mHC models"
+  },
+  {
+   "repo": "sgl-project/sglang",
+   "number": 36784,
+   "title": "[Docs] Feature GLM-5.3-Flash in the popular-models banner"
+  },
+  {
+   "repo": "sgl-project/sglang",
+   "number": 36804,
+   "title": "[Cookbook] Add the Hy4-Preview model page (Tencent)"
+  },
+  {
+   "repo": "sgl-project/sglang",
+   "number": 36808,
+   "title": "[Cookbook] Hy4-Preview follow-ups: runtime-accurate recipes + released-model info"
+  },
+  {
+   "repo": "sgl-project/sglang",
+   "number": 36814,
+   "title": "xpu: move prefill-only model tests to the nightly-xpu-1-gpu grid"
+  },
+  {
+   "repo": "sgl-project/sglang",
+   "number": 36871,
+   "title": "[AMD] support gfx1250 on ROCM 10"
+  },
+  {
+   "repo": "sgl-project/sglang",
+   "number": 36890,
+   "title": "[Feature] Unified memory: support decode context parallelism for Kimi-Linear"
+  },
+  {
+   "repo": "sgl-project/sglang",
+   "number": 36940,
+   "title": "[NPU] [DOC] udpate supported features on NPU"
+  },
+  {
+   "repo": "sgl-project/sglang",
+   "number": 36994,
+   "title": "[Diffusion] Rollout API: support return only SDE latents"
+  },
+  {
+   "repo": "sgl-project/sglang",
+   "number": 37087,
+   "title": "[Config] Round 5.2: the per-model declarations get their own modules",
+   "model_support": false,
+   "note": "config refactor"
+  },
+  {
+   "repo": "sgl-project/sglang",
+   "number": 37091,
+   "title": "[Unified Cache][1/N]: Support cache contract for external linker"
+  },
+  {
+   "repo": "sgl-project/sglang",
+   "number": 37193,
+   "title": "Xpu/weekly simple model enablement 2026 08 30",
+   "model_support": false,
+   "note": "XPU weekly enablement, no new arch"
+  },
+  {
+   "repo": "sgl-project/sglang",
+   "number": 37332,
+   "title": "[Diffusion][minimax-h3] Add SM120 support for SubBlock sparse attention"
+  },
+  {
+   "repo": "sgl-project/sglang",
+   "number": 37424,
+   "title": "[HiCache] Buffer mode support sidecar pool"
+  },
+  {
+   "repo": "sgl-project/sglang",
+   "number": 37469,
+   "title": "[bench] Support real-traffic replay with early-stop-aware steady-state metrics in bench_one_batch_server"
+  },
+  {
+   "repo": "sgl-project/sglang",
+   "number": 37480,
+   "title": "[diffusion] model: support FastH3 (4-step VSA-distilled MiniMax-H3) with a VSA-H3 attention backend"
+  },
+  {
+   "repo": "sgl-project/sglang",
+   "number": 37484,
+   "title": "Temporarily Remove GLM-5.3 Flash prefill CP support"
+  },
+  {
+   "repo": "sgl-project/sglang",
+   "number": 37487,
+   "title": "Temporarily Remove GLM-5.3 Flash decode CP support"
+  },
+  {
+   "repo": "sgl-project/sglang",
+   "number": 37623,
+   "title": "fix(benchmark): support Glm4MoeLite in fused MoE tuner"
+  },
+  {
+   "repo": "sgl-project/sglang",
+   "number": 37654,
+   "title": "[Model] Add native IFM K2 Horizon serving support",
+   "model_support": true,
+   "note": "adds EntryClass XllmForCausalLM/K2HorizonForCausalLM"
+  },
+  {
+   "repo": "sgl-project/sglang",
+   "number": 37667,
+   "title": "[Speculative Decoding] Add native UNO serving support"
+  },
+  {
+   "repo": "sgl-project/sglang",
+   "number": 37693,
+   "title": "[Feature] Unified memory: support decode context parallelism for the trtllm_mla family"
+  },
+  {
+   "repo": "sgl-project/sglang",
+   "number": 37723,
+   "title": "[Docs] Update K2 Horizon MoE model names"
+  },
+  {
+   "repo": "sgl-project/sglang",
+   "number": 37750,
+   "title": "[Docs] Refresh TPU model list and link cookbooks",
+   "model_support": false,
+   "note": "docs"
+  },
+  {
+   "repo": "sgl-project/sglang",
+   "number": 37799,
+   "title": "[NPU] [DOC] Refresh supported models and features on NPU"
+  },
+  {
+   "repo": "sgl-project/sglang",
+   "number": 37825,
+   "title": "[Bugfix] Support K2 Horizon MoE without MoVA",
+   "model_support": false,
+   "note": "bugfix on an already-supported arch"
+  },
+  {
+   "repo": "sgl-project/sglang",
+   "number": 37890,
+   "title": "[Diffusion] Improve BCG warmup frame-count diagnostics for video models"
+  },
+  {
+   "repo": "sgl-project/sglang",
+   "number": 37954,
+   "title": "fix(qwen3_5): let the GDN gated norm follow the model's device"
+  },
+  {
+   "repo": "sgl-project/sglang",
+   "number": 37989,
+   "title": "[Docs] Document --retraction-policy, --return-hidden-states-mode, --language-model-only"
+  },
+  {
+   "repo": "sgl-project/sglang",
+   "number": 38011,
+   "title": "[CI][NPU] Remove model tests from PR-test pipeline"
+  },
+  {
+   "repo": "vllm-project/vllm",
+   "number": 38293,
+   "title": "Fix: FusedMoE AssertionError with Speculative Decoding on Quark-Quantized Models"
+  },
+  {
+   "repo": "vllm-project/vllm",
+   "number": 41602,
+   "title": "[Bugfix] Fix /wake_up crash on hybrid models (Mamba/DeltaNet)"
+  },
+  {
+   "repo": "vllm-project/vllm",
+   "number": 42669,
+   "title": "[Attention] Integrate FlashAttention 4 SM100 headdim 256 support"
+  },
+  {
+   "repo": "vllm-project/vllm",
+   "number": 45241,
+   "title": "[Frontend] Add site-packages support for reasoning/tool parser plugins"
+  },
+  {
+   "repo": "vllm-project/vllm",
+   "number": 47124,
+   "title": "[Quantization][Autoround][XPU] Add W4A16(moe) / MXFP4(linear/moe) Support"
+  },
+  {
+   "repo": "vllm-project/vllm",
+   "number": 47189,
+   "title": "[Frontend] Cohere chat v2 api support"
+  },
+  {
+   "repo": "vllm-project/vllm",
+   "number": 47207,
+   "title": "[ROCm]Migrating Deepseek V3.2 to vllm/models/deepseek_v32/"
+  },
+  {
+   "repo": "vllm-project/vllm",
+   "number": 47434,
+   "title": "[AutoRound] Support AutoRound Format Block-Wise FP8 in vLLM"
+  },
+  {
+   "repo": "vllm-project/vllm",
+   "number": 47514,
+   "title": "[Quantization][INC]Add MXFP8 Linear Support"
+  },
+  {
+   "repo": "vllm-project/vllm",
+   "number": 47625,
+   "title": "[MM][CG] Support ViT full CUDA graph for Idefics3 and SmolVLM"
+  },
+  {
+   "repo": "vllm-project/vllm",
+   "number": 48257,
+   "title": "[ROCm] [CI] Support cached K/V (key/value=None) in Triton prefix-prefill"
+  },
+  {
+   "repo": "vllm-project/vllm",
+   "number": 48543,
+   "title": "[Frontend] Add diarized_json support for MOSS-Transcribe-Diarize"
+  },
+  {
+   "repo": "vllm-project/vllm",
+   "number": 48584,
+   "title": "[Rust Frontend] Add support for `truncate_prompt_tokens` and `truncation_side`"
+  },
+  {
+   "repo": "vllm-project/vllm",
+   "number": 48791,
+   "title": "[ModelRunner V2] Enable sequence pooling for embedding and classification models"
+  },
+  {
+   "repo": "vllm-project/vllm",
+   "number": 48841,
+   "title": "[ROCm] [Model] Enable TML inkling"
+  },
+  {
+   "repo": "vllm-project/vllm",
+   "number": 48876,
+   "title": "[Model] Add Inkling compressed-tensors dynamic FP8 support"
+  },
+  {
+   "repo": "vllm-project/vllm",
+   "number": 48892,
+   "title": "[Model Runner V2][Spec Decode] Add multi-layer MTP speculator"
+  },
+  {
+   "repo": "vllm-project/vllm",
+   "number": 48912,
+   "title": "[Model] Enable EVS for Qwen3.5"
+  },
+  {
+   "repo": "vllm-project/vllm",
+   "number": 49291,
+   "title": "[Kernel][Mamba] Fused-kernel support for align-mode DS-conv state migration with num_accepted_tokens > 1"
+  },
+  {
+   "repo": "vllm-project/vllm",
+   "number": 49331,
+   "title": "[ModelRunner V2] Support encoder-only attention"
+  },
+  {
+   "repo": "vllm-project/vllm",
+   "number": 49491,
+   "title": "[Rust Frontend][gRPC] Add server and model discovery"
+  },
+  {
+   "repo": "vllm-project/vllm",
+   "number": 49498,
+   "title": "[Frontend] Add cache_salt support to Anthropic Messages API"
+  },
+  {
+   "repo": "vllm-project/vllm",
+   "number": 49502,
+   "title": "[3/N][Core][KV Connector] Support reliable partial-tail KV offload for sub-block prompts"
+  },
+  {
+   "repo": "vllm-project/vllm",
+   "number": 49604,
+   "title": "[Rust Frontend] Add --limit-mm-per-prompt support"
+  },
+  {
+   "repo": "vllm-project/vllm",
+   "number": 49612,
+   "title": "[KV Connector] Support NIXL heterogeneous P/D block sizes for hybrid models"
+  },
+  {
+   "repo": "vllm-project/vllm",
+   "number": 49659,
+   "title": "[Perf] Skip ll_bf16 router GEMM warmup for non-MoE models"
+  },
+  {
+   "repo": "vllm-project/vllm",
+   "number": 49750,
+   "title": "[Perf] RMSNorm uncontiguous support, 1.2~3.1x kernel performance improvement"
+  },
+  {
+   "repo": "vllm-project/vllm",
+   "number": 49751,
+   "title": "[BugFix][MRV2] Don't create dummy requests longer than `max_model_len`"
+  },
+  {
+   "repo": "vllm-project/vllm",
+   "number": 49762,
+   "title": "[KV Connector] Support NIXL P/D for hybrid MLA+SSM models "
+  },
+  {
+   "repo": "vllm-project/vllm",
+   "number": 49869,
+   "title": "[Model] Fix GLM-OCR MTP weight loading",
+   "model_support": false,
+   "note": "weight-loading fix"
+  },
+  {
+   "repo": "vllm-project/vllm",
+   "number": 49936,
+   "title": "[Doc] Document FP8 GEMM kernel selection and Blackwell support"
+  },
+  {
+   "repo": "vllm-project/vllm",
+   "number": 49944,
+   "title": "[Rust Frontend] Keep `--max-model-len` engine-owned"
+  },
+  {
+   "repo": "vllm-project/vllm",
+   "number": 49957,
+   "title": "Improve Transformers modelling backend `fx` tracer"
+  },
+  {
+   "repo": "vllm-project/vllm",
+   "number": 49982,
+   "title": "Fix MLA padding and grouped topk routing in the Transformers modelling backend"
+  },
+  {
+   "repo": "vllm-project/vllm",
+   "number": 49987,
+   "title": "Fix MQA with tensor parallelism on transformers modeling backend  "
+  },
+  {
+   "repo": "vllm-project/vllm",
+   "number": 50000,
+   "title": "[New model] Kimi K3",
+   "model_support": true,
+   "note": "Kimi K3 umbrella PR"
+  },
+  {
+   "repo": "vllm-project/vllm",
+   "number": 50073,
+   "title": "[Bugfix] Fix multi-modal support on CPU MRV2"
+  },
+  {
+   "repo": "vllm-project/vllm",
+   "number": 50089,
+   "title": "[Model] Add Kimi K3 support: model files and kernels [1/N]",
+   "model_support": true,
+   "note": "Kimi K3 model files + kernels"
+  },
+  {
+   "repo": "vllm-project/vllm",
+   "number": 50093,
+   "title": "[Model] Add Kimi K3 support: Python frontend [2/2]"
+  },
+  {
+   "repo": "vllm-project/vllm",
+   "number": 50104,
+   "title": "[Model] Add Kimi K3 support: Rust frontend [1/2]"
+  },
+  {
+   "repo": "vllm-project/vllm",
+   "number": 50131,
+   "title": "[Bugfix] Add missing `vllm/models/kimi_k3/__init__.py`"
+  },
+  {
+   "repo": "vllm-project/vllm",
+   "number": 50210,
+   "title": "[Model] Support Qwen3.5 text-only dense and MoE models",
+   "model_support": true,
+   "note": "Qwen3.5 text-only dense and MoE"
+  },
+  {
+   "repo": "vllm-project/vllm",
+   "number": 50293,
+   "title": "[Model Runner V2] Enable encoder token classification"
+  },
+  {
+   "repo": "vllm-project/vllm",
+   "number": 50352,
+   "title": "[Bugfix][Model] Reject encoder-backbone jina-embeddings-v5 checkpoints with a clear error (fixes #50337)"
+  },
+  {
+   "repo": "vllm-project/vllm",
+   "number": 50397,
+   "title": "docs(security): document Ray cluster trust model and env var propagation"
+  },
+  {
+   "repo": "vllm-project/vllm",
+   "number": 50458,
+   "title": "[Kimi K3 Bug] Fix deepgemm support for kimi k3"
+  },
+  {
+   "repo": "vllm-project/vllm",
+   "number": 50500,
+   "title": "[Compressed-Tensors] Support Kimi-K3 quantized models"
+  },
+  {
+   "repo": "vllm-project/vllm",
+   "number": 50571,
+   "title": "[Doc] Add BgeM3EmbeddingModel to embedding supported models"
+  },
+  {
+   "repo": "vllm-project/vllm",
+   "number": 50574,
+   "title": "[Model Runner V2] Enable encoder token embedding"
+  },
+  {
+   "repo": "vllm-project/vllm",
+   "number": 50608,
+   "title": "Add @hongxiayang as code owner for amd specific model files and rocm docs"
+  },
+  {
+   "repo": "vllm-project/vllm",
+   "number": 50611,
+   "title": "[Nixl][PD] DCP support for MLA models  "
+  },
+  {
+   "repo": "vllm-project/vllm",
+   "number": 50642,
+   "title": "[Bugfix][Parser] Forward model_config to nested reasoning parsers"
+  },
+  {
+   "repo": "vllm-project/vllm",
+   "number": 50673,
+   "title": "[model registry] some simple typos"
+  },
+  {
+   "repo": "vllm-project/vllm",
+   "number": 50945,
+   "title": "[1/2][Model Runner V2] DBO support, eager mode"
+  },
+  {
+   "repo": "vllm-project/vllm",
+   "number": 51248,
+   "title": "[Quantization][Autoround][XPU] Support AutoRound MXFP8 MoE models"
+  },
+  {
+   "repo": "vllm-project/vllm",
+   "number": 51392,
+   "title": "[Quantization] Support online quantization with partially pre-quantized checkpoints"
+  },
+  {
+   "repo": "vllm-project/vllm",
+   "number": 51705,
+   "title": "[ROCm][MLA][DCP] Support causal multi-token verification"
+  },
+  {
+   "repo": "vllm-project/vllm",
+   "number": 52168,
+   "title": "[Bugfix] Restore multimodal support on the plain \"vllm\" throughput backend"
+  },
+  {
+   "repo": "vllm-project/vllm",
+   "number": 52191,
+   "title": "[CPU] Support FP16/BF16 persisted GDN state on AMX"
+  },
+  {
+   "repo": "vllm-project/vllm",
+   "number": 52358,
+   "title": "[MRV2][Metrics] Support `CUDAGraphStat` in MRV2"
+  },
+  {
+   "repo": "vllm-project/vllm",
+   "number": 53129,
+   "title": "[KV Connector] Support heterogeneous TP sharing in Mooncake Store Connector"
+  },
+  {
+   "repo": "vllm-project/vllm",
+   "number": 53324,
+   "title": "[KV Connector] Support MooncakeStore with hybrid DCP prefix caching"
+  },
+  {
+   "repo": "vllm-project/vllm",
+   "number": 53388,
+   "title": "[Feature][Spec] Support disabling trailing prefix-cache block dropping"
+  },
+  {
+   "repo": "vllm-project/vllm",
+   "number": 53507,
+   "title": "[Bugfix][Models] Register sleep-managed runtime buffers"
+  },
+  {
+   "repo": "vllm-project/vllm",
+   "number": 53784,
+   "title": "[Distributed] Support pre-shared ncclUniqueId rendezvous for weight transfer"
+  },
+  {
+   "repo": "vllm-project/vllm",
+   "number": 53829,
+   "title": "[Bugfix][Model] Fix CohereASR streaming audio-token estimate (unit + subsampling)"
+  },
+  {
+   "repo": "vllm-project/vllm",
+   "number": 53870,
+   "title": "[Bugfix] Support MCP SDK 2.x tool input schemas"
+  },
+  {
+   "repo": "vllm-project/vllm",
+   "number": 53896,
+   "title": "[Model] Support Qwen3.8-Flash-Next",
+   "model_support": true,
+   "note": "adds Qwen4Exp* registry keys"
+  },
+  {
+   "repo": "vllm-project/vllm",
+   "number": 53906,
+   "title": "[Model] add GLM-5.3-Flash support",
+   "model_support": true,
+   "note": "adds Glm5Next* registry keys"
+  },
+  {
+   "repo": "vllm-project/vllm",
+   "number": 53921,
+   "title": "[CPU] add CPU support for Voxtral"
+  },
+  {
+   "repo": "vllm-project/vllm",
+   "number": 54052,
+   "title": "[Bugfix][Model] Fix GraniteMoeHybrid per-expert quantized weight loading"
+  },
+  {
+   "repo": "vllm-project/vllm",
+   "number": 54079,
+   "title": "[Mypy] Fix mypy typing for model interfaces and H/I models"
+  },
+  {
+   "repo": "vllm-project/vllm",
+   "number": 54130,
+   "title": "[Mypy] Fix typing for J models"
+  },
+  {
+   "repo": "vllm-project/vllm",
+   "number": 54160,
+   "title": "[Hy4] support Hy4-preview model",
+   "model_support": true,
+   "note": "adds HYV4ForCausalLM / HYV4MTPModel"
+  },
+  {
+   "repo": "vllm-project/vllm",
+   "number": 54162,
+   "title": "[Bugfix][MRV2] Release model and KV cache on in-process engine shutdown"
+  },
+  {
+   "repo": "vllm-project/vllm",
+   "number": 54169,
+   "title": "[Mypy] Fix mypy typing for P models"
+  },
+  {
+   "repo": "vllm-project/vllm",
+   "number": 54177,
+   "title": "[Mypy] Fix mypy typing for L models"
+  },
+  {
+   "repo": "vllm-project/vllm",
+   "number": 54239,
+   "title": "[Model] Support speculative decoding method for PLaMo3"
+  },
+  {
+   "repo": "vllm-project/vllm",
+   "number": 54242,
+   "title": "[Frontend] Add video embeds input support"
+  },
+  {
+   "repo": "vllm-project/vllm",
+   "number": 54262,
+   "title": "[Mypy] Fix typing for M models",
+   "model_support": false,
+   "note": "mypy"
+  },
+  {
+   "repo": "vllm-project/vllm",
+   "number": 54282,
+   "title": "[Bugfix][Model Runner V2][Spec Decode] Decouple the draft's gumbel noise stream from the target's"
+  },
+  {
+   "repo": "vllm-project/vllm",
+   "number": 54346,
+   "title": "[Bugfix][Multimodal] Release Qwen2.5-VL and Qwen3-VL RoPE caches with the model"
+  },
+  {
+   "repo": "vllm-project/vllm",
+   "number": 54380,
+   "title": "[Model] Honor cap_pixels_per_frame in Qwen3-VL memory profiling",
+   "model_support": false,
+   "note": "[Model] tag but only a memory-profiling tweak"
+  },
+  {
+   "repo": "vllm-project/vllm",
+   "number": 54533,
+   "title": "[Bugfix] Support Sentence Transformers 5.4+ serialized configs"
+  },
+  {
+   "repo": "vllm-project/vllm",
+   "number": 54566,
+   "title": "[New model][Multimodal] Add DeepSeek-V4-Flash-Vision-Exp support",
+   "model_support": true,
+   "note": "adds DeepseekV4ForConditionalGeneration"
+  },
+  {
+   "repo": "vllm-project/vllm",
+   "number": 54573,
+   "title": "[Fix] Fix FSE compatibility detection for Quark-produced models"
+  },
+  {
+   "repo": "vllm-project/vllm",
+   "number": 54752,
+   "title": "[CI] Shard distributed model jobs above the 24h P90 threshold"
+  },
+  {
+   "repo": "vllm-project/vllm",
+   "number": 54753,
+   "title": "[CI] Shard basic model initialization tests",
+   "model_support": false,
+   "note": "CI sharding"
+  },
+  {
+   "repo": "vllm-project/vllm",
+   "number": 54813,
+   "title": "[Rust Frontend] Enable Qwen4-exp multimodal support"
+  },
+  {
+   "repo": "vllm-project/vllm",
+   "number": 54826,
+   "title": "[Bugfix][Spec Decode] Honour the draft's attention_backend on Model Runner V2"
+  },
+  {
+   "repo": "vllm-project/vllm",
+   "number": 54837,
+   "title": "[Rust Frontend] Support `--lora-modules` for static adapter loading"
+  },
+  {
+   "repo": "vllm-project/vllm",
+   "number": 54856,
+   "title": "[Model Runner V2][Spec Decode] Skip DP sync for all speculator uniform decodes"
+  },
+  {
+   "repo": "vllm-project/vllm",
+   "number": 54882,
+   "title": "[Bugfix][Model] Fix FP8 PLE loading in mixed ModelOpt checkpoints",
+   "model_support": false,
+   "note": "bugfix"
+  },
+  {
+   "repo": "vllm-project/vllm",
+   "number": 54901,
+   "title": "[Perf][Model Runner V2] Compact sampling masks on GPU instead of unpacking the full-vocab bitmask on CPU"
+  },
+  {
+   "repo": "vllm-project/vllm",
+   "number": 54969,
+   "title": "[Bugfix][Model] Enable torch.compile for StableLM"
+  },
+  {
+   "repo": "vllm-project/vllm",
+   "number": 54982,
+   "title": "feat: Add support for reasoning_token_count to reasoning parser"
+  },
+  {
+   "repo": "vllm-project/vllm",
+   "number": 54999,
+   "title": "[Rust Frontend] Add support for TLS in render server"
+  },
+  {
+   "repo": "vllm-project/vllm",
+   "number": 55063,
+   "title": "[Model] Add K2-Horizon model support",
+   "model_support": true,
+   "note": "adds registry key K2HorizonForCausalLM"
+  },
+  {
+   "repo": "vllm-project/vllm",
+   "number": 55288,
+   "title": "[Bugfix] Fix double BOS in LLM.chat() for multimodal models"
+  },
+  {
+   "repo": "sgl-project/sglang",
+   "number": 33561,
+   "title": "[Model] Support Ling-3.0-flash (BailingMoeV3) ",
+   "model_support": true,
+   "note": "adds class BailingMoeV3ForCausalLM",
+   "outside_recorded_window": true
+  },
+  {
+   "repo": "sgl-project/sglang",
+   "number": 34859,
+   "title": "Qwen3.8-27B Model Support",
+   "model_support": true,
+   "note": "untagged '<name> Model Support' style",
+   "outside_recorded_window": true
+  },
+  {
+   "repo": "sgl-project/sglang",
+   "number": 35963,
+   "title": "Add Spark3 Model",
+   "model_support": true,
+   "note": "untagged 'Add <name> Model' style",
+   "outside_recorded_window": true
+  },
+  {
+   "repo": "sgl-project/sglang",
+   "number": 34262,
+   "title": "[Feature] Add Muse Glimmer model support",
+   "model_support": true,
+   "note": "model PR under a non-[Model] tag",
+   "outside_recorded_window": true
+  },
+  {
+   "repo": "vllm-project/vllm",
+   "number": 53615,
+   "title": "[Model] Migrate FlexOlmo, Olmo3 and Hunyuan V1/VL to the Transformers modeling backend",
+   "model_support": false,
+   "note": "migration",
+   "outside_recorded_window": true
+  },
+  {
+   "repo": "vllm-project/vllm",
+   "number": 23241,
+   "title": "[New Model] Add Seed-Oss model",
+   "model_support": true,
+   "note": "classic pre-2026 [New Model] style",
+   "outside_recorded_window": true
+  },
+  {
+   "repo": "vllm-project/vllm",
+   "number": 14119,
+   "title": "[Model] New model support for Phi-4-multimodal-instruct",
+   "model_support": true,
+   "note": "classic 'New model support for X' style",
+   "outside_recorded_window": true
+  },
+  {
+   "repo": "vllm-project/vllm",
+   "number": 99999,
+   "title": "[Model] Add KimiK3ForCausalLM",
+   "model_support": true,
+   "note": "SYNTHETIC: the idealized title PLAN.md assumes; no real PR looks like this",
+   "outside_recorded_window": true
+  }
+ ]
+}

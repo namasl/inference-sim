@@ -183,9 +183,10 @@ Extract candidate architecture names from PR titles and changed filenames (e.g. 
 `kimi_k3.py` and a title naming `KimiK3ForCausalLM`). Emit one Signal per (repo, PR),
 `source` = `"vllm"` or `"sglang"`, `config=None`, `urls={"pr": ...}`.
 
-**Acceptance:** from fixtures, extracts `arch_ids` from a realistic `[Model] Add
-KimiK3ForCausalLM` PR title; handles 403 rate limits by returning partial results;
-`raw_ref` carries the PR number.
+**Acceptance:** from fixtures, extracts `arch_ids` from real PR **patch content** (registry
+lines, `EntryClass` footers, added `class XxxForCausalLM`) — NOT from titles, which do not
+carry architecture names (see addendum 10); handles 403 rate limits by returning partial
+results; `raw_ref` carries the PR number.
 
 ### E — InferenceX connector (`archwatch/connectors/inferencex.py`)
 
@@ -368,3 +369,45 @@ original plan left ambiguous. They are binding.
 
 6. **`bucket` in front matter is `0` or `null` only.** Buckets 1-3 are stage-2 judgements and
    are never guessed by stage 1.
+
+## Contract addenda, round 2 (found during wave 2 — binding)
+
+7. **Curated sources are exempt from the `no_config_uncorroborated` suppressor.** Framework and
+   InferenceX signals *always* carry `config=None` — a PR or a benchmark entry is not a model
+   repo. As originally worded the suppressor therefore dropped every framework-only candidate,
+   making **T2 incapable of ever firing** — deleting the purest zero-day signal we have (a vLLM
+   PR means someone already decoded the architecture and wrote reference code). The suppressor
+   exists to drop HuggingFace junk, so it applies **only to HF-only candidates**. Any signal from
+   `vllm`, `sglang`, or `inferencex` exempts the candidate: a person chose to write that code or
+   run that benchmark, and that choice is the evidence.
+
+8. **`Signal.org` is lowercase.** `FRONTIER_ORGS` is all lowercase. Connectors emit lowercase,
+   and `novelty.py` additionally lowercases at the comparison point, so T3/S2 cannot silently
+   miss `Qwen` vs `qwen`.
+
+9. **`arch_ids == []` from a curated source is normal**, not malformed. Umbrella PRs and
+   follow-ups carrying only a registry key legitimately yield no architecture name; they route
+   through the alias path on `display_name`.
+
+10. **Architecture names come from patch content, not PR titles.** This corrects component D's
+    acceptance criterion, which was written on a false assumption. Measured against both repos'
+    full merged history: a GitHub search for `ForCausalLM in:title` returns **zero hits**. Real
+    titles carry marketing names whose mapping to the class name is not derivable —
+    `[Model] Support Qwen3.8-Flash-Next` yields `Qwen4ExpForCausalLM`;
+    `[Model] add GLM-5.3-Flash support` yields `Glm5NextForCausalLM`;
+    `[Model] Add native IFM K2 Horizon serving support` yields two unrelated names. Filenames are
+    also insufficient (`k2_horizon.py` would require guessing the suffix). The reliable sources
+    are vLLM's added registry lines, SGLang's `EntryClass = [...]` footers, and `+class
+    XxxForCausalLM(` in added modules — **6/6 on genuine model-support PRs**. Titles serve only
+    as a candidate gate; filenames only as a weak alias hint.
+
+11. **New vLLM architectures land in `vllm/models/<name>/`**, not only
+    `vllm/model_executor/models/<mod>.py`. Both prefixes must be watched; the registry file
+    itself has not moved.
+
+12. **Connectors accept an optional `until` bound** (constructor arg; the `poll(since)` protocol
+    is unchanged). Component J's historical replay is impossible without it, and recorded
+    fixtures drift without it.
+
+13. **GitHub's `/search/issues` is limited to 30 requests/minute** (against 5,000/hr for core).
+    The framework connector spends ~4 per poll, but **H must never poll in a loop.**

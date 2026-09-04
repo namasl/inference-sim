@@ -1,0 +1,100 @@
+{
+ "_meta": {
+  "repos": [
+   "vllm-project/vllm"
+  ],
+  "since": "2026-02-01T00:00:00Z",
+  "synthetic": true,
+  "until": "2026-02-15T00:00:00Z",
+  "what": "SYNTHETIC cassette. PLAN.md's acceptance criterion assumes a PR titled '[Model] Add KimiK3ForCausalLM'; no such real title exists (see observed_titles.json). This hand-built cassette exercises that idealized path end to end: arch name in the title AND in a registry.py diff."
+ },
+ "requests": {
+  "https://api.github.com/repos/vllm-project/vllm/commits?page=1&path=vllm%2Fmodel_executor%2Fmodels%2Fregistry.py&per_page=100&since=2026-02-01T00%3A00%3A00Z&until=2026-02-15T00%3A00%3A00Z": {
+   "headers": {},
+   "json": [],
+   "status": 200
+  },
+  "https://api.github.com/repos/vllm-project/vllm/pulls/99999/files?page=1&per_page=100": {
+   "headers": {},
+   "json": [
+    {
+     "additions": 1,
+     "changes": 1,
+     "deletions": 0,
+     "filename": "vllm/model_executor/models/registry.py",
+     "patch": "@@ -300,6 +300,7 @@ _TEXT_GENERATION_MODELS = {\n     \"JambaForCausalLM\": (\"jamba\", \"JambaForCausalLM\"),\n+    \"KimiK3ForCausalLM\": (\"kimi_k3\", \"KimiK3ForCausalLM\"),\n     \"LlamaForCausalLM\": (\"llama\", \"LlamaForCausalLM\"),",
+     "status": "modified"
+    },
+    {
+     "additions": 900,
+     "changes": 900,
+     "deletions": 0,
+     "filename": "vllm/model_executor/models/kimi_k3.py",
+     "patch": "@@ -0,0 +1,900 @@\n+class KimiK3Attention(nn.Module):\n+class KimiK3ForCausalLM(nn.Module, SupportsPP):\n",
+     "status": "added"
+    },
+    {
+     "additions": 1,
+     "changes": 1,
+     "deletions": 0,
+     "filename": "tests/models/registry.py",
+     "patch": "@@ -100,6 +100,7 @@ _TEXT_GENERATION_EXAMPLE_MODELS = {\n+    \"KimiK3ForCausalLM\": _HfExamplesInfo(\"moonshotai/Kimi-K3-Instruct\"),\n",
+     "status": "modified"
+    },
+    {
+     "additions": 1,
+     "changes": 1,
+     "deletions": 0,
+     "filename": "docs/models/supported_models.md",
+     "patch": "@@ -1 +1,2 @@\n+| KimiK3ForCausalLM |",
+     "status": "modified"
+    }
+   ],
+   "status": 200
+  },
+  "https://api.github.com/search/issues?order=desc&page=1&per_page=100&q=repo%3Avllm-project%2Fvllm+is%3Apr+is%3Amerged+merged%3A2026-02-01..2026-02-15+model+in%3Atitle&sort=updated": {
+   "headers": {},
+   "json": {
+    "incomplete_results": false,
+    "items": [
+     {
+      "body": "Adds day-0 support for https://huggingface.co/moonshotai/Kimi-K3-Instruct (architectures: KimiK3ForCausalLM, KimiK3MTPModel).",
+      "closed_at": "2026-02-10T09:00:00Z",
+      "html_url": "https://github.com/vllm-project/vllm/pull/99999",
+      "merged_at": "2026-02-10T09:00:00Z",
+      "number": 99999,
+      "state": "closed",
+      "title": "[Model] Add KimiK3ForCausalLM",
+      "user": {
+       "login": "example-dev"
+      }
+     }
+    ],
+    "total_count": 1
+   },
+   "status": 200
+  },
+  "https://api.github.com/search/issues?order=desc&page=1&per_page=100&q=repo%3Avllm-project%2Fvllm+is%3Apr+is%3Amerged+merged%3A2026-02-01..2026-02-15+support+in%3Atitle&sort=updated": {
+   "headers": {},
+   "json": {
+    "incomplete_results": false,
+    "items": [
+     {
+      "body": "Adds day-0 support for https://huggingface.co/moonshotai/Kimi-K3-Instruct (architectures: KimiK3ForCausalLM, KimiK3MTPModel).",
+      "closed_at": "2026-02-10T09:00:00Z",
+      "html_url": "https://github.com/vllm-project/vllm/pull/99999",
+      "merged_at": "2026-02-10T09:00:00Z",
+      "number": 99999,
+      "state": "closed",
+      "title": "[Model] Add KimiK3ForCausalLM",
+      "user": {
+       "login": "example-dev"
+      }
+     }
+    ],
+    "total_count": 1
+   },
+   "status": 200
+  }
+ }
+}
