@@ -26,6 +26,7 @@ from archwatch.novelty import (
     TRIGGER_IDS,
     LmShapeEvidence,
     MIN_FAMILY_KEY_LEN,
+    MIN_UNPARSED_FIELDS_FOR_KNOWN_ARCH_T1,
     _strength,
     coherent_arch_ids,
     evaluate,
@@ -33,7 +34,9 @@ from archwatch.novelty import (
     join_signals,
     lm_shape_evidence,
     normalize_family_key,
+    identifying_model_ids,
     normalize_repo_key,
+    publishing_model_ids,
     signal_edges,
     matched_gaps,
     normalize_arch_key,
@@ -337,10 +340,12 @@ def test_an_org_qualified_display_name_does_not_match_a_bare_one_by_family():
 
 
 def test_repo_edge_joins_an_org_qualified_name_to_a_bare_one():
+    """Both sources here name their own subject — an HF repo and a benchmarked
+    checkpoint — so both contribute repo edges."""
     cands = join_signals(
         [
-            sig("vllm", display_name="MiniMaxAI/MiniMax-M3",
-                model_ids=("MiniMaxAI/MiniMax-M3",), raw_ref="1"),
+            sig("hf", display_name="MiniMaxAI/MiniMax-M3",
+                model_ids=("MiniMaxAI/MiniMax-M3",)),
             sig("inferencex", display_name="MiniMax-M3",
                 model_ids=("MiniMaxAI/MiniMax-M3",), raw_ref="2"),
         ]
@@ -1183,26 +1188,30 @@ def test_an_hf_architectures_spelling_outranks_a_framework_mined_name():
     """architectures[] is ground truth; a name mined from a patch is a human's reading
     of a diff. The tier must beat alphabetical order, so the HF spelling is chosen here
     even though the mined name sorts first."""
+    # They meet on the family edge (both reduce to "zzzthing"), because a framework PR
+    # no longer contributes repo edges. The framework spelling sorts first, so a plain
+    # lexicographic rule would pick it.
     cands = join_signals(
         [
-            sig("vllm", arch="AaaMinedName", model_ids=("org/thing",), raw_ref="1"),
-            sig("hf", arch="ZzzRealClassName", model_ids=("org/thing",)),
+            sig("vllm", arch="ZzzThingMTP", raw_ref="1"),
+            sig("hf", arch="zzzthingforcausallm", model_ids=("org/thing",)),
         ]
     )
     assert len(cands) == 1, "must actually merge for the tier to matter"
-    assert cands[0].arch_id == "ZzzRealClassName"
+    assert min(["ZzzThingMTP", "zzzthingforcausallm"]) == "ZzzThingMTP"
+    assert cands[0].arch_id == "zzzthingforcausallm"
     assert ALIAS_JOIN_MARKER not in cands[0].triggers
 
 
 def test_a_framework_mined_name_beats_a_display_name():
     cands = join_signals(
         [
-            sig("inferencex", display_name="Zzz-Model", model_ids=("org/thing",)),
-            sig("vllm", arch="AaaMinedName", model_ids=("org/thing",), raw_ref="1"),
+            sig("inferencex", display_name="Zzz-Thing", model_ids=("org/thing",)),
+            sig("vllm", arch="ZzzThingForCausalLM", raw_ref="1"),
         ]
     )
     assert len(cands) == 1
-    assert cands[0].arch_id == "AaaMinedName"
+    assert cands[0].arch_id == "ZzzThingForCausalLM"
     assert ALIAS_JOIN_MARKER not in cands[0].triggers
 
 
@@ -1254,15 +1263,19 @@ def test_known_arch_with_an_inert_config_is_suppressed_under_both_settings():
     on = run(signals, conf=cfg(recheck_known_architectures=True))
     assert on.passed == []
     assert reasons(on) == ["known_architecture_nothing_new"]
-    assert "no unparsed field and no silent-misread finding" in on.dropped[0].detail
+    assert "no unparsed field" in on.dropped[0].detail
+    assert "no silent-misread finding" in on.dropped[0].detail
 
 
 def test_known_arch_with_novel_fields_surfaces_only_when_rechecking():
     """The recall hole, closed. Llama-3.1-70B's architecture string is seeded, but this
     config has grown a field BLIS cannot read — silent wrong numbers, invisible today.
     """
+    # Three novel fields: the re-check path requires at least
+    # MIN_UNPARSED_FIELDS_FOR_KNOWN_ARCH_T1, since a seeded architecture drifting by one
+    # or two fields is churn (see test_the_known_arch_path_requires_three_unparsed_fields).
     grown = dict(load("dense_llama31_70b"), latent_router_rank=96,
-                 sparse_attention_window=4096)
+                 sparse_attention_window=4096, recurrent_state_dim=1024)
     signals = [_known_arch_signal(grown)]
 
     off = run(signals, conf=cfg(recheck_known_architectures=False))
@@ -1274,7 +1287,9 @@ def test_known_arch_with_novel_fields_surfaces_only_when_rechecking():
     cand = on.passed[0]
     assert cand.triggers == [KNOWN_ARCH_TRIGGER]
     assert "T1" not in cand.triggers, "must be distinguishable from a new architecture"
-    assert cand.unparsed_fields == ["latent_router_rank", "sparse_attention_window"]
+    assert cand.unparsed_fields == [
+        "latent_router_rank", "recurrent_state_dim", "sparse_attention_window",
+    ]
     assert "S1" in cand.significance
 
 
@@ -1291,7 +1306,8 @@ def test_recheck_withholds_t2_t3_t4():
 
 
 def test_recheck_still_applies_the_derivative_suppressor():
-    grown = dict(load("dense_llama31_70b"), latent_router_rank=96)
+    grown = dict(load("dense_llama31_70b"), latent_router_rank=96,
+                 sparse_attention_window=4096, recurrent_state_dim=1024)
     report = run(
         [_known_arch_signal(grown, model_ids=("bartowski/Llama-3.1-70B-GGUF",))],
         conf=cfg(recheck_known_architectures=True),
@@ -1314,7 +1330,8 @@ def test_recheck_still_applies_the_dedup(tmp_path):
     from archwatch.emitter import issue_path
 
     issue_path("LlamaForCausalLM", tmp_path).write_text("# already reported\n")
-    grown = dict(load("dense_llama31_70b"), latent_router_rank=96)
+    grown = dict(load("dense_llama31_70b"), latent_router_rank=96,
+                 sparse_attention_window=4096, recurrent_state_dim=1024)
     report = evaluate_detailed(
         join_signals([_known_arch_signal(grown)]),
         surface(), cfg(recheck_known_architectures=True), issues_dir=tmp_path,
@@ -1328,7 +1345,8 @@ def test_recheck_still_applies_the_significance_gate():
                   "num_hidden_layers": 12, "vocab_size": 32000,
                   "num_attention_heads": 8, "intermediate_size": 2816,
                   "hidden_act": "silu", "tie_word_embeddings": False,
-                  "latent_router_rank": 96}
+                  "latent_router_rank": 96, "sparse_attention_window": 4096,
+                  "recurrent_state_dim": 1024}
     report = run(
         [sig(arch="LlamaForCausalLM", org="hobbyist", model_ids=("hobbyist/tiny",),
              config=tiny_grown)],
@@ -1351,7 +1369,8 @@ def test_recheck_leaves_unknown_architectures_untouched():
 def test_recheck_run_log_separates_the_sweep_cost_from_its_yield():
     """The tally the backtest needs: how many seeded architectures were re-examined for
     nothing, versus how many actually turned something up."""
-    grown = dict(load("dense_llama31_70b"), latent_router_rank=96)
+    grown = dict(load("dense_llama31_70b"), latent_router_rank=96,
+                 sparse_attention_window=4096, recurrent_state_dim=1024)
     signals = [
         _known_arch_signal(load("dense_llama31_70b"),
                            model_ids=("meta-llama/Llama-3.1-70B",)),
@@ -2208,12 +2227,12 @@ def test_one_arch_bearing_signal_rescues_a_candidate_joined_with_nameless_prs():
 def test_a_nameless_pr_does_not_suppress_a_candidate_with_an_hf_config():
     """Vela-shaped guard: a real model with no ``architectures[]`` also takes the alias
     path, so the rule requires that EVERY signal be a title_only framework signal."""
-    weak = _no_arch_pr("Vela-Lumen-31M", ref="9")
-    weak.model_ids = ["ParallaxOpen/Vela-Lumen-31M"]  # connector mines ids from PR bodies
+    # They meet on the family edge: a framework PR's prose-mined repo id is a mention
+    # and no longer forms a repo edge, so the bare display names are what join here.
     report = run(
         [
-            weak,
-            sig("hf", display_name="ParallaxOpen/Vela-Lumen-31M",
+            _no_arch_pr("Vela-Lumen-31M", ref="9"),
+            sig("hf", display_name="Vela-Lumen-31M",
                 model_ids=("ParallaxOpen/Vela-Lumen-31M",), org="parallaxopen",
                 config=load("nonstandard_field_names"), extra={"downloads": 50_000}),
         ]
@@ -2442,3 +2461,210 @@ def test_t5_fires_for_a_benchmarked_known_architecture_under_recheck_too():
     report = run(_kimi_hf_plus_benchmark(), surf=surf,
                  conf=cfg(recheck_known_architectures=True))
     assert "T5" in report.passed[0].triggers
+
+
+# ---------------------------------------------------------------------------
+# A mentioned checkpoint is not a join key
+# ---------------------------------------------------------------------------
+# The arch-edge fix closed the Muse Glimmer false merge; it re-formed over
+# repo:meta-models/muse-glimmer-30b, an id mined from SGLang #35371's prose — a DFlash2
+# speculative-decoding PR that names the base model it drafts *for*. Same bug class as
+# the derivative suppressor's: a model id from a PR diff is a mention, not the artifact.
+
+
+def _sglang_35371() -> Signal:
+    """A speculative-decoding PR naming the base checkpoint it drafts for."""
+    return sig("sglang", arch="DFlashLagunaForCausalLM",
+               model_ids=("meta-models/muse-glimmer-30b",),
+               display_name="DFlash2 speculative decoding", raw_ref="35371")
+
+
+def test_a_pr_mentioning_a_checkpoint_does_not_join_that_checkpoints_candidate():
+    """The live false merge, as a regression test. Muse Glimmer must file under its own
+    architecture, not under the draft model's."""
+    cands = join_signals(
+        [
+            _sglang_35371(),
+            sig("hf", arch="MuseGlimmerForCausalLM", org="meta-models",
+                model_ids=("meta-models/muse-glimmer-30b",),
+                config=load("novel_arch_large")),
+        ]
+    )
+    assert len(cands) == 2, "the mentioned checkpoint must not fuse the two"
+    assert sorted(c.arch_id for c in cands) == [
+        "DFlashLagunaForCausalLM", "MuseGlimmerForCausalLM",
+    ]
+    for cand in cands:
+        assert cand.join_edges == []
+
+
+def test_a_framework_signal_contributes_no_repo_edge():
+    edges = signal_edges(_sglang_35371())
+    assert not any(kind == "repo" for kind, _ in edges)
+    # It keeps the edges that identify what it is actually adding support for.
+    assert ("arch", "dflashlagunaforcausallm") in edges
+    assert ("family", "dflashlaguna") in edges
+
+
+def test_a_framework_pr_still_joins_the_architecture_it_adds_support_for():
+    """Removing the repo edge must not cost the join that matters."""
+    cands = join_signals(
+        [
+            sig("sglang", arch="MuseGlimmerForCausalLM",
+                model_ids=("meta-models/muse-glimmer-30b",), raw_ref="1"),
+            sig("hf", arch="MuseGlimmerForCausalLM", org="meta-models",
+                model_ids=("meta-models/muse-glimmer-30b",),
+                config=load("novel_arch_large")),
+        ]
+    )
+    assert len(cands) == 1
+    assert cands[0].sources == ["hf", "sglang"]
+
+
+@pytest.mark.parametrize(
+    "source,identifies,publishes",
+    [
+        ("hf", True, True),
+        ("inferencex", True, False),
+        ("vllm", False, False),
+        ("sglang", False, False),
+        ("some_future_source", False, False),
+    ],
+)
+def test_the_mention_subject_artifact_ladder(source, identifies, publishes):
+    """One table, three levels, consulted by every site that asks about a model id.
+
+    A benchmark row names its own subject (a real deployed checkpoint lifted from a
+    config file), so it may *identify* a candidate — but it did not publish it, so it may
+    not *condemn* one as a repack. An unknown source is treated as a mention: the
+    conservative default.
+    """
+    one = sig(source, model_ids=("org/model",), raw_ref="1")
+    assert bool(identifying_model_ids(one)) is identifies
+    assert bool(publishing_model_ids(one)) is publishes
+
+
+def test_a_benchmark_row_still_joins_on_its_checkpoint():
+    """A benchmarked checkpoint is the row's subject, and this join is load-bearing: the
+    marketing name and the class-name family often differ (``Qwen3-30B-A3B`` ->
+    ``qwen330ba3b`` vs ``Qwen3MoeForCausalLM`` -> ``qwen3moe``), so the repo edge is the
+    only thing connecting them."""
+    assert normalize_family_key("Qwen3-30B-A3B") != normalize_family_key("Qwen3MoeForCausalLM")
+    cands = join_signals(
+        [
+            sig("hf", arch="Qwen3MoeForCausalLM", org="qwen",
+                model_ids=("Qwen/Qwen3-30B-A3B",), config=load("moe_qwen3_30b_a3b")),
+            sig("inferencex", display_name="Qwen3-30B-A3B",
+                model_ids=("Qwen/Qwen3-30B-A3B",), raw_ref="cafe"),
+        ]
+    )
+    assert len(cands) == 1
+    assert cands[0].join_edges == ["repo:qwen/qwen3-30b-a3b"]
+
+
+def test_a_mentioned_repack_id_still_does_not_condemn_the_candidate():
+    """The derivative suppressor reads the same ladder (addendum 16 preserved)."""
+    report = run([sig("vllm", arch="NewThingForCausalLM", raw_ref="1",
+                      model_ids=("someone/NewThing-8B-GGUF",),
+                      display_name="[Model] Support NewThing-8B-GGUF loading")])
+    assert [c.arch_id for c in report.passed] == ["NewThingForCausalLM"]
+
+
+# ---------------------------------------------------------------------------
+# The re-check path needs more than one drifted field
+# ---------------------------------------------------------------------------
+# Measured: 10 survivors reached the report with <= 2 unparsed fields and no other
+# trigger; the lowest config-bearing genuine survivor had 8. A minimum of 3 drops all ten
+# and touches no genuine survivor.
+
+
+def _seeded_with_n_novel_fields(n: int) -> dict:
+    extra = {f"novel_field_{i}": i + 1 for i in range(n)}
+    return dict(load("dense_llama31_70b"), **extra)
+
+
+@pytest.mark.parametrize("count,fires", [(0, False), (1, False), (2, False),
+                                         (3, True), (8, True)])
+def test_the_known_arch_path_requires_three_unparsed_fields(count, fires):
+    report = run([_known_arch_signal(_seeded_with_n_novel_fields(count))],
+                 conf=cfg(recheck_known_architectures=True))
+    if fires:
+        assert report.passed[0].triggers == [KNOWN_ARCH_TRIGGER]
+    else:
+        assert report.passed == []
+        assert reasons(report) == ["known_architecture_nothing_new"]
+
+
+def test_the_threshold_is_three_and_the_measured_margin_is_recorded():
+    assert MIN_UNPARSED_FIELDS_FOR_KNOWN_ARCH_T1 == 3, (
+        "raising this past the genuine survivors' floor of 8 unparsed fields, or "
+        "lowering it back to 1, both undo a measured result"
+    )
+
+
+@pytest.mark.parametrize("count", [1, 2])
+def test_plain_t1_still_fires_on_a_single_unparsed_field(count):
+    """The threshold is scoped to the re-check path. For a genuinely unknown
+    architecture, one unread field is real news and must still fire."""
+    cfgj = _seeded_with_n_novel_fields(count)
+    cfgj["architectures"] = ["BrandNewForCausalLM"]
+    report = run([sig("hf", arch="BrandNewForCausalLM", org="someuni",
+                      model_ids=("someuni/brandnew-70b",), config=cfgj)],
+                 conf=cfg(recheck_known_architectures=True))
+    assert report.passed[0].triggers == ["T1"]
+    assert len(report.passed[0].unparsed_fields) == count
+
+
+# --- the interaction that must never break ---------------------------------
+
+
+def test_a_silent_misread_fires_on_the_known_arch_path_with_zero_unparsed_fields():
+    """The single most valuable result of the validation was Qwen3NextForCausalLM: a
+    seeded architecture, silently misread, with **zero** unparsed fields. If the
+    unparsed-count threshold gated the silent half of T1, this optimization would delete
+    the pipeline's reason to exist.
+    """
+    surf = surface(unparsed_override=[],
+                   silent_failures=["[moe_expert_count_resolvable] a sparse MoE "
+                                    "simulates as dense"])
+    report = run([_known_arch_signal(load("dense_llama31_70b"))], surf=surf,
+                 conf=cfg(recheck_known_architectures=True))
+    cand = report.passed[0]
+    assert cand.unparsed_fields == [], "premise: nothing unparsed at all"
+    assert cand.silent_failures, "premise: a silent finding exists"
+    assert cand.triggers == [KNOWN_ARCH_TRIGGER]
+
+
+@pytest.mark.parametrize("count", [0, 1, 2])
+def test_a_silent_finding_is_never_gated_by_the_unparsed_count_on_either_path(count):
+    silent = ["[kv_head_count_unreadable] num_key_value_heads is not a JSON number"]
+    known = run([_known_arch_signal(_seeded_with_n_novel_fields(count))],
+                surf=surface(silent_failures=silent),
+                conf=cfg(recheck_known_architectures=True))
+    assert known.passed[0].triggers == [KNOWN_ARCH_TRIGGER], count
+
+    cfgj = _seeded_with_n_novel_fields(count)
+    cfgj["architectures"] = ["BrandNewForCausalLM"]
+    unknown = run([sig("hf", arch="BrandNewForCausalLM", org="someuni",
+                       model_ids=("someuni/brandnew",), config=cfgj)],
+                  surf=surface(silent_failures=silent),
+                  conf=cfg(recheck_known_architectures=True))
+    assert unknown.passed[0].triggers == ["T1"], count
+
+
+def test_a_benchmarked_seeded_architecture_still_fires_t5_below_the_threshold():
+    """T5 is independent of the unparsed count: measured deployment is its own claim."""
+    surf = surface(known=SEED_SET + ("KimiK3ForCausalLM",))
+    report = run(_kimi_hf_plus_benchmark(), surf=surf,
+                 conf=cfg(recheck_known_architectures=True))
+    cand = report.passed[0]
+    assert len(cand.unparsed_fields) < MIN_UNPARSED_FIELDS_FOR_KNOWN_ARCH_T1
+    assert cand.triggers == ["T5"]
+
+
+def test_the_shortfall_is_named_in_the_run_log():
+    report = run([_known_arch_signal(_seeded_with_n_novel_fields(2))],
+                 conf=cfg(recheck_known_architectures=True))
+    detail = report.dropped[0].detail
+    assert "only 2 unparsed field(s)" in detail
+    assert f"minimum of {MIN_UNPARSED_FIELDS_FOR_KNOWN_ARCH_T1}" in detail

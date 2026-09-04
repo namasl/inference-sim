@@ -109,7 +109,7 @@ drops the ones it does not parse without a word, and archwatch never looks becau
 architecture is "already supported". That is precisely the silent-wrong-numbers failure
 T1 exists to catch, arriving in the one disguise the filter does not check.
 
-``cfg.recheck_known_architectures`` (default ``False``) closes it. When set, a seeded
+``cfg.recheck_known_architectures`` closes it. When set, a seeded
 architecture is not dropped by that suppressor; it proceeds through every *other*
 suppressor and is then evaluated for **T1 only**, recorded as
 :data:`KNOWN_ARCH_TRIGGER` rather than ``"T1"`` so a human can tell the two findings
@@ -119,6 +119,10 @@ candidate that fires nothing is dropped as ``known_architecture_nothing_new``, d
 from ``no_trigger``, so the backtest can weigh the sweep's cost against its yield. The
 significance gate applies unchanged: a 1B fine-tune with one novel field is still not
 worth a human's attention.
+
+On this path, and this path only, unparsed fields must reach
+:data:`MIN_UNPARSED_FIELDS_FOR_KNOWN_ARCH_T1` — a seeded architecture that drifted by one
+or two fields is churn. Silent findings are never gated by that count, on either path.
 
 Thresholds are placeholders until the backtest calibrates them; nothing here bakes a
 number in.
@@ -150,6 +154,8 @@ __all__ = [
     "join_signals",
     "signal_edges",
     "coherent_arch_ids",
+    "identifying_model_ids",
+    "publishing_model_ids",
     "normalize_repo_key",
     "normalize_family_key",
     "evaluate",
@@ -163,6 +169,7 @@ __all__ = [
     "TRIGGER_IDS",
     "CORE_TRIGGER_IDS",
     "KNOWN_ARCH_TRIGGER",
+    "MIN_UNPARSED_FIELDS_FOR_KNOWN_ARCH_T1",
     "SIGNIFICANCE_IDS",
     "ALIAS_JOIN_MARKER",
 ]
@@ -238,6 +245,22 @@ MIN_MISSING_CORE_DIMS_FOR_NON_LM = 2
 #: suppression is unrecoverable while a bad rank only costs cap space.
 LM_MIN_PLAUSIBLE_VOCAB = 1000
 
+#: Minimum unparsed-field count for :data:`KNOWN_ARCH_TRIGGER` to fire on unparsed
+#: fields alone. Applies to the re-check path **only** — plain T1 on a genuinely unknown
+#: architecture still fires on a single unparsed field, because for a new architecture
+#: one unread field is real news.
+#:
+#: Measured, not chosen: on the validation window 10 survivors reached the report with
+#: <= 2 unparsed fields and no other trigger, while the lowest config-bearing *genuine*
+#: survivor had 8. A minimum of 3 drops all ten and touches no genuine survivor — a
+#: margin of 2 against 8.
+#:
+#: **This must never gate the silent-failure half of T1.** A silent misread can arrive
+#: with zero unparsed fields, which is exactly the ``Qwen3NextForCausalLM`` finding — the
+#: most valuable single result of the validation. See
+#: test_a_silent_misread_fires_on_the_known_arch_path_with_zero_unparsed_fields.
+MIN_UNPARSED_FIELDS_FOR_KNOWN_ARCH_T1 = 3
+
 #: Rank bonus for the finding class that justifies this pipeline: BLIS runs the config
 #: and reports confident nonsense. Larger than the Bucket-0 bonus because Bucket 0 is
 #: loud — the user sees an abort — while this is silent by construction.
@@ -248,11 +271,40 @@ SILENTLY_WRONG_BUMP = 4
 #: LM, because there "BLIS refuses" means "this was never a language model".
 WOULD_NOT_RUN_LM_BUMP = 2
 
-#: Sources whose ``model_ids`` name an *artifact* rather than merely mentioning one.
-#: Only these are tested against DERIVATIVE_PATTERNS: a repo id from HuggingFace *is*
-#: the thing published, whereas an id mined from a PR diff or a changelog line is a
-#: mention — "[Model] Support Qwen3-8B-GGUF loading" describes work on a loader, not a
-#: quantized upload. A new connector whose model_ids are real repos belongs here.
+# ---------------------------------------------------------------------------
+# The mention / subject / artifact ladder
+# ---------------------------------------------------------------------------
+# Whose claim is a model id? This has now mattered in three separate places, each time
+# as the same bug, so it is stated once here and every site consults it.
+#
+#   mention   — the source's text merely references the id. A framework PR's prose names
+#               checkpoints incidentally: SGLang #35371 is a DFlash2 speculative-decoding
+#               PR that names the base model it drafts *for*. That id tells you nothing
+#               about the PR's subject, and treating it as identity re-formed the Muse
+#               Glimmer false merge over a repo edge after the arch-edge fix closed it.
+#   subject   — the id names what the record is about, but the source did not publish it.
+#               An InferenceX row lifts a real deployed checkpoint from a
+#               configs/*master*.yaml `model:` field; that IS the row's subject.
+#   artifact  — the source published the thing. On HuggingFace the repo id *is* the model.
+#
+# The two questions asked of a model id need different levels, which is why one set is
+# not enough:
+#
+#   * may it IDENTIFY the candidate (a repo join edge)?  subject or artifact.
+#   * may it CONDEMN the candidate (derivative suppression)?  artifact only — only a
+#     published repack is evidence that all that exists is repacks. "[Model] Support
+#     Qwen3-8B-GGUF loading" describes work on a loader, not a quantized upload.
+
+#: Sources whose ``model_ids`` may identify the candidate — used for ``repo:`` join
+#: edges. A framework PR is excluded: it can still join on ``arch:`` and ``family:``
+#: edges, which is how it identifies a model it is actually adding support for.
+MODEL_ID_IDENTIFIES_SOURCES: frozenset[str] = frozenset({"hf", "inferencex"})
+
+#: Sources whose ``model_ids`` may condemn the candidate — used for
+#: ``DERIVATIVE_PATTERNS``. Strictly narrower than the above: a benchmark row naming
+#: ``nvidia/Llama-3.1-70B-Instruct-FP8`` reports a deployment, it does not mean the only
+#: thing that exists is a repack. A new connector whose model_ids are published repos
+#: belongs in both sets.
 ARTIFACT_SOURCES: frozenset[str] = frozenset({"hf"})
 
 #: Config keys that carry quantization metadata rather than architecture. Novelty
@@ -557,8 +609,11 @@ def signal_edges(signal: Signal) -> list[tuple[str, str]]:
         if key:
             edges.append(("arch", key))
 
-    # (b) repo identity — the only edge all three sources can supply.
-    for model_id in signal.model_ids:
+    # (b) repo identity — restricted to sources whose ids name their own subject. A
+    # framework PR's prose-mined ids are mentions (see the ladder above): letting them
+    # form repo edges re-created the Muse Glimmer false merge over
+    # repo:meta-models/muse-glimmer-30b after the arch-edge fix closed it.
+    for model_id in identifying_model_ids(signal):
         key = normalize_repo_key(model_id)
         if key:
             edges.append(("repo", key))
@@ -767,13 +822,17 @@ def _orgs(cand: Candidate) -> set[str]:
     return {o for o in orgs if o}
 
 
-def _model_ids(cand: Candidate, sources: frozenset[str] | None = None) -> list[str]:
-    """Distinct model ids across the candidate's signals, optionally source-filtered."""
+def _model_ids(cand: Candidate, picker=None) -> list[str]:
+    """Distinct model ids across the candidate's signals.
+
+    ``picker`` selects which ids each Signal contributes — pass
+    :func:`publishing_model_ids` or :func:`identifying_model_ids` rather than filtering
+    by source at the call site, so every consumer of the mention/subject/artifact ladder
+    reads it from one place.
+    """
     seen: list[str] = []
     for sig in cand.signals:
-        if sources is not None and sig.source not in sources:
-            continue
-        for mid in sig.model_ids:
+        for mid in (picker(sig) if picker is not None else sig.model_ids):
             if mid and mid not in seen:
                 seen.append(mid)
     return seen
@@ -922,6 +981,24 @@ def lm_shape_evidence(config: dict[str, Any] | None) -> LmShapeEvidence:
 # ---------------------------------------------------------------------------
 # Suppressors
 # ---------------------------------------------------------------------------
+
+
+def identifying_model_ids(signal: Signal) -> list[str]:
+    """Model ids that may identify this Signal's subject (see the ladder above).
+
+    Empty for a framework PR, whose ``model_ids`` are mined from prose and reference
+    checkpoints the PR is not about.
+    """
+    if signal.source not in MODEL_ID_IDENTIFIES_SOURCES:
+        return []
+    return [m.strip() for m in signal.model_ids if m and m.strip()]
+
+
+def publishing_model_ids(signal: Signal) -> list[str]:
+    """Model ids this Signal *published*, so they may condemn it (see the ladder above)."""
+    if signal.source not in ARTIFACT_SOURCES:
+        return []
+    return [m.strip() for m in signal.model_ids if m and m.strip()]
 
 
 def _signal_strength(signal: Signal) -> str:
@@ -1216,11 +1293,10 @@ def evaluate_detailed(
         # candidate before the trigger phase, so T2/T5 and S3 never get a say, and the
         # purest zero-day evidence we have is the thing that gets thrown away.
         #
-        # Only ids from ARTIFACT_SOURCES: a repo id from HF is the artifact, while one
-        # mined from a PR diff or changelog line is a mention. Testing a mention would
-        # let a PR titled "[Model] Support Qwen3-8B-GGUF loading" suppress the very
-        # architecture the PR adds support for.
-        model_ids = _model_ids(cand, ARTIFACT_SOURCES)
+        # Only ids the candidate's sources actually published (the ladder above):
+        # testing a mention would let a PR titled "[Model] Support Qwen3-8B-GGUF
+        # loading" suppress the very architecture the PR adds support for.
+        model_ids = _model_ids(cand, publishing_model_ids)
         if model_ids:
             hits = [(mid, _derivative_match(mid)) for mid in model_ids]
             if all(pat for _, pat in hits):
@@ -1310,7 +1386,13 @@ def evaluate_detailed(
             # simulating as dense behind one logrus.Warnf), and whether somebody measured
             # it in production — a different claim from architectural novelty, and the
             # reason the known_architecture suppressor exempts benchmark signals above.
-            if t1_evidence:
+            #
+            # On this path only, unparsed fields must clear
+            # MIN_UNPARSED_FIELDS_FOR_KNOWN_ARCH_T1: a seeded architecture whose config
+            # drifted by one or two fields is churn, and it was filling the report.
+            # A silent finding is NEVER gated — it can arrive with zero unparsed fields,
+            # and that case is the whole point of the pipeline.
+            if silent or len(unparsed) >= MIN_UNPARSED_FIELDS_FOR_KNOWN_ARCH_T1:
                 fired.append(KNOWN_ARCH_TRIGGER)
             if benchmark:
                 fired.append("T5")
@@ -1335,10 +1417,14 @@ def evaluate_detailed(
                 # Distinct from "no_trigger" so the run log can separate the cost of
                 # the re-check sweep (known, nothing new) from its yield (known,
                 # unparsed fields found) when the backtest calibrates the flag.
+                shortfall = (
+                    f"only {len(unparsed)} unparsed field(s), below the re-check minimum "
+                    f"of {MIN_UNPARSED_FIELDS_FOR_KNOWN_ARCH_T1}"
+                    if unparsed else "no unparsed field"
+                )
                 drop(cand, "trigger", "known_architecture_nothing_new",
-                     f"{cand.arch_id!r} is in the seed set, its config carries no "
-                     f"unparsed field and no silent-misread finding, and no benchmark "
-                     f"source measured it")
+                     f"{cand.arch_id!r} is in the seed set with {shortfall}, no "
+                     f"silent-misread finding, and no benchmark source measured it")
             else:
                 drop(cand, "trigger", "no_trigger",
                      f"nothing new: sources={cand.sources}, unparsed_fields=[], "

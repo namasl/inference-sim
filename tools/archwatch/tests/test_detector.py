@@ -676,7 +676,18 @@ def test_scan_rechecks_a_known_architecture_when_the_recheck_is_on(tmp_path):
     than "an architecture BLIS has never seen".
     """
     cfg = DetectorConfig(window_days=1, recheck_known_architectures=True)
-    config = dict(BIG_CONFIG, architectures=["LlamaForCausalLM"])
+    # Three novel keys, not one: the known-arch re-check path requires at least
+    # MIN_UNPARSED_FIELDS_FOR_KNOWN_ARCH_T1 unparsed fields, because the backtest
+    # measured that seeded architectures drifting by one or two inert fields were
+    # 10 of the noise survivors while the lowest genuine one carried 8. They are set
+    # locally rather than in the shared BIG_CONFIG, which other tests use for the
+    # plain-T1 path where a single unparsed field must still suffice.
+    config = dict(
+        BIG_CONFIG,
+        architectures=["LlamaForCausalLM"],
+        novel_router_rank=64,
+        novel_state_dim=128,
+    )
     summary = detector.scan(
         cfg,
         connectors=[FakeConnector("hf", [hf_signal(arch="LlamaForCausalLM", config=config)])],
@@ -686,7 +697,11 @@ def test_scan_rechecks_a_known_architecture_when_the_recheck_is_on(tmp_path):
     )
     assert [c.arch_id for c in summary.passed] == ["LlamaForCausalLM"]
     cand = summary.passed[0]
-    assert cand.unparsed_fields == ["novel_mechanism_dim"]
+    assert sorted(cand.unparsed_fields) == [
+        "novel_mechanism_dim",
+        "novel_router_rank",
+        "novel_state_dim",
+    ]
     assert "T1-known-arch" in cand.triggers
     assert "T1" not in cand.triggers  # not a new architecture, and must not read as one
     assert (tmp_path / "LlamaForCausalLM.md").is_file()
