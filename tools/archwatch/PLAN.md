@@ -411,3 +411,54 @@ original plan left ambiguous. They are binding.
 
 13. **GitHub's `/search/issues` is limited to 30 requests/minute** (against 5,000/hr for core).
     The framework connector spends ~4 per poll, but **H must never poll in a loop.**
+
+## Contract addenda, round 3 (found during wave 2 — binding)
+
+14. **The cross-source join needs union-find over multiple edge types.** The original
+    "primary key is `arch_ids[0]`, fall back to display name" produces **disjoint key spaces**
+    across sources for the same release: InferenceX emits `Kimi-K3` with no architecture (it
+    exposes no config), the framework connector emits `KimiK3ForCausalLM` mined from patches, HF
+    emits whatever `architectures[]` says. Corroboration — T4 and the significance gate's
+    corroboration path, meant to be the cheapest reliable noise killer — was therefore nearly
+    unfireable. Signals now join if they share **any** of: (a) a case-folded `arch_id`;
+    (b) a normalized HF repo id (lowercase, strip quantization and variant suffixes, keep the
+    org, so `moonshotai/Kimi-K3-Instruct` ≡ `moonshotai/Kimi-K3`); (c) a normalized family name
+    (strip `ForCausalLM`/`ForConditionalGeneration`/`MTPModel`/`Model` suffixes, punctuation and
+    case, bridging `KimiK3ForCausalLM` ≡ `Kimi-K3`). **False merges are worse than duplicate
+    issues**, so every merge records the edge that caused it and is logged for audit; the
+    canonical `arch_id` prefers a real `architectures[]` spelling, then a framework-mined name,
+    then the normalized display name — never an invented CamelCase guess.
+
+15. **`T5` — a curated benchmark entry for an unseen model.** Added rather than widening T2,
+    because the two imply different follow-ups: a framework PR hands you reference code, an
+    InferenceX entry hands you performance numbers and no architecture. With addendum 14 most
+    InferenceX signals merge into an HF or framework candidate and fire T4; T5 catches the
+    genuine zero-day case where SemiAnalysis benchmarks something before any config or PR exists.
+
+16. **`DERIVATIVE_PATTERNS` applies only to `model_ids` from HF signals.** A model id extracted
+    from a PR diff or a changelog line is a *mention*, not the artifact. Otherwise a PR titled
+    "[Model] Support Qwen3-8B-GGUF loading" would suppress a real candidate.
+
+17. **`silent_failures` is a first-class finding, separate from `bucket0_failures`.** Fatal
+    failures are loud and self-announcing; silent ones are the reason this pipeline exists. Real
+    live instance: a config whose expert count uses an unrecognized spelling makes a
+    trillion-parameter sparse MoE **simulate as a dense model** behind one `logrus.Warnf`. A
+    clean Bucket 0 verdict with non-empty `silent_failures` is the *dangerous* case, and the stub
+    must present it that way.
+
+18. **Cite functions, not line numbers, in prose.** Every `file:line` ref in this plan's original
+    component-B section was stale — harvested from a different BLIS checkout than the fork being
+    analyzed. Verified refs live in `support-surface/parsed-fields.yaml`, which carries a test
+    bounds-checking each one against the real Go files. That file is the source of truth.
+
+19. **InferenceX's changelog prose is the highest-value payload in the pipeline** and must be
+    preserved verbatim (`extra["perf_notes"]`), not discarded when no number parses. It names
+    architecture *mechanisms* before HF configs are public — Kimi-K3's 896 routed experts and
+    KDA layers holding no KV cache; Qwen3.8-Flash-Next's Mamba SSM state and built-in MTP
+    module. This is stage-2 intelligence arriving inside the zero-day window.
+
+20. **Worth watching later, deliberately deferred:** InferenceX's `golden_al_distribution/`
+    (committed golden acceptance-length curves per model — direct speculative-decode ground
+    truth) and `benchmarks/single_node/agentic/*.sh` (real serve flags: attention backend, KV
+    dtype, `max-model-len`, MoE backend). Both are richer BLIS validation input than changelog
+    prose.

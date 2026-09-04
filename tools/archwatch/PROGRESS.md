@@ -29,7 +29,9 @@ Kept continuously so the build is resumable if the session dies. Newest entries 
 - [x] Scaffolding, `pyproject.toml`, venv
 - [x] Frozen contracts: `archwatch/connectors/base.py`, `archwatch/config.py`
 - [x] `PLAN.md`
-- [~] Wave 2: **G emitter DONE**; **C hf** (non-LM filter in; org-stats owed); **F novelty DONE** (resumed for recall fix); B, D, E in flight
+- [x] **Wave 2 COMPLETE** — B, C, D, E, F, G all landed and committed. 573 tests green.
+- [~] Revisions in flight: F (union-find join, T5), G (silent_failures), C (org stats)
+- [~] Wave 3: H detector + CLI launched
 - [ ] Wave 3: H detector + CLI
 - [x] Wave 4a: I classifier skill (`skills/archwatch-deep-dive/SKILL.md`) — written by orchestrator
 - [ ] Wave 4b: J validation harness
@@ -204,3 +206,100 @@ grounds since F already buckets by reason.
 Accepted C's own judgment call to apply the filter to `poll_trending()` as well: a trending
 *language* model always carries an architecture in the listing excerpt and so can never be
 wrongly dropped, while a trending diffusion checkpoint is junk to the detector either way.
+
+### D — framework connector: complete, accepted
+
+104 tests, offline-verified with sockets *and* subprocess monkeypatched to raise.
+
+**D disproved one of my design assumptions with measurement.** I specified extracting
+architecture names from PR titles. Across both repos' entire merged history, a GitHub search for
+`ForCausalLM in:title` returns **zero hits**. Real titles carry marketing names with no derivable
+mapping: `[Model] Support Qwen3.8-Flash-Next` → `Qwen4ExpForCausalLM`; `[Model] Add native IFM K2
+Horizon serving support` → two unrelated architectures. Filenames are also insufficient
+(`k2_horizon.py` would require guessing the suffix). Patch content works instead — added registry
+lines, SGLang `EntryClass` footers, added `class XxxForCausalLM` — **6/6 on genuine model-support
+PRs**. My acceptance criterion was unrealistic and is now corrected in PLAN.md rather than
+quietly satisfied.
+
+Also found that new vLLM architectures now land in `vllm/models/<name>/` packages, not only
+`vllm/model_executor/models/`, so both prefixes must be watched.
+
+### The T2 bug — my plan silently disabled its own best trigger
+
+D's most important finding. Framework signals always carry `config=None` (a PR is not a model
+repo), so the `no_config_uncorroborated` suppressor deleted **every** framework-only candidate
+before the trigger phase — making T2 unfireable. T2 is the purest zero-day signal there is: a
+vLLM PR adding an architecture before any HF config is public means someone already decoded it
+and wrote reference code.
+
+Fixed by scoping the suppressor to its actual purpose (HF junk) and exempting all curated
+sources. Notably **F's own unit tests had ratified the bug** — one used a `vllm` signal to assert
+the suppression — which is why only the cross-component report caught it. A good argument for
+integration checks over per-component confidence.
+
+### B — support surface: complete, accepted, and it overruled me twice
+
+90 tests. 26 parsed fields with verified refs, 14 gaps, 432 architectures harvested live from
+vLLM's registry via `ast.parse`.
+
+**B was right and I was wrong, twice — both verified against the source before accepting:**
+
+1. I diagnosed its failing test as suffix normalization. There was none; matching was exact, and
+   `KimiK3ForConditionalGeneration` returned `True` because **it is literally in vLLM's registry**.
+   B had already fixed the test by correcting its own wrong assumption rather than weakening the
+   assertion, which is the right instinct.
+2. I proposed normalizing architecture suffixes. B measured it: all 37 suffix-groups consist
+   entirely of names **already in the seed set** (vLLM enumerates both heads for every family
+   that has both), so normalization changes no answer for the duplicate-issue case I was worried
+   about — that case cannot arise. It would only change an answer when vLLM lists A but a vendor
+   ships B, and B's absence *is* the T2 signal. Suppression is unrecoverable in a stateless
+   pipeline. It added a non-destructive `related_known_architectures()` instead.
+
+**B also corrected PLAN.md on a Bucket-0 claim, and the correction is the best finding of the
+build.** MoE-without-a-resolvable-expert-count is NOT fatal: all three `ExtractKVCapacityParams`
+call sites only `logrus.Warnf`. So **a trillion-parameter sparse MoE with a novel expert-count
+spelling is simulated as a dense model, behind one warning line nobody reads.** That is exactly
+the silent-wrong-numbers failure archwatch exists to catch, and it is live in BLIS today.
+Validators now carry `severity: fatal | silent`, and `Candidate` gained `silent_failures` so the
+class has a first-class home.
+
+Related subtlety B found: dtype resolution is `else-if`, so `{torch_dtype: "mxfp4", dtype:
+"bfloat16"}` still aborts — the readable `dtype` is never consulted.
+
+**My line refs were all stale.** My original seams scan ran against `/ws/inference-sim`, a
+different checkout than this fork, so every `file:line` in the plan had drifted. B verified each
+one and added a test bounds-checking them against the real Go files. The stage-2 skill now cites
+functions, not lines, and points at that tested data file.
+
+### E — InferenceX connector: complete, accepted
+
+53 tests. Model-name extraction from `MODELS.md` is exact (28 rows, zero false positives). Perf
+numbers come from English prose in `perf-changelog.yaml` — only 2.6% of 2,215 description strings
+yield numbers — and E audited its extractor against all 820 entries, killing real false positives
+(`MI325X`→`325x`, `TP8 x PP2`→`8x`). Verbatim prose is always retained because the prose is more
+trustworthy than the parser. Good calibration of confidence.
+
+E also declined to guess CamelCase architecture names from marketing names, on the grounds that a
+wrong guess creates a phantom issue file. Correct.
+
+### The join key was broken, and it took three connectors to see it
+
+**E's finding is the one that invalidated a core design decision.** The three sources produce
+disjoint key spaces for the same release — `Kimi-K3` (InferenceX), `KimiK3ForCausalLM`
+(framework), `architectures[]` (HF) — so joining on the architecture with a display-name fallback
+put one model in three candidates and made corroboration nearly unfireable.
+
+Fixed with union-find over three edge types (arch id, normalized repo id, normalized family
+name), with merge edges recorded and logged because **false merges are worse than duplicate
+issues**. Architecture-as-primary-key remains right for *issue identity*; it was never sufficient
+as a *join* key. That distinction is the kind of thing only real data from three sources exposes.
+
+### The best unanticipated find
+
+InferenceX's changelog prose **names architecture mechanisms before HF configs are public**:
+Kimi-K3's "896 routed experts, 93 layers, KDA layers keep per-token KV small — only the 24
+gated-MLA layers hold cache"; Qwen3.8-Flash-Next's "512-expert MoE, float32/bfloat16 Mamba SSM
+state, built-in 4B NEXTN MTP module". That is stage-2 intelligence arriving *inside* the zero-day
+window, from a source I had originally rated as merely a significance signal. E kept it as
+`extra["perf_notes"]` rather than discarding non-numeric prose — the single best judgment call
+any agent made.
