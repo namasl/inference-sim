@@ -32,7 +32,7 @@ Kept continuously so the build is resumable if the session dies. Newest entries 
 - [x] **Wave 2 COMPLETE** — B, C, D, E, F, G all landed and committed. 573 tests green.
 - [x] C org-stats DONE
 - [x] G silent_failures rendering DONE
-- [~] Revisions in flight: F (union-find join, T5)
+- [x] F revisions DONE (join, T5, silent_failures, T1 widening) — 243 tests
 - [~] Wave 3: H detector + CLI launched
 - [ ] Wave 3: H detector + CLI
 - [x] Wave 4a: I classifier skill (`skills/archwatch-deep-dive/SKILL.md`) — written by orchestrator
@@ -424,3 +424,42 @@ than patch a third instance, it is now a rule: **a candidate with any `vllm`/`sg
 signal is exempt from HF-noise suppressors as a class** — both `no_config_uncorroborated` and
 `all_model_ids_derivative`. A human wrote that code or ran that benchmark, and that choice outranks
 the shape of whatever HF repos happen to exist.
+
+### F — the fix I ordered was insufficient, and F worked that out
+
+243 tests. F populated `silent_failures` as asked, then established that **doing only that would
+have left the field invisible anyway** — which is the same failure it was sent to fix.
+
+A silent validator can fire with **zero** unparsed fields, using only spellings BLIS recognizes.
+F verified two reachable cases against the real surface: `num_key_value_heads: "8"` (a JSON string,
+so BLIS reads 0 and silently mis-sizes the KV cache) and `num_experts_per_tok` exceeding the
+resolved expert total. Because T1 was gated on unparsed fields alone, such a candidate fired no
+trigger, died at `no_trigger`, and never reached the emitter.
+
+So T1 is redefined to fire on `unparsed_fields` **or** `silent_failures`: "the config carries
+something BLIS cannot read correctly — a field it does not parse, or one it parses and silently
+misreads." I verified the full chain end to end afterwards: a config with zero unparsed fields and
+no fatal failure now survives on T1, renders the silent section, and sets `silently_wrong: true`.
+Dropped entirely before the change.
+
+F flagged this as a plan amendment it had not been asked for. That is the correct instinct — and
+the amendment is right, because carrying out the instruction literally would have produced a
+cosmetic fix that looked complete.
+
+**A guard against the mistake G and I made.** F added a test asserting that `moe_num_experts` and
+`n_routed_experts` **are** in BLIS's alias set, specifically so nobody later "fixes" a fixture by
+swapping in a recognized spelling. A regression test aimed at a reviewer error rather than a code
+error — worth keeping.
+
+Also: fatal wins on a severity collision, with the contract violation logged at WARNING rather than
+absorbed; the curated exemption is one named rule correctly scoped to HF-noise suppressors only
+(`known_architecture`, `already_reported` and `structurally_identical` still fire, since they judge
+the architecture rather than the repos); and `FakeSurface` now reproduces BLIS's real rule instead
+of returning a canned string, so the unit tests exercise a config shape that actually occurs.
+
+Deferred, both agreed as backtest calibration rather than guesswork: `_strength` still ranks a
+`T1-known-arch` candidate equal to a genuinely new architecture, and silent findings get no rank
+bump despite being the highest-value class. One cosmetic surface-side wording issue is also
+deferred — on a renamed-expert-count config the message cites `n_shared_experts=1` as the MoE
+signal rather than the stronger `num_experts_per_tok=8`; the verdict is right, the sentence reads
+oddly.

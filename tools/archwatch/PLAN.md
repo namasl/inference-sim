@@ -480,3 +480,35 @@ original plan left ambiguous. They are binding.
     drop real analysis — an injection through a data channel we control the format of. The emitter
     rewrites `archwatch:stage2:` in all third-party text. Any future component that embeds
     external text into a file with structural markers must do the same.
+
+## Contract addenda, round 5 (binding)
+
+24. **T1 is redefined: it fires on `unparsed_fields` OR `silent_failures`.** Originally T1 was
+    gated on unparsed fields alone, which made the whole silent-failure path unreachable — a
+    silent validator can fire with **zero** unparsed fields, using only spellings BLIS
+    recognizes. Two verified live cases: `num_key_value_heads: "8"` (a JSON string, so BLIS reads
+    0 and silently mis-sizes KV), and `num_experts_per_tok` exceeding the resolved expert total.
+    Such a candidate fired no trigger, died at `no_trigger`, and never reached the emitter — so
+    populating `silent_failures` alone would have left it invisible end to end.
+
+    T1's meaning is now: **the config carries something BLIS cannot read correctly — a field it
+    does not parse, or one it parses and silently misreads.** This applies to `T1-known-arch`
+    too, where it matters most: a seeded architecture that newly trips a silent validator is
+    exactly the trillion-parameter MoE quietly simulating as dense.
+
+25. **Fatal wins on a severity collision.** If a surface ever reports one finding at both
+    severities, it is classified fatal and the contract violation is logged at WARNING, never
+    silently absorbed. `Candidate.would_not_run` derives from `bucket0_failures` and must stay
+    truthful.
+
+26. **Curated-source exemption is one named rule, scoped to the HF-noise class only.** It spares
+    a candidate from `all_model_ids_derivative` and `no_config_uncorroborated`. It must NOT
+    exempt `known_architecture`, `already_reported`, or `structurally_identical` — those judge
+    the architecture itself, not the noisiness of the HF repos that happen to exist.
+
+27. **`moe_num_experts` and `n_routed_experts` are RECOGNIZED aliases** (Dbrx and DeepSeek
+    respectively; `sim/latency/config.go:92-98` also lists `num_experts`, `num_local_experts`,
+    `num_routed_experts`). Neither can serve as an "unrecognized spelling" fixture. Verified
+    unrecognized: `num_moe_experts`, `expert_count`, `n_group_experts`. A test now asserts the
+    recognized set, specifically so a future edit cannot "fix" a fixture by substituting a
+    recognized spelling — an error that already slipped past two reviewers once.
