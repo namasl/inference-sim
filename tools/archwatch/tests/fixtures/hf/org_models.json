@@ -1,0 +1,258 @@
+{
+ "27aran": [
+  {
+   "_id": "6a9b28f8cb47de65d300723a",
+   "author": "27aran",
+   "downloads": 0,
+   "downloadsAllTime": 0,
+   "id": "27aran/germantris-model"
+  }
+ ],
+ "baai": [
+  {
+   "_id": "64fff537d522560505ad6567",
+   "author": "BAAI",
+   "downloads": 66603948,
+   "downloadsAllTime": 430799127,
+   "id": "BAAI/bge-small-en-v1.5"
+  },
+  {
+   "_id": "65b53851e602b6c2c96e78da",
+   "author": "BAAI",
+   "downloads": 38033030,
+   "downloadsAllTime": 289853136,
+   "id": "BAAI/bge-m3"
+  },
+  {
+   "_id": "65f44de295b7d70871c368eb",
+   "author": "BAAI",
+   "downloads": 18075521,
+   "downloadsAllTime": 130760028,
+   "id": "BAAI/bge-reranker-v2-m3"
+  },
+  {
+   "_id": "64fff5087f91f94040eee912",
+   "author": "BAAI",
+   "downloads": 13370847,
+   "downloadsAllTime": 158795949,
+   "id": "BAAI/bge-large-en-v1.5"
+  },
+  {
+   "_id": "64ff2c767a4a6ae49afa72b5",
+   "author": "BAAI",
+   "downloads": 11416874,
+   "downloadsAllTime": 566091432,
+   "id": "BAAI/bge-base-en-v1.5"
+  }
+ ],
+ "bunnycore": [
+  {
+   "_id": "6a8d8c409dedf90aef4036a0",
+   "author": "bunnycore",
+   "downloads": 1437,
+   "downloadsAllTime": 1437,
+   "id": "bunnycore/LMF-2.5-2B-Code-GGUF"
+  },
+  {
+   "_id": "68ddafd6eb5ebbf1347530e5",
+   "author": "bunnycore",
+   "downloads": 179,
+   "downloadsAllTime": 820,
+   "id": "bunnycore/Qwen-image-Art"
+  },
+  {
+   "_id": "6a8c33f414baa228f999e52c",
+   "author": "bunnycore",
+   "downloads": 166,
+   "downloadsAllTime": 166,
+   "id": "bunnycore/Gemma4-E2-Code-Lora-gguf"
+  },
+  {
+   "_id": "6a8d6c9d1096d7781e7be644",
+   "author": "bunnycore",
+   "downloads": 158,
+   "downloadsAllTime": 158,
+   "id": "bunnycore/LMF-2.5-2.6B-Qwen3.8-Distilled-GGUF"
+  },
+  {
+   "_id": "69354dee3d5a6342f696e0eb",
+   "author": "bunnycore",
+   "downloads": 156,
+   "downloadsAllTime": 1723,
+   "id": "bunnycore/Z-Art-2.1"
+  }
+ ],
+ "foranyone": [
+  {
+   "_id": "6a99f07a9717e25f9a405657",
+   "author": "foranyone",
+   "downloads": 175,
+   "downloadsAllTime": 175,
+   "id": "foranyone/GLM-5.3-BF16"
+  },
+  {
+   "_id": "6a99f0259bbeb6c7178f5e28",
+   "author": "foranyone",
+   "downloads": 96,
+   "downloadsAllTime": 96,
+   "id": "foranyone/GLM-5.3"
+  },
+  {
+   "_id": "6a99f03d1201382803059202",
+   "author": "foranyone",
+   "downloads": 16,
+   "downloadsAllTime": 16,
+   "id": "foranyone/GLM-5.3-Flash"
+  },
+  {
+   "_id": "6a99f0643db5e5d08aefabc0",
+   "author": "foranyone",
+   "downloads": 16,
+   "downloadsAllTime": 16,
+   "id": "foranyone/GLM-5.3-Flash-BF16"
+  }
+ ],
+ "foranyone2026": [
+  {
+   "_id": "6a99fda1b32c07cad6588126",
+   "author": "foranyone2026",
+   "downloads": 111,
+   "downloadsAllTime": 111,
+   "id": "foranyone2026/Qwen3.8-2.4T-A95B"
+  },
+  {
+   "_id": "6a99fd6f966752c1d792b350",
+   "author": "foranyone2026",
+   "downloads": 13,
+   "downloadsAllTime": 13,
+   "id": "foranyone2026/Qwen3.8-27B"
+  },
+  {
+   "_id": "6a99fcf2d0fb8523a179da90",
+   "author": "foranyone2026",
+   "downloads": 12,
+   "downloadsAllTime": 12,
+   "id": "foranyone2026/Kimi-K3"
+  }
+ ],
+ "mbzuai": [
+  {
+   "_id": "67b5813d776419284f7b22ee",
+   "author": "MBZUAI",
+   "downloads": 76159,
+   "downloadsAllTime": 198796,
+   "id": "MBZUAI/GeoPixel-7B"
+  },
+  {
+   "_id": "6438e81222e2b248a9493b70",
+   "author": "MBZUAI",
+   "downloads": 22166,
+   "downloadsAllTime": 146577,
+   "id": "MBZUAI/swiftformer-xs"
+  },
+  {
+   "_id": "6438a5511d7a5675bf538fbc",
+   "author": "MBZUAI",
+   "downloads": 9540,
+   "downloadsAllTime": 188268,
+   "id": "MBZUAI/LaMini-GPT-124M"
+  },
+  {
+   "_id": "6433c6ca5408e9c12af8cf41",
+   "author": "MBZUAI",
+   "downloads": 3690,
+   "downloadsAllTime": 48410,
+   "id": "MBZUAI/LaMini-Flan-T5-77M"
+  },
+  {
+   "_id": "65dc9e553b828232652c4501",
+   "author": "MBZUAI",
+   "downloads": 3021,
+   "downloadsAllTime": 32985,
+   "id": "MBZUAI/geochat-7B"
+  }
+ ],
+ "nkthebass": [
+  {
+   "_id": "6a87f046f6a785e889be4e6a",
+   "author": "nkthebass",
+   "downloads": 1845,
+   "downloadsAllTime": 1845,
+   "id": "nkthebass/tinybrainbot-100m-v3-math"
+  },
+  {
+   "_id": "6a767647d47b76d35d720f37",
+   "author": "nkthebass",
+   "downloads": 1842,
+   "downloadsAllTime": 1842,
+   "id": "nkthebass/tinybrainbot-320mV2-instruct"
+  },
+  {
+   "_id": "6a76762a936ff367bd3c10db",
+   "author": "nkthebass",
+   "downloads": 1650,
+   "downloadsAllTime": 1650,
+   "id": "nkthebass/tinybrainbot-320mV2-base"
+  },
+  {
+   "_id": "6a77cadbfca14ee92d9ed6b0",
+   "author": "nkthebass",
+   "downloads": 1569,
+   "downloadsAllTime": 1569,
+   "id": "nkthebass/tinybrainbot-320mV2-math"
+  },
+  {
+   "_id": "6a87f03f93aae4003c599c26",
+   "author": "nkthebass",
+   "downloads": 1276,
+   "downloadsAllTime": 1276,
+   "id": "nkthebass/tinybrainbot-100m-v3-instruct"
+  }
+ ],
+ "parallaxopen": [
+  {
+   "_id": "6a9abe491bb51809d786352a",
+   "author": "ParallaxOpen",
+   "downloads": 0,
+   "downloadsAllTime": 0,
+   "id": "ParallaxOpen/Vela-Lumen-31M"
+  }
+ ],
+ "verbarex": [
+  {
+   "_id": "6a9a6ccf3436412b5b9cd7c9",
+   "author": "VERBAREX",
+   "downloads": 1007,
+   "downloadsAllTime": 1007,
+   "id": "VERBAREX/LuminoLex-1.5B-think"
+  },
+  {
+   "_id": "6a88c2364487dc350308d7af",
+   "author": "VERBAREX",
+   "downloads": 955,
+   "downloadsAllTime": 955,
+   "id": "VERBAREX/LuminoLex-1.5B-think-v12"
+  },
+  {
+   "_id": "6a8990abeb489445a881a28e",
+   "author": "VERBAREX",
+   "downloads": 323,
+   "downloadsAllTime": 323,
+   "id": "VERBAREX/LuminoLex-1.5B-think-v13"
+  },
+  {
+   "_id": "6947e1bc0374ee64bdfdc5aa",
+   "author": "VERBAREX",
+   "downloads": 11,
+   "downloadsAllTime": 346,
+   "id": "VERBAREX/LuminoLex-14B-VERBAREX"
+  },
+  {
+   "_id": "69b341014b9a48e83aed5582",
+   "author": "VERBAREX",
+   "downloads": 9,
+   "downloadsAllTime": 9,
+   "id": "VERBAREX/LuminoLex-Aura-235B-A22B"
+  }
+ ]
+}

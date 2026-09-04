@@ -1,0 +1,2102 @@
+[
+ {
+  "_id": "621ffdc136468d709f180294",
+  "author": "sentence-transformers",
+  "downloads": 253789790,
+  "downloadsAllTime": 3771449263,
+  "id": "sentence-transformers/all-MiniLM-L6-v2"
+ },
+ {
+  "_id": "621ffdc136468d709f17a20e",
+  "author": "cross-encoder",
+  "downloads": 86547620,
+  "downloadsAllTime": 524455411,
+  "id": "cross-encoder/ms-marco-MiniLM-L6-v2"
+ },
+ {
+  "_id": "64fff537d522560505ad6567",
+  "author": "BAAI",
+  "downloads": 66603948,
+  "downloadsAllTime": 430799127,
+  "id": "BAAI/bge-small-en-v1.5"
+ },
+ {
+  "_id": "621ffdc136468d709f17b61d",
+  "author": "google",
+  "downloads": 58803103,
+  "downloadsAllTime": 904558452,
+  "id": "google/electra-base-discriminator"
+ },
+ {
+  "_id": "621ffdc036468d709f174338",
+  "author": "google-bert",
+  "downloads": 58675189,
+  "downloadsAllTime": 3211798095,
+  "id": "google-bert/bert-base-uncased"
+ },
+ {
+  "_id": "621ffdc136468d709f1802ec",
+  "author": "sentence-transformers",
+  "downloads": 46830184,
+  "downloadsAllTime": 584048792,
+  "id": "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+ },
+ {
+  "_id": "65b53851e602b6c2c96e78da",
+  "author": "BAAI",
+  "downloads": 38033030,
+  "downloadsAllTime": 289853136,
+  "id": "BAAI/bge-m3"
+ },
+ {
+  "_id": "69037c2ff37fdfe285722818",
+  "author": "amazon",
+  "downloads": 25078707,
+  "downloadsAllTime": 159585183,
+  "id": "amazon/chronos-2"
+ },
+ {
+  "_id": "621ffdc136468d709f180297",
+  "author": "sentence-transformers",
+  "downloads": 24544088,
+  "downloadsAllTime": 1329115641,
+  "id": "sentence-transformers/all-mpnet-base-v2"
+ },
+ {
+  "_id": "621ffdc036468d709f174358",
+  "author": "google-t5",
+  "downloads": 23372327,
+  "downloadsAllTime": 252887496,
+  "id": "google-t5/t5-small"
+ },
+ {
+  "_id": "680da718233834890aa01f51",
+  "author": "Qwen",
+  "downloads": 21936261,
+  "downloadsAllTime": 204657368,
+  "id": "Qwen/Qwen3-0.6B"
+ },
+ {
+  "_id": "621ffdc036468d709f174364",
+  "author": "FacebookAI",
+  "downloads": 21472601,
+  "downloadsAllTime": 712153513,
+  "id": "FacebookAI/xlm-roberta-base"
+ },
+ {
+  "_id": "6a6bd1dc7034404148ec9107",
+  "author": "Comfy-Org",
+  "downloads": 20848248,
+  "downloadsAllTime": 24276052,
+  "id": "Comfy-Org/MiniMax-H3"
+ },
+ {
+  "_id": "621ffdc136468d709f17ea62",
+  "author": "openai",
+  "downloads": 20569141,
+  "downloadsAllTime": 671594494,
+  "id": "openai/clip-vit-base-patch32"
+ },
+ {
+  "_id": "65f44de295b7d70871c368eb",
+  "author": "BAAI",
+  "downloads": 18075521,
+  "downloadsAllTime": 130760028,
+  "id": "BAAI/bge-reranker-v2-m3"
+ },
+ {
+  "_id": "639c045c34967bcf4564bdc5",
+  "author": "timm",
+  "downloads": 17810578,
+  "downloadsAllTime": 1150873975,
+  "id": "timm/mobilenetv3_small_100.lamb_in1k"
+ },
+ {
+  "_id": "67449267a8b7b9f766e74310",
+  "author": "trl-internal-testing",
+  "downloads": 16826360,
+  "downloadsAllTime": 108408976,
+  "id": "trl-internal-testing/tiny-Qwen2ForCausalLM-2.5"
+ },
+ {
+  "_id": "65c7188324e59a0e4f89d863",
+  "author": "nomic-ai",
+  "downloads": 16471818,
+  "downloadsAllTime": 149598627,
+  "id": "nomic-ai/nomic-embed-text-v1.5"
+ },
+ {
+  "_id": "66d0dccb3866d4d3087d3a9f",
+  "author": "Comfy-Org",
+  "downloads": 15824278,
+  "downloadsAllTime": 38130991,
+  "id": "Comfy-Org/stable-diffusion-v1-5-archive"
+ },
+ {
+  "_id": "621ffdc036468d709f17434d",
+  "author": "openai-community",
+  "downloads": 14607268,
+  "downloadsAllTime": 917151176,
+  "id": "openai-community/gpt2"
+ },
+ {
+  "_id": "621ffdc136468d709f17cdba",
+  "author": "jonatasgrosman",
+  "downloads": 13556736,
+  "downloadsAllTime": 90480777,
+  "id": "jonatasgrosman/wav2vec2-large-xlsr-53-japanese"
+ },
+ {
+  "_id": "69df2a9936056d27fc9fe708",
+  "author": "Qwen",
+  "downloads": 13525235,
+  "downloadsAllTime": 39064457,
+  "id": "Qwen/Qwen3.6-35B-A3B-FP8"
+ },
+ {
+  "_id": "64fff5087f91f94040eee912",
+  "author": "BAAI",
+  "downloads": 13370847,
+  "downloadsAllTime": 158795949,
+  "id": "BAAI/bge-large-en-v1.5"
+ },
+ {
+  "_id": "680da79d48c19d19cf82ab5e",
+  "author": "Qwen",
+  "downloads": 13232997,
+  "downloadsAllTime": 117824872,
+  "id": "Qwen/Qwen3-8B"
+ },
+ {
+  "_id": "688b451a53e70a07b0669a7c",
+  "author": "unsloth",
+  "downloads": 12662003,
+  "downloadsAllTime": 20289277,
+  "id": "unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF"
+ },
+ {
+  "_id": "69a194f2d29af86e5f085743",
+  "author": "Qwen",
+  "downloads": 12375273,
+  "downloadsAllTime": 58499301,
+  "id": "Qwen/Qwen3.5-9B"
+ },
+ {
+  "_id": "649e84b72ccae3ea1f35fb8b",
+  "author": "intfloat",
+  "downloads": 12207955,
+  "downloadsAllTime": 107465611,
+  "id": "intfloat/multilingual-e5-small"
+ },
+ {
+  "_id": "6397bfb731ec892cda3c4018",
+  "author": "timm",
+  "downloads": 12163575,
+  "downloadsAllTime": 35934865,
+  "id": "timm/efficientnet_b3.ra2_in1k"
+ },
+ {
+  "_id": "676ca1388118866906abbd7c",
+  "author": "hexgrad",
+  "downloads": 11578320,
+  "downloadsAllTime": 115839378,
+  "id": "hexgrad/Kokoro-82M"
+ },
+ {
+  "_id": "65dee9413aec0530562b4f09",
+  "author": "argmaxinc",
+  "downloads": 11495642,
+  "downloadsAllTime": 69320132,
+  "id": "argmaxinc/whisperkit-coreml"
+ },
+ {
+  "_id": "66e81cbcd683a3f4e5291bbf",
+  "author": "Qwen",
+  "downloads": 11487452,
+  "downloadsAllTime": 178086030,
+  "id": "Qwen/Qwen2.5-7B-Instruct"
+ },
+ {
+  "_id": "64ff2c767a4a6ae49afa72b5",
+  "author": "BAAI",
+  "downloads": 11416874,
+  "downloadsAllTime": 566091432,
+  "id": "BAAI/bge-base-en-v1.5"
+ },
+ {
+  "_id": "68ea05fb43df37d95ad2491d",
+  "author": "Qwen",
+  "downloads": 11329490,
+  "downloadsAllTime": 57047187,
+  "id": "Qwen/Qwen3-VL-8B-Instruct"
+ },
+ {
+  "_id": "6a17336ae6fe9ff6823ddb53",
+  "author": "nvidia",
+  "downloads": 10344528,
+  "downloadsAllTime": 30794756,
+  "id": "nvidia/Qwen3.6-35B-A3B-NVFP4"
+ },
+ {
+  "_id": "6a7d8038d813eea1a14a8db4",
+  "author": "unsloth",
+  "downloads": 9951693,
+  "downloadsAllTime": 9951693,
+  "id": "unsloth/Qwen3.8-27B-GGUF"
+ },
+ {
+  "_id": "644877453e498d66919f36ec",
+  "author": "Bingsu",
+  "downloads": 9722739,
+  "downloadsAllTime": 343039568,
+  "id": "Bingsu/adetailer"
+ },
+ {
+  "_id": "621ffdc036468d709f174350",
+  "author": "FacebookAI",
+  "downloads": 9657037,
+  "downloadsAllTime": 648360305,
+  "id": "FacebookAI/roberta-base"
+ },
+ {
+  "_id": "627b72ed67b1ac7afa4c42a7",
+  "author": "facebook",
+  "downloads": 9523312,
+  "downloadsAllTime": 210297393,
+  "id": "facebook/opt-125m"
+ },
+ {
+  "_id": "621ffdc136468d709f1802ed",
+  "author": "sentence-transformers",
+  "downloads": 9510353,
+  "downloadsAllTime": 127966488,
+  "id": "sentence-transformers/paraphrase-multilingual-mpnet-base-v2"
+ },
+ {
+  "_id": "6555d075325783cc791fb794",
+  "author": "pyannote",
+  "downloads": 9494162,
+  "downloadsAllTime": 343591118,
+  "id": "pyannote/speaker-diarization-3.1"
+ },
+ {
+  "_id": "63ee95d76349d1a6706e750f",
+  "author": "laion",
+  "downloads": 9199731,
+  "downloadsAllTime": 202120878,
+  "id": "laion/clap-htsat-fused"
+ },
+ {
+  "_id": "69b1b2ec895b2d5026e6bc2e",
+  "author": "google",
+  "downloads": 8332852,
+  "downloadsAllTime": 54140432,
+  "id": "google/gemma-4-31B-it"
+ },
+ {
+  "_id": "69b1dde5d77b87bf05eff3f9",
+  "author": "google",
+  "downloads": 8211474,
+  "downloadsAllTime": 55427612,
+  "id": "google/gemma-4-26B-A4B-it"
+ },
+ {
+  "_id": "68e41003885f21b4d7258fcf",
+  "author": "autogluon",
+  "downloads": 8162715,
+  "downloadsAllTime": 68138838,
+  "id": "autogluon/chronos-2"
+ },
+ {
+  "_id": "6795ffcd88cd7c0294702a72",
+  "author": "Qwen",
+  "downloads": 7979816,
+  "downloadsAllTime": 96975896,
+  "id": "Qwen/Qwen2.5-VL-7B-Instruct"
+ },
+ {
+  "_id": "621ffdc136468d709f17adc0",
+  "author": "facebook",
+  "downloads": 7959866,
+  "downloadsAllTime": 180916760,
+  "id": "facebook/contriever"
+ },
+ {
+  "_id": "67444762778b77a7cb777463",
+  "author": "amazon",
+  "downloads": 7787003,
+  "downloadsAllTime": 32988443,
+  "id": "amazon/chronos-bolt-small"
+ },
+ {
+  "_id": "66e98d74d4219fc3f1db215f",
+  "author": "Qwen",
+  "downloads": 7607851,
+  "downloadsAllTime": 117796359,
+  "id": "Qwen/Qwen2.5-3B-Instruct"
+ },
+ {
+  "_id": "69e72c857e1bebc64bf29c7d",
+  "author": "Qwen",
+  "downloads": 7594269,
+  "downloadsAllTime": 31723362,
+  "id": "Qwen/Qwen3.6-27B-FP8"
+ },
+ {
+  "_id": "6540d2d50cb8e9d8e63a1e1f",
+  "author": "coqui",
+  "downloads": 7572226,
+  "downloadsAllTime": 119815502,
+  "id": "coqui/XTTS-v2"
+ },
+ {
+  "_id": "66e98dd5899bdb384bd953b4",
+  "author": "Qwen",
+  "downloads": 7448475,
+  "downloadsAllTime": 214504186,
+  "id": "Qwen/Qwen2.5-1.5B-Instruct"
+ },
+ {
+  "_id": "69a1adef9060862380ddaff7",
+  "author": "Qwen",
+  "downloads": 7283458,
+  "downloadsAllTime": 41977587,
+  "id": "Qwen/Qwen3.5-4B"
+ },
+ {
+  "_id": "692651442d28dcd60d675b85",
+  "author": "Comfy-Org",
+  "downloads": 7218680,
+  "downloadsAllTime": 35366954,
+  "id": "Comfy-Org/z_image_turbo"
+ },
+ {
+  "_id": "649e866b9badc2e0a464292e",
+  "author": "intfloat",
+  "downloads": 7147929,
+  "downloadsAllTime": 105140176,
+  "id": "intfloat/multilingual-e5-large"
+ },
+ {
+  "_id": "621ffdc036468d709f174347",
+  "author": "distilbert",
+  "downloads": 7067963,
+  "downloadsAllTime": 683339249,
+  "id": "distilbert/distilbert-base-uncased"
+ },
+ {
+  "_id": "66fba7309482f97131bf08d6",
+  "author": "openai",
+  "downloads": 7052579,
+  "downloadsAllTime": 114353304,
+  "id": "openai/whisper-large-v3-turbo"
+ },
+ {
+  "_id": "621ffdc136468d709f17ea63",
+  "author": "openai",
+  "downloads": 7043261,
+  "downloadsAllTime": 1186573690,
+  "id": "openai/clip-vit-large-patch14"
+ },
+ {
+  "_id": "683f05dc98de733bf4c59f3d",
+  "author": "Qwen",
+  "downloads": 6957147,
+  "downloadsAllTime": 82221218,
+  "id": "Qwen/Qwen3-Embedding-0.6B"
+ },
+ {
+  "_id": "64674ee0e92e2372d5cb7b0a",
+  "author": "intfloat",
+  "downloads": 6874970,
+  "downloadsAllTime": 61335170,
+  "id": "intfloat/multilingual-e5-base"
+ },
+ {
+  "_id": "6a61faabc1d3550adbd5e16b",
+  "author": "farbodtavakkoli",
+  "downloads": 6769205,
+  "downloadsAllTime": 10518072,
+  "id": "farbodtavakkoli/OTel-2.0-LLM-31B-IT"
+ },
+ {
+  "_id": "621ffdc036468d709f174353",
+  "author": "FacebookAI",
+  "downloads": 6642897,
+  "downloadsAllTime": 654243032,
+  "id": "FacebookAI/roberta-large"
+ },
+ {
+  "_id": "68913539bd3d0a833438591d",
+  "author": "openai",
+  "downloads": 6448506,
+  "downloadsAllTime": 94744834,
+  "id": "openai/gpt-oss-20b"
+ },
+ {
+  "_id": "6552418ff52a9bb9b72adc2a",
+  "author": "pyannote",
+  "downloads": 6424507,
+  "downloadsAllTime": 393185607,
+  "id": "pyannote/wespeaker-voxceleb-resnet34-LM"
+ },
+ {
+  "_id": "621ffdc136468d709f17a20d",
+  "author": "cross-encoder",
+  "downloads": 6370603,
+  "downloadsAllTime": 63065550,
+  "id": "cross-encoder/ms-marco-MiniLM-L4-v2"
+ },
+ {
+  "_id": "680da769038897aa905586a7",
+  "author": "Qwen",
+  "downloads": 6361320,
+  "downloadsAllTime": 77577096,
+  "id": "Qwen/Qwen3-4B"
+ },
+ {
+  "_id": "6a7d79f66c7b74d953ca055e",
+  "author": "Qwen",
+  "downloads": 6234247,
+  "downloadsAllTime": 6234247,
+  "id": "Qwen/Qwen3.8-27B-FP8"
+ },
+ {
+  "_id": "6734a99957e08f763f138ec2",
+  "author": "autogluon",
+  "downloads": 6212718,
+  "downloadsAllTime": 150631221,
+  "id": "autogluon/chronos-bolt-small"
+ },
+ {
+  "_id": "66eaedefece5ee215637cc82",
+  "author": "meta-llama",
+  "downloads": 6202745,
+  "downloadsAllTime": 99774910,
+  "id": "meta-llama/Llama-3.2-1B-Instruct"
+ },
+ {
+  "_id": "687960110308ba70c1dffb88",
+  "author": "ibm-granite",
+  "downloads": 6095559,
+  "downloadsAllTime": 21182918,
+  "id": "ibm-granite/granite-embedding-small-english-r2"
+ },
+ {
+  "_id": "650d827e72afb1e60e8a8a6a",
+  "author": "pyannote",
+  "downloads": 6004544,
+  "downloadsAllTime": 395861954,
+  "id": "pyannote/segmentation-3.0"
+ },
+ {
+  "_id": "66e81c0ecfd2f50991047e92",
+  "author": "Qwen",
+  "downloads": 5926361,
+  "downloadsAllTime": 63379611,
+  "id": "Qwen/Qwen2.5-0.5B-Instruct"
+ },
+ {
+  "_id": "6a72f2e302294c7d32dd278e",
+  "author": "Qwen",
+  "downloads": 5739341,
+  "downloadsAllTime": 5739341,
+  "id": "Qwen/Qwen3.8-27B"
+ },
+ {
+  "_id": "6698d8a0653e4babe21e1e7d",
+  "author": "meta-llama",
+  "downloads": 5734979,
+  "downloadsAllTime": 181613311,
+  "id": "meta-llama/Llama-3.1-8B-Instruct"
+ },
+ {
+  "_id": "6930168cf0df0882f6ff96a7",
+  "author": "autogluon",
+  "downloads": 5426646,
+  "downloadsAllTime": 22211014,
+  "id": "autogluon/chronos-2-small"
+ },
+ {
+  "_id": "69e72c53d67c64360835c464",
+  "author": "Qwen",
+  "downloads": 5366737,
+  "downloadsAllTime": 25442562,
+  "id": "Qwen/Qwen3.6-27B"
+ },
+ {
+  "_id": "68913522f16f3c8aaffccf1f",
+  "author": "openai",
+  "downloads": 5259501,
+  "downloadsAllTime": 54261151,
+  "id": "openai/gpt-oss-120b"
+ },
+ {
+  "_id": "621ffdc036468d709f176f71",
+  "author": "ProsusAI",
+  "downloads": 5212114,
+  "downloadsAllTime": 117919607,
+  "id": "ProsusAI/finbert"
+ },
+ {
+  "_id": "6a68883e4b75c98247e1b73c",
+  "author": "MiniMaxAI",
+  "downloads": 5118457,
+  "downloadsAllTime": 5894892,
+  "id": "MiniMaxAI/MiniMax-H3"
+ },
+ {
+  "_id": "654a84cadff2f49007ce6c37",
+  "author": "openai",
+  "downloads": 5085301,
+  "downloadsAllTime": 144691808,
+  "id": "openai/whisper-large-v3"
+ },
+ {
+  "_id": "67fed0372c0d96649bf8830b",
+  "author": "pyannote",
+  "downloads": 5072652,
+  "downloadsAllTime": 26778842,
+  "id": "pyannote/speaker-diarization-community-1"
+ },
+ {
+  "_id": "621ffdc136468d709f17b7d7",
+  "author": "google",
+  "downloads": 5051230,
+  "downloadsAllTime": 178151120,
+  "id": "google/vit-base-patch16-224"
+ },
+ {
+  "_id": "680daa1b62e834e6fd9fdbdf",
+  "author": "Qwen",
+  "downloads": 5024271,
+  "downloadsAllTime": 55127727,
+  "id": "Qwen/Qwen3-32B"
+ },
+ {
+  "_id": "621ffdc136468d709f17cdbd",
+  "author": "jonatasgrosman",
+  "downloads": 5014344,
+  "downloadsAllTime": 174948392,
+  "id": "jonatasgrosman/wav2vec2-large-xlsr-53-portuguese"
+ },
+ {
+  "_id": "66699700602e723c8cb7d4c4",
+  "author": "lpiccinelli",
+  "downloads": 4976912,
+  "downloadsAllTime": 104754354,
+  "id": "lpiccinelli/unidepth-v2-vitl14"
+ },
+ {
+  "_id": "6885cd8c6963bab90aab7f6f",
+  "author": "Comfy-Org",
+  "downloads": 4917601,
+  "downloadsAllTime": 82358756,
+  "id": "Comfy-Org/Wan_2.2_ComfyUI_Repackaged"
+ },
+ {
+  "_id": "69a5ebb435468e1470916cd0",
+  "author": "google",
+  "downloads": 4850749,
+  "downloadsAllTime": 29489201,
+  "id": "google/gemma-4-E4B-it"
+ },
+ {
+  "_id": "64fff595990aaba7bb312c5e",
+  "author": "BAAI",
+  "downloads": 4837967,
+  "downloadsAllTime": 25921384,
+  "id": "BAAI/bge-small-zh-v1.5"
+ },
+ {
+  "_id": "6759799ed862e62a825b5413",
+  "author": "answerdotai",
+  "downloads": 4836550,
+  "downloadsAllTime": 63137452,
+  "id": "answerdotai/ModernBERT-base"
+ },
+ {
+  "_id": "664833b04fa4afb44609f6cc",
+  "author": "dphn",
+  "downloads": 4780799,
+  "downloadsAllTime": 75115489,
+  "id": "dphn/dolphin-2.9.1-yi-1.5-34b"
+ },
+ {
+  "_id": "621ffdc136468d709f17f134",
+  "author": "pyannote",
+  "downloads": 4686364,
+  "downloadsAllTime": 199089573,
+  "id": "pyannote/segmentation"
+ },
+ {
+  "_id": "6a6c4f10abfe36920d2f90a1",
+  "author": "deepseek-ai",
+  "downloads": 4559659,
+  "downloadsAllTime": 5292685,
+  "id": "deepseek-ai/DeepSeek-V4-Flash-0731"
+ },
+ {
+  "_id": "69df2937a1a44a4df58e0dd5",
+  "author": "Qwen",
+  "downloads": 4546612,
+  "downloadsAllTime": 26536707,
+  "id": "Qwen/Qwen3.6-35B-A3B"
+ },
+ {
+  "_id": "669d5ef584e6a96448f4c55d",
+  "author": "meta-llama",
+  "downloads": 4496208,
+  "downloadsAllTime": 15725969,
+  "id": "meta-llama/Prompt-Guard-86M"
+ },
+ {
+  "_id": "621ffdc136468d709f17a4a5",
+  "author": "dbmdz",
+  "downloads": 4467746,
+  "downloadsAllTime": 55836212,
+  "id": "dbmdz/bert-large-cased-finetuned-conll03-english"
+ },
+ {
+  "_id": "6a3cb4edb9ef7094c0c80d35",
+  "author": "ornith-ai",
+  "downloads": 4419441,
+  "downloadsAllTime": 9908520,
+  "id": "ornith-ai/Ornith-1.0-9B-GGUF"
+ },
+ {
+  "_id": "64c7e6f5203170e13c04016f",
+  "author": "facebook",
+  "downloads": 4411040,
+  "downloadsAllTime": 56814709,
+  "id": "facebook/dinov2-small"
+ },
+ {
+  "_id": "621ffdc136468d709f17f137",
+  "author": "pyannote",
+  "downloads": 4369875,
+  "downloadsAllTime": 71708649,
+  "id": "pyannote/voice-activity-detection"
+ },
+ {
+  "_id": "677fac8d7297fab4900968a7",
+  "author": "datasocietyco",
+  "downloads": 4297395,
+  "downloadsAllTime": 11015246,
+  "id": "datasocietyco/bge-base-en-v1.5-course-recommender-v5"
+ },
+ {
+  "_id": "621ffdc036468d709f174356",
+  "author": "google-t5",
+  "downloads": 4248528,
+  "downloadsAllTime": 172367863,
+  "id": "google-t5/t5-base"
+ },
+ {
+  "_id": "6529d7a960f06c6e52e84b53",
+  "author": "Falconsai",
+  "downloads": 4202529,
+  "downloadsAllTime": 1382626730,
+  "id": "Falconsai/nsfw_image_detection"
+ },
+ {
+  "_id": "621ffdc036468d709f174337",
+  "author": "google-bert",
+  "downloads": 4149549,
+  "downloadsAllTime": 118620124,
+  "id": "google-bert/bert-base-multilingual-uncased"
+ },
+ {
+  "_id": "621ffdc136468d709f17defb",
+  "author": "microsoft",
+  "downloads": 4132773,
+  "downloadsAllTime": 49542858,
+  "id": "microsoft/mdeberta-v3-base"
+ },
+ {
+  "_id": "621ffdc136468d709f17cdbc",
+  "author": "jonatasgrosman",
+  "downloads": 4102506,
+  "downloadsAllTime": 37563239,
+  "id": "jonatasgrosman/wav2vec2-large-xlsr-53-polish"
+ },
+ {
+  "_id": "69798100a4e37b8a8fc8fc55",
+  "author": "Qwen",
+  "downloads": 4003316,
+  "downloadsAllTime": 14610122,
+  "id": "Qwen/Qwen3-ASR-1.7B"
+ },
+ {
+  "_id": "65baad0a3b7d037f13f807fa",
+  "author": "nomic-ai",
+  "downloads": 3945262,
+  "downloadsAllTime": 55931133,
+  "id": "nomic-ai/nomic-embed-text-v1"
+ },
+ {
+  "_id": "68ea05ea8bfbf816c8e9ad2e",
+  "author": "Qwen",
+  "downloads": 3932885,
+  "downloadsAllTime": 25293850,
+  "id": "Qwen/Qwen3-VL-4B-Instruct"
+ },
+ {
+  "_id": "621ffdc036468d709f174369",
+  "author": "FacebookAI",
+  "downloads": 3924898,
+  "downloadsAllTime": 716603710,
+  "id": "FacebookAI/xlm-roberta-large"
+ },
+ {
+  "_id": "621ffdc136468d709f180292",
+  "author": "sentence-transformers",
+  "downloads": 3878638,
+  "downloadsAllTime": 251474494,
+  "id": "sentence-transformers/all-MiniLM-L12-v2"
+ },
+ {
+  "_id": "621ffdc036468d709f174346",
+  "author": "distilbert",
+  "downloads": 3867192,
+  "downloadsAllTime": 400383197,
+  "id": "distilbert/distilbert-base-uncased-finetuned-sst-2-english"
+ },
+ {
+  "_id": "66e98a3db0adbd1a248a240d",
+  "author": "Qwen",
+  "downloads": 3854442,
+  "downloadsAllTime": 21044066,
+  "id": "Qwen/Qwen2.5-7B-Instruct-AWQ"
+ },
+ {
+  "_id": "621ffdc136468d709f17cdbe",
+  "author": "jonatasgrosman",
+  "downloads": 3736456,
+  "downloadsAllTime": 136267549,
+  "id": "jonatasgrosman/wav2vec2-large-xlsr-53-russian"
+ },
+ {
+  "_id": "621ffdc036468d709f174331",
+  "author": "google-bert",
+  "downloads": 3695669,
+  "downloadsAllTime": 326697133,
+  "id": "google-bert/bert-base-cased"
+ },
+ {
+  "_id": "65636f5fd5e3c35c793c135e",
+  "author": "Qwen",
+  "downloads": 3682093,
+  "downloadsAllTime": 6163140,
+  "id": "Qwen/Qwen-72B"
+ },
+ {
+  "_id": "621ffdc136468d709f17cdb2",
+  "author": "jonatasgrosman",
+  "downloads": 3680300,
+  "downloadsAllTime": 45224864,
+  "id": "jonatasgrosman/wav2vec2-large-xlsr-53-dutch"
+ },
+ {
+  "_id": "621ffdc136468d709f17c84e",
+  "author": "indonesian-nlp",
+  "downloads": 3668478,
+  "downloadsAllTime": 18170377,
+  "id": "indonesian-nlp/wav2vec2-indonesian-javanese-sundanese"
+ },
+ {
+  "_id": "63225a78a418a789a23cad4a",
+  "author": "laion",
+  "downloads": 3588423,
+  "downloadsAllTime": 114772018,
+  "id": "laion/CLIP-ViT-B-32-laion2B-s34B-b79K"
+ },
+ {
+  "_id": "64ff084ce69fc4d5269e99f6",
+  "author": "BAAI",
+  "downloads": 3576770,
+  "downloadsAllTime": 47209264,
+  "id": "BAAI/bge-reranker-base"
+ },
+ {
+  "_id": "680da7517bcb5198014ad394",
+  "author": "Qwen",
+  "downloads": 3573572,
+  "downloadsAllTime": 60193333,
+  "id": "Qwen/Qwen3-1.7B"
+ },
+ {
+  "_id": "6891e3bb084ce75acffb033d",
+  "author": "Qwen",
+  "downloads": 3541490,
+  "downloadsAllTime": 59554392,
+  "id": "Qwen/Qwen3-4B-Instruct-2507"
+ },
+ {
+  "_id": "6795ff8f7534713f94918fc5",
+  "author": "Qwen",
+  "downloads": 3452458,
+  "downloadsAllTime": 100802518,
+  "id": "Qwen/Qwen2.5-VL-3B-Instruct"
+ },
+ {
+  "_id": "63e3f73a27da6c56511c6ccc",
+  "author": "EleutherAI",
+  "downloads": 3445988,
+  "downloadsAllTime": 24373403,
+  "id": "EleutherAI/pythia-160m"
+ },
+ {
+  "_id": "6a7f2f68690f1dca70192078",
+  "author": "lmstudio-community",
+  "downloads": 3386186,
+  "downloadsAllTime": 3386186,
+  "id": "lmstudio-community/Qwen3.8-27B-MLX-4bit"
+ },
+ {
+  "_id": "63225af9e4399dd6139c1cd7",
+  "author": "laion",
+  "downloads": 3380876,
+  "downloadsAllTime": 10871811,
+  "id": "laion/CLIP-ViT-L-14-laion2B-s32B-b82K"
+ },
+ {
+  "_id": "697094e713cfabf70b302a63",
+  "author": "Qwen",
+  "downloads": 3306787,
+  "downloadsAllTime": 16308972,
+  "id": "Qwen/Qwen3-TTS-12Hz-1.7B-Base"
+ },
+ {
+  "_id": "621ffdc136468d709f17cdb7",
+  "author": "jonatasgrosman",
+  "downloads": 3290253,
+  "downloadsAllTime": 19529683,
+  "id": "jonatasgrosman/wav2vec2-large-xlsr-53-greek"
+ },
+ {
+  "_id": "69a5ebd10366a06bfd73da71",
+  "author": "google",
+  "downloads": 3269386,
+  "downloadsAllTime": 17005902,
+  "id": "google/gemma-4-E2B-it"
+ },
+ {
+  "_id": "622fea36174feb5439c2e4be",
+  "author": "cardiffnlp",
+  "downloads": 3259746,
+  "downloadsAllTime": 326331736,
+  "id": "cardiffnlp/twitter-roberta-base-sentiment-latest"
+ },
+ {
+  "_id": "621ffdc136468d709f17adb7",
+  "author": "facebook",
+  "downloads": 3195744,
+  "downloadsAllTime": 160573457,
+  "id": "facebook/bart-large-mnli"
+ },
+ {
+  "_id": "6a11001ba8f0f4aacca069ec",
+  "author": "google",
+  "downloads": 3195490,
+  "downloadsAllTime": 9878668,
+  "id": "google/gemma-4-12B-it"
+ },
+ {
+  "_id": "6a7f32034d5469f88eb03323",
+  "author": "lmstudio-community",
+  "downloads": 3186958,
+  "downloadsAllTime": 3186958,
+  "id": "lmstudio-community/Qwen3.8-27B-MLX-8bit"
+ },
+ {
+  "_id": "621ffdc136468d709f17ae62",
+  "author": "facebook",
+  "downloads": 3168390,
+  "downloadsAllTime": 42994513,
+  "id": "facebook/wav2vec2-base"
+ },
+ {
+  "_id": "6a84f2a4e3b80a40c641b592",
+  "author": "ornith-ai",
+  "downloads": 3157453,
+  "downloadsAllTime": 3157453,
+  "id": "ornith-ai/Ornith-1.5-9B-GGUF"
+ },
+ {
+  "_id": "6a7f30cdfc702f8cdd315355",
+  "author": "lmstudio-community",
+  "downloads": 3133318,
+  "downloadsAllTime": 3133318,
+  "id": "lmstudio-community/Qwen3.8-27B-MLX-6bit"
+ },
+ {
+  "_id": "6485f88d2e6087929e2f662e",
+  "author": "charactr",
+  "downloads": 3123240,
+  "downloadsAllTime": 49802539,
+  "id": "charactr/vocos-mel-24khz"
+ },
+ {
+  "_id": "6a7f3010e36b4ccbde6178db",
+  "author": "lmstudio-community",
+  "downloads": 3100333,
+  "downloadsAllTime": 3100333,
+  "id": "lmstudio-community/Qwen3.8-27B-MLX-5bit"
+ },
+ {
+  "_id": "6a31ceb8d10081bc032ac8bd",
+  "author": "Comfy-Org",
+  "downloads": 3060187,
+  "downloadsAllTime": 4322371,
+  "id": "Comfy-Org/Krea-2"
+ },
+ {
+  "_id": "63314bef9e3604f3f17e5b9e",
+  "author": "openai",
+  "downloads": 3030027,
+  "downloadsAllTime": 133402901,
+  "id": "openai/whisper-small"
+ },
+ {
+  "_id": "6a375abf5427d61a91ee2f82",
+  "author": "ornith-ai",
+  "downloads": 3027521,
+  "downloadsAllTime": 6262234,
+  "id": "ornith-ai/Ornith-1.0-35B"
+ },
+ {
+  "_id": "6a3cb50c4f7477d7ac6fcb42",
+  "author": "ornith-ai",
+  "downloads": 3025226,
+  "downloadsAllTime": 7392041,
+  "id": "ornith-ai/Ornith-1.0-35B-GGUF"
+ },
+ {
+  "_id": "683f07454f6e7115e88614de",
+  "author": "Qwen",
+  "downloads": 3020476,
+  "downloadsAllTime": 19820299,
+  "id": "Qwen/Qwen3-Embedding-4B"
+ },
+ {
+  "_id": "68f4e3f4f82416217114139c",
+  "author": "Qwen",
+  "downloads": 2987379,
+  "downloadsAllTime": 215363078,
+  "id": "Qwen/Qwen3-VL-2B-Instruct"
+ },
+ {
+  "_id": "65e9e11efd3543cc7c07ea30",
+  "author": "mixedbread-ai",
+  "downloads": 2985399,
+  "downloadsAllTime": 92976482,
+  "id": "mixedbread-ai/mxbai-embed-large-v1"
+ },
+ {
+  "_id": "6a83fdf1993fbb53ef83dbb1",
+  "author": "ornith-ai",
+  "downloads": 2954686,
+  "downloadsAllTime": 2954686,
+  "id": "ornith-ai/Ornith-1.5-35B-A3B-GGUF"
+ },
+ {
+  "_id": "69b86c4be800404a70a77eaf",
+  "author": "datalab-to",
+  "downloads": 2941785,
+  "downloadsAllTime": 10431025,
+  "id": "datalab-to/chandra-ocr-2"
+ },
+ {
+  "_id": "64b56fed9c750f981bbc4958",
+  "author": "facebook",
+  "downloads": 2940758,
+  "downloadsAllTime": 101521901,
+  "id": "facebook/dinov2-base"
+ },
+ {
+  "_id": "6a7d804355bb95e87d31c535",
+  "author": "unsloth",
+  "downloads": 2936598,
+  "downloadsAllTime": 2936598,
+  "id": "unsloth/Qwen3.8-27B-NVFP4"
+ },
+ {
+  "_id": "621ffdc136468d709f17dee4",
+  "author": "microsoft",
+  "downloads": 2928707,
+  "downloadsAllTime": 72708845,
+  "id": "microsoft/deberta-v3-base"
+ },
+ {
+  "_id": "6a350e917c8a230bec04a600",
+  "author": "baidu",
+  "downloads": 2925179,
+  "downloadsAllTime": 7047785,
+  "id": "baidu/Unlimited-OCR"
+ },
+ {
+  "_id": "69ea403f245ed872473dc65f",
+  "author": "unsloth",
+  "downloads": 2918230,
+  "downloadsAllTime": 8688028,
+  "id": "unsloth/Qwen3.6-27B-NVFP4"
+ },
+ {
+  "_id": "6495b4f67dbf135267f1ae03",
+  "author": "E-MIMIC",
+  "downloads": 2911619,
+  "downloadsAllTime": 32553837,
+  "id": "E-MIMIC/inclusively-reformulation-it5"
+ },
+ {
+  "_id": "621ffdc136468d709f17cdb8",
+  "author": "jonatasgrosman",
+  "downloads": 2827081,
+  "downloadsAllTime": 16618357,
+  "id": "jonatasgrosman/wav2vec2-large-xlsr-53-hungarian"
+ },
+ {
+  "_id": "6a6738269035838f92f88225",
+  "author": "RadixArk",
+  "downloads": 2774395,
+  "downloadsAllTime": 3981327,
+  "id": "RadixArk/Kimi-K3-DSpark"
+ },
+ {
+  "_id": "666ce6f4067382b3e98317c6",
+  "author": "microsoft",
+  "downloads": 2760080,
+  "downloadsAllTime": 21765977,
+  "id": "microsoft/Florence-2-base"
+ },
+ {
+  "_id": "678de32a08277d61535e073c",
+  "author": "Alibaba-NLP",
+  "downloads": 2735841,
+  "downloadsAllTime": 16287747,
+  "id": "Alibaba-NLP/gte-reranker-modernbert-base"
+ },
+ {
+  "_id": "674dafddd3f8b0106ee6f2db",
+  "author": "microsoft",
+  "downloads": 2725603,
+  "downloadsAllTime": 37983817,
+  "id": "microsoft/TRELLIS-image-large"
+ },
+ {
+  "_id": "66e81cdaa3681387ffc12b55",
+  "author": "Qwen",
+  "downloads": 2720955,
+  "downloadsAllTime": 47540306,
+  "id": "Qwen/Qwen2.5-14B-Instruct"
+ },
+ {
+  "_id": "67ced65c9b9a3df71008da90",
+  "author": "google",
+  "downloads": 2687336,
+  "downloadsAllTime": 49490124,
+  "id": "google/gemma-3-1b-it"
+ },
+ {
+  "_id": "6862c18f3f46c4f43c817d10",
+  "author": "NeoQuasar",
+  "downloads": 2680979,
+  "downloadsAllTime": 16673657,
+  "id": "NeoQuasar/Kronos-Tokenizer-base"
+ },
+ {
+  "_id": "677e72ae35c0ec275d930b2c",
+  "author": "usyd-community",
+  "downloads": 2649675,
+  "downloadsAllTime": 41353757,
+  "id": "usyd-community/vitpose-plus-base"
+ },
+ {
+  "_id": "664dc170474f2283fa5c8659",
+  "author": "mistralai",
+  "downloads": 2648636,
+  "downloadsAllTime": 45122228,
+  "id": "mistralai/Mistral-7B-Instruct-v0.3"
+ },
+ {
+  "_id": "6a2cfbf15c4b5ce712d08eb6",
+  "author": "moonshotai",
+  "downloads": 2639566,
+  "downloadsAllTime": 3971922,
+  "id": "moonshotai/Kimi-K3"
+ },
+ {
+  "_id": "69a380a0ae63980df575326b",
+  "author": "Qwen",
+  "downloads": 2637175,
+  "downloadsAllTime": 13112381,
+  "id": "Qwen/Qwen3.5-2B"
+ },
+ {
+  "_id": "697094d13b1fe1d6aa85d594",
+  "author": "Qwen",
+  "downloads": 2616777,
+  "downloadsAllTime": 13766403,
+  "id": "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice"
+ },
+ {
+  "_id": "645192b75fb40b9f50b71914",
+  "author": "Xenova",
+  "downloads": 2611837,
+  "downloadsAllTime": 26320108,
+  "id": "Xenova/all-MiniLM-L6-v2"
+ },
+ {
+  "_id": "650015a612c1442d9930ad41",
+  "author": "BAAI",
+  "downloads": 2603289,
+  "downloadsAllTime": 33281382,
+  "id": "BAAI/bge-reranker-large"
+ },
+ {
+  "_id": "6262c267cbebf7e1ac29e364",
+  "author": "openai",
+  "downloads": 2587842,
+  "downloadsAllTime": 224245042,
+  "id": "openai/clip-vit-large-patch14-336"
+ },
+ {
+  "_id": "6a7f2d9752ecf5558942e80c",
+  "author": "lmstudio-community",
+  "downloads": 2581203,
+  "downloadsAllTime": 2581203,
+  "id": "lmstudio-community/Qwen3.8-27B-GGUF"
+ },
+ {
+  "_id": "621ffdc136468d709f17cdb0",
+  "author": "jonatasgrosman",
+  "downloads": 2560005,
+  "downloadsAllTime": 58277319,
+  "id": "jonatasgrosman/wav2vec2-large-xlsr-53-arabic"
+ },
+ {
+  "_id": "6722d34c3189f1de8ad8ce22",
+  "author": "HuggingFaceTB",
+  "downloads": 2557368,
+  "downloadsAllTime": 19699182,
+  "id": "HuggingFaceTB/SmolLM2-135M"
+ },
+ {
+  "_id": "621ffdc136468d709f180295",
+  "author": "sentence-transformers",
+  "downloads": 2555017,
+  "downloadsAllTime": 43603939,
+  "id": "sentence-transformers/all-distilroberta-v1"
+ },
+ {
+  "_id": "69ceedbf0689e4caa5ab755f",
+  "author": "HauhauCS",
+  "downloads": 2543857,
+  "downloadsAllTime": 6073372,
+  "id": "HauhauCS/Gemma-4-E4B-Uncensored-HauhauCS-Aggressive"
+ },
+ {
+  "_id": "6633ff6f639423da94f8fdf0",
+  "author": "MahmoudAshraf",
+  "downloads": 2541051,
+  "downloadsAllTime": 75301321,
+  "id": "MahmoudAshraf/mms-300m-1130-forced-aligner"
+ },
+ {
+  "_id": "621ffdc136468d709f17a2f6",
+  "author": "daekeun-ml",
+  "downloads": 2504817,
+  "downloadsAllTime": 12696834,
+  "id": "daekeun-ml/koelectra-small-v3-nsmc"
+ },
+ {
+  "_id": "6734a967dbb393497ce9e4be",
+  "author": "autogluon",
+  "downloads": 2479211,
+  "downloadsAllTime": 25868481,
+  "id": "autogluon/chronos-bolt-tiny"
+ },
+ {
+  "_id": "67be35b066f702bfed7d3bdc",
+  "author": "Comfy-Org",
+  "downloads": 2475853,
+  "downloadsAllTime": 55983341,
+  "id": "Comfy-Org/Wan_2.1_ComfyUI_repackaged"
+ },
+ {
+  "_id": "67b3a02810c53cbe24f1704a",
+  "author": "google",
+  "downloads": 2471413,
+  "downloadsAllTime": 7556293,
+  "id": "google/siglip2-giant-opt-patch16-384"
+ },
+ {
+  "_id": "65e715144e6a0786c4ebf7fe",
+  "author": "iitolstykh",
+  "downloads": 2459089,
+  "downloadsAllTime": 25733414,
+  "id": "iitolstykh/mivolo_v2"
+ },
+ {
+  "_id": "68f1e08ddba20aca9c602acb",
+  "author": "deepseek-ai",
+  "downloads": 2441874,
+  "downloadsAllTime": 34130135,
+  "id": "deepseek-ai/DeepSeek-OCR"
+ },
+ {
+  "_id": "683f0ad7aadcd6f4348272cf",
+  "author": "Qwen",
+  "downloads": 2425787,
+  "downloadsAllTime": 11508651,
+  "id": "Qwen/Qwen3-Reranker-4B"
+ },
+ {
+  "_id": "699d71cd2b8317e9175c4457",
+  "author": "Qwen",
+  "downloads": 2418776,
+  "downloadsAllTime": 18338816,
+  "id": "Qwen/Qwen3.5-35B-A3B"
+ },
+ {
+  "_id": "678645a67be4f6dfce7cb1cd",
+  "author": "trl-internal-testing",
+  "downloads": 2410392,
+  "downloadsAllTime": 13968681,
+  "id": "trl-internal-testing/tiny-Qwen2ForSequenceClassification-2.5"
+ },
+ {
+  "_id": "699d726468613908140f9c29",
+  "author": "Qwen",
+  "downloads": 2405064,
+  "downloadsAllTime": 18335220,
+  "id": "Qwen/Qwen3.5-27B"
+ },
+ {
+  "_id": "649b553bc4afb9f5bcf9c149",
+  "author": "colbert-ir",
+  "downloads": 2399437,
+  "downloadsAllTime": 208111518,
+  "id": "colbert-ir/colbertv2.0"
+ },
+ {
+  "_id": "6a7e8ee8b77fccb497299fb3",
+  "author": "JonathanColetti",
+  "downloads": 2395758,
+  "downloadsAllTime": 2395758,
+  "id": "JonathanColetti/Qwen3.8-27B-Uncensored-GGUF"
+ },
+ {
+  "_id": "69a380cd89a162034708a04b",
+  "author": "Qwen",
+  "downloads": 2385869,
+  "downloadsAllTime": 16917245,
+  "id": "Qwen/Qwen3.5-0.8B"
+ },
+ {
+  "_id": "687954d31ba4287d60fdc4e1",
+  "author": "google",
+  "downloads": 2364025,
+  "downloadsAllTime": 16924653,
+  "id": "google/embeddinggemma-300m"
+ },
+ {
+  "_id": "66e9866925a2de6873aa5a9b",
+  "author": "Qwen",
+  "downloads": 2362316,
+  "downloadsAllTime": 21872520,
+  "id": "Qwen/Qwen2.5-Coder-7B-Instruct"
+ },
+ {
+  "_id": "6581493d11f7f587918f0f15",
+  "author": "facebook",
+  "downloads": 2342694,
+  "downloadsAllTime": 39570997,
+  "id": "facebook/w2v-bert-2.0"
+ },
+ {
+  "_id": "66d99c7e7577df8b2d4cff73",
+  "author": "jinaai",
+  "downloads": 2336841,
+  "downloadsAllTime": 79717637,
+  "id": "jinaai/jina-embeddings-v3"
+ },
+ {
+  "_id": "6501d9b3503ea4a9bea7b68b",
+  "author": "Xenova",
+  "downloads": 2332848,
+  "downloadsAllTime": 31072979,
+  "id": "Xenova/bge-base-en-v1.5"
+ },
+ {
+  "_id": "621ffdc136468d709f1815cc",
+  "author": "w11wo",
+  "downloads": 2307432,
+  "downloadsAllTime": 58762742,
+  "id": "w11wo/indonesian-roberta-base-posp-tagger"
+ },
+ {
+  "_id": "6548e839bd9211fee7239add",
+  "author": "sentence-transformers-testing",
+  "downloads": 2306497,
+  "downloadsAllTime": 13223000,
+  "id": "sentence-transformers-testing/stsb-bert-tiny-safetensors"
+ },
+ {
+  "_id": "68ea26a6ff1e4c45c1da031f",
+  "author": "Qwen",
+  "downloads": 2301185,
+  "downloadsAllTime": 9396304,
+  "id": "Qwen/Qwen3-VL-8B-Instruct-FP8"
+ },
+ {
+  "_id": "621ffdc136468d709f17b53b",
+  "author": "gigant",
+  "downloads": 2301043,
+  "downloadsAllTime": 12426311,
+  "id": "gigant/romanian-wav2vec2"
+ },
+ {
+  "_id": "69cf09a393e9467460f527d5",
+  "author": "cyankiwi",
+  "downloads": 2293151,
+  "downloadsAllTime": 19212985,
+  "id": "cyankiwi/gemma-4-26B-A4B-it-AWQ-4bit"
+ },
+ {
+  "_id": "6813510ed8f9c843f95dca42",
+  "author": "Qwen",
+  "downloads": 2282595,
+  "downloadsAllTime": 13334618,
+  "id": "Qwen/Qwen3-14B-AWQ"
+ },
+ {
+  "_id": "621ffdc136468d709f1802e5",
+  "author": "sentence-transformers",
+  "downloads": 2266004,
+  "downloadsAllTime": 160832915,
+  "id": "sentence-transformers/paraphrase-MiniLM-L6-v2"
+ },
+ {
+  "_id": "680da7c9aa6c98cb395660ac",
+  "author": "Qwen",
+  "downloads": 2255369,
+  "downloadsAllTime": 20312023,
+  "id": "Qwen/Qwen3-30B-A3B"
+ },
+ {
+  "_id": "621ffdc136468d709f17920b",
+  "author": "anuragshas",
+  "downloads": 2244236,
+  "downloadsAllTime": 13534618,
+  "id": "anuragshas/wav2vec2-large-xlsr-53-telugu"
+ },
+ {
+  "_id": "69710b3a38616e3bf1912b76",
+  "author": "mistralai",
+  "downloads": 2236647,
+  "downloadsAllTime": 10519564,
+  "id": "mistralai/Voxtral-Mini-4B-Realtime-2602"
+ },
+ {
+  "_id": "67a68e1f9d0295d4578134d8",
+  "author": "nomic-ai",
+  "downloads": 2235464,
+  "downloadsAllTime": 15717443,
+  "id": "nomic-ai/nomic-embed-text-v2-moe"
+ },
+ {
+  "_id": "683f090e77b41ac9fc98c51f",
+  "author": "Qwen",
+  "downloads": 2231521,
+  "downloadsAllTime": 22014559,
+  "id": "Qwen/Qwen3-Embedding-8B"
+ },
+ {
+  "_id": "621ffdc036468d709f17626a",
+  "author": "KBLab",
+  "downloads": 2215986,
+  "downloadsAllTime": 10397964,
+  "id": "KBLab/wav2vec2-large-voxrex-swedish"
+ },
+ {
+  "_id": "655f212f4f2c90ed74120fdd",
+  "author": "Systran",
+  "downloads": 2215315,
+  "downloadsAllTime": 15342315,
+  "id": "Systran/faster-whisper-small"
+ },
+ {
+  "_id": "6683f1e3bd6e5421c747a05f",
+  "author": "docling-project",
+  "downloads": 2215174,
+  "downloadsAllTime": 24963006,
+  "id": "docling-project/docling-models"
+ },
+ {
+  "_id": "64f5c494656125cc25d92c00",
+  "author": "audeering",
+  "downloads": 2198872,
+  "downloadsAllTime": 11070304,
+  "id": "audeering/wav2vec2-large-robust-24-ft-age-gender"
+ },
+ {
+  "_id": "621ffdc136468d709f17ab0d",
+  "author": "emilyalsentzer",
+  "downloads": 2196417,
+  "downloadsAllTime": 161506683,
+  "id": "emilyalsentzer/Bio_ClinicalBERT"
+ },
+ {
+  "_id": "6891702273b6dc7c1ad8de72",
+  "author": "Comfy-Org",
+  "downloads": 2182070,
+  "downloadsAllTime": 24195877,
+  "id": "Comfy-Org/Qwen-Image_ComfyUI"
+ },
+ {
+  "_id": "621ffdc136468d709f17cdbb",
+  "author": "jonatasgrosman",
+  "downloads": 2153259,
+  "downloadsAllTime": 19945235,
+  "id": "jonatasgrosman/wav2vec2-large-xlsr-53-persian"
+ },
+ {
+  "_id": "627dcf85ba19b19eff6a787d",
+  "author": "Khalsuu",
+  "downloads": 2130863,
+  "downloadsAllTime": 14432457,
+  "id": "Khalsuu/filipino-wav2vec2-l-xls-r-300m-official"
+ },
+ {
+  "_id": "63f520d3cc1dd3168692e256",
+  "author": "patrickjohncyh",
+  "downloads": 2130034,
+  "downloadsAllTime": 119965692,
+  "id": "patrickjohncyh/fashion-clip"
+ },
+ {
+  "_id": "66952d1694d49f9e3aa6b2e5",
+  "author": "nvidia",
+  "downloads": 2119063,
+  "downloadsAllTime": 31102455,
+  "id": "nvidia/bigvgan_v2_22khz_80band_256x"
+ },
+ {
+  "_id": "621ffdc136468d709f17a8e5",
+  "author": "dslim",
+  "downloads": 2112192,
+  "downloadsAllTime": 96240863,
+  "id": "dslim/bert-base-NER"
+ },
+ {
+  "_id": "66e98a4ae3e3991610b54d00",
+  "author": "Qwen",
+  "downloads": 2107765,
+  "downloadsAllTime": 15233594,
+  "id": "Qwen/Qwen2.5-14B-Instruct-AWQ"
+ },
+ {
+  "_id": "6734a4adff8cb6a0a11caa12",
+  "author": "autogluon",
+  "downloads": 2107329,
+  "downloadsAllTime": 85010124,
+  "id": "autogluon/chronos-bolt-base"
+ },
+ {
+  "_id": "690d80fc9f252aa897a1dc6d",
+  "author": "facebook",
+  "downloads": 2081577,
+  "downloadsAllTime": 19476730,
+  "id": "facebook/sam3"
+ },
+ {
+  "_id": "6a81b8bfa514d4eed962e012",
+  "author": "huihui-ai",
+  "downloads": 2069464,
+  "downloadsAllTime": 2069464,
+  "id": "huihui-ai/Huihui-Qwen3.8-27B-abliterated-GGUF"
+ },
+ {
+  "_id": "6a0cf1be245b3ae5e4acc917",
+  "author": "biohub",
+  "downloads": 2062364,
+  "downloadsAllTime": 6383118,
+  "id": "biohub/ESMC-6B"
+ },
+ {
+  "_id": "6a6384f1bea837ecbb1b5e72",
+  "author": "mudler",
+  "downloads": 2045513,
+  "downloadsAllTime": 2121898,
+  "id": "mudler/Laguna-XS-2.1-APEX-GGUF"
+ },
+ {
+  "_id": "65c4d034d89d320a17e7a437",
+  "author": "intfloat",
+  "downloads": 2040364,
+  "downloadsAllTime": 32141688,
+  "id": "intfloat/multilingual-e5-large-instruct"
+ },
+ {
+  "_id": "697c3275cfe73b577d4da916",
+  "author": "zai-org",
+  "downloads": 2034640,
+  "downloadsAllTime": 30352320,
+  "id": "zai-org/GLM-OCR"
+ },
+ {
+  "_id": "66e902f34eeaced24a2787f8",
+  "author": "Qwen",
+  "downloads": 2028574,
+  "downloadsAllTime": 29730852,
+  "id": "Qwen/Qwen2.5-32B-Instruct"
+ },
+ {
+  "_id": "655f211ad5c0d3db537f315b",
+  "author": "Systran",
+  "downloads": 2027855,
+  "downloadsAllTime": 16417072,
+  "id": "Systran/faster-whisper-tiny"
+ },
+ {
+  "_id": "621ffdc036468d709f174348",
+  "author": "distilbert",
+  "downloads": 1991309,
+  "downloadsAllTime": 255020934,
+  "id": "distilbert/distilgpt2"
+ },
+ {
+  "_id": "66cee7970454d6467b65060e",
+  "author": "Qwen",
+  "downloads": 1982846,
+  "downloadsAllTime": 48179038,
+  "id": "Qwen/Qwen2-VL-2B-Instruct"
+ },
+ {
+  "_id": "621ffdc136468d709f1807d3",
+  "author": "speechbrain",
+  "downloads": 1979221,
+  "downloadsAllTime": 48456524,
+  "id": "speechbrain/spkrec-ecapa-voxceleb"
+ },
+ {
+  "_id": "642db8f18ce1f7427b87b0e8",
+  "author": "timm",
+  "downloads": 1978595,
+  "downloadsAllTime": 336509968,
+  "id": "timm/resnet50.a1_in1k"
+ },
+ {
+  "_id": "695dce95150f6bce4ce4d36d",
+  "author": "Qwen",
+  "downloads": 1976434,
+  "downloadsAllTime": 4157255,
+  "id": "Qwen/Qwen3-VL-Reranker-2B"
+ },
+ {
+  "_id": "656eedec8bb9f4f8d95d6376",
+  "author": "llava-hf",
+  "downloads": 1965913,
+  "downloadsAllTime": 40411166,
+  "id": "llava-hf/llava-1.5-7b-hf"
+ },
+ {
+  "_id": "6397c5098114ba8ea09fabf9",
+  "author": "timm",
+  "downloads": 1964317,
+  "downloadsAllTime": 11581819,
+  "id": "timm/tf_efficientnetv2_s.in21k_ft_in1k"
+ },
+ {
+  "_id": "680f0c5b4e1c1da6491f3b9d",
+  "author": "Qwen",
+  "downloads": 1960616,
+  "downloadsAllTime": 22220690,
+  "id": "Qwen/Qwen3-4B-Base"
+ },
+ {
+  "_id": "67531148405ec5d08a81a223",
+  "author": "dima806",
+  "downloads": 1947264,
+  "downloadsAllTime": 795565495,
+  "id": "dima806/fairface_age_image_detection"
+ },
+ {
+  "_id": "621ffdc136468d709f17a17d",
+  "author": "comodoro",
+  "downloads": 1939560,
+  "downloadsAllTime": 13180785,
+  "id": "comodoro/wav2vec2-xls-r-300m-cs-250"
+ },
+ {
+  "_id": "696dcefa357a4070754b027e",
+  "author": "zai-org",
+  "downloads": 1935018,
+  "downloadsAllTime": 12683149,
+  "id": "zai-org/GLM-4.7-Flash"
+ },
+ {
+  "_id": "64820fb26e41cac337e1a4af",
+  "author": "facebook",
+  "downloads": 1933068,
+  "downloadsAllTime": 30853376,
+  "id": "facebook/musicgen-medium"
+ },
+ {
+  "_id": "629722f365c0fc78a71df16b",
+  "author": "cross-encoder",
+  "downloads": 1932554,
+  "downloadsAllTime": 12073081,
+  "id": "cross-encoder/mmarco-mMiniLMv2-L12-H384-v1"
+ },
+ {
+  "_id": "6361644e19e7e4bf45733f2a",
+  "author": "facebook",
+  "downloads": 1929082,
+  "downloadsAllTime": 123635205,
+  "id": "facebook/esmfold_v1"
+ },
+ {
+  "_id": "69edc49ddc88b61a03fdee5a",
+  "author": "antirez",
+  "downloads": 1923358,
+  "downloadsAllTime": 10311680,
+  "id": "antirez/deepseek-v4-gguf"
+ },
+ {
+  "_id": "6a55cf9076284400a7a74fa5",
+  "author": "audio-cpp",
+  "downloads": 1918074,
+  "downloadsAllTime": 2006447,
+  "id": "audio-cpp/audio.cpp-gguf"
+ },
+ {
+  "_id": "621ffdc136468d709f17d1f2",
+  "author": "kingabzpro",
+  "downloads": 1916950,
+  "downloadsAllTime": 15499776,
+  "id": "kingabzpro/wav2vec2-large-xls-r-300m-Urdu"
+ },
+ {
+  "_id": "69e9c6516f19e19d907b6d9d",
+  "author": "unsloth",
+  "downloads": 1902847,
+  "downloadsAllTime": 4378197,
+  "id": "unsloth/Qwen3.6-35B-A3B-NVFP4"
+ },
+ {
+  "_id": "672b1f9a250205b317ab81e5",
+  "author": "Qwen",
+  "downloads": 1899186,
+  "downloadsAllTime": 15918505,
+  "id": "Qwen/Qwen2.5-Coder-14B-Instruct"
+ },
+ {
+  "_id": "621ffdc136468d709f1802eb",
+  "author": "sentence-transformers",
+  "downloads": 1897095,
+  "downloadsAllTime": 48149274,
+  "id": "sentence-transformers/paraphrase-mpnet-base-v2"
+ },
+ {
+  "_id": "646723f5e92e2372d5c82aa0",
+  "author": "intfloat",
+  "downloads": 1893664,
+  "downloadsAllTime": 43545377,
+  "id": "intfloat/e5-large-v2"
+ },
+ {
+  "_id": "672f5977b6a16a91f7cdf0d3",
+  "author": "Qwen",
+  "downloads": 1885762,
+  "downloadsAllTime": 7359375,
+  "id": "Qwen/Qwen2.5-Coder-14B-Instruct-AWQ"
+ },
+ {
+  "_id": "64ce0266749587dbe0ebffb6",
+  "author": "BAAI",
+  "downloads": 1883262,
+  "downloadsAllTime": 9117577,
+  "id": "BAAI/bge-base-en"
+ },
+ {
+  "_id": "69ce9da280df2f332faf7588",
+  "author": "nvidia",
+  "downloads": 1883080,
+  "downloadsAllTime": 11422220,
+  "id": "nvidia/Gemma-4-31B-IT-NVFP4"
+ },
+ {
+  "_id": "680f0cb340199096ff7bae3e",
+  "author": "Qwen",
+  "downloads": 1882545,
+  "downloadsAllTime": 7395103,
+  "id": "Qwen/Qwen3-1.7B-Base"
+ },
+ {
+  "_id": "681a1cfe23dbf6b59c13d96e",
+  "author": "mlx-community",
+  "downloads": 1872380,
+  "downloadsAllTime": 10945196,
+  "id": "mlx-community/parakeet-tdt-0.6b-v2"
+ },
+ {
+  "_id": "63974666f74f697677e32689",
+  "author": "Salesforce",
+  "downloads": 1865131,
+  "downloadsAllTime": 67612488,
+  "id": "Salesforce/blip-image-captioning-base"
+ },
+ {
+  "_id": "6a24bf7be7e93b7687cbecf1",
+  "author": "handy-computer",
+  "downloads": 1847901,
+  "downloadsAllTime": 4358506,
+  "id": "handy-computer/nemotron-3.5-asr-streaming-0.6b-gguf"
+ },
+ {
+  "_id": "62ab756af4dd06492f159806",
+  "author": "StanfordAIMI",
+  "downloads": 1843214,
+  "downloadsAllTime": 26175879,
+  "id": "StanfordAIMI/stanford-deidentifier-base"
+ },
+ {
+  "_id": "6a7eaa8364a4fe2da593079c",
+  "author": "RadixArk",
+  "downloads": 1822185,
+  "downloadsAllTime": 1822185,
+  "id": "RadixArk/Qwen3.8-27B-NVFP4"
+ },
+ {
+  "_id": "69ab7e179d4152acb2e8287a",
+  "author": "nvidia",
+  "downloads": 1821473,
+  "downloadsAllTime": 5049148,
+  "id": "nvidia/NVIDIA-Nemotron-3-Nano-4B-BF16"
+ },
+ {
+  "_id": "621ffdc036468d709f174336",
+  "author": "google-bert",
+  "downloads": 1806791,
+  "downloadsAllTime": 259412956,
+  "id": "google-bert/bert-base-multilingual-cased"
+ },
+ {
+  "_id": "67fe52e0b3a9473353b72227",
+  "author": "docling-project",
+  "downloads": 1802064,
+  "downloadsAllTime": 13093116,
+  "id": "docling-project/docling-layout-heron"
+ },
+ {
+  "_id": "67e3f120abb5b6a5a3e6c1f3",
+  "author": "Qwen",
+  "downloads": 1788620,
+  "downloadsAllTime": 4864756,
+  "id": "Qwen/Qwen2.5-VL-32B-Instruct-AWQ"
+ },
+ {
+  "_id": "69e91912d2d7decb3af40507",
+  "author": "cyankiwi",
+  "downloads": 1781115,
+  "downloadsAllTime": 8306606,
+  "id": "cyankiwi/Qwen3.6-27B-AWQ-INT4"
+ },
+ {
+  "_id": "69e864e440a44c9fb7c54efc",
+  "author": "deepseek-ai",
+  "downloads": 1772345,
+  "downloadsAllTime": 11288836,
+  "id": "deepseek-ai/DeepSeek-V4-Flash"
+ },
+ {
+  "_id": "66715aebae01d352c9ac6ba5",
+  "author": "depth-anything",
+  "downloads": 1770644,
+  "downloadsAllTime": 21338317,
+  "id": "depth-anything/Depth-Anything-V2-Small-hf"
+ },
+ {
+  "_id": "67b05c8762fcf619d6df8e22",
+  "author": "Qwen",
+  "downloads": 1767197,
+  "downloadsAllTime": 12383368,
+  "id": "Qwen/Qwen2.5-VL-7B-Instruct-AWQ"
+ },
+ {
+  "_id": "680a289582ee1640eea64f70",
+  "author": "ResembleAI",
+  "downloads": 1766347,
+  "downloadsAllTime": 21028063,
+  "id": "ResembleAI/chatterbox"
+ },
+ {
+  "_id": "680da7b53a9818192728e751",
+  "author": "Qwen",
+  "downloads": 1764698,
+  "downloadsAllTime": 27054707,
+  "id": "Qwen/Qwen3-14B"
+ },
+ {
+  "_id": "692cfca4d928fefe289300f2",
+  "author": "microsoft",
+  "downloads": 1754458,
+  "downloadsAllTime": 6733574,
+  "id": "microsoft/TRELLIS.2-4B"
+ },
+ {
+  "_id": "64bfcd5ff462a99a04fd1ec8",
+  "author": "stabilityai",
+  "downloads": 1751030,
+  "downloadsAllTime": 121469956,
+  "id": "stabilityai/stable-diffusion-xl-base-1.0"
+ },
+ {
+  "_id": "658fb85235c41262d661dc48",
+  "author": "TinyLlama",
+  "downloads": 1749502,
+  "downloadsAllTime": 48898687,
+  "id": "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
+ },
+ {
+  "_id": "699ef2a3528490a53f714f7f",
+  "author": "Qwen",
+  "downloads": 1746708,
+  "downloadsAllTime": 7217819,
+  "id": "Qwen/Qwen3.5-122B-A10B-FP8"
+ },
+ {
+  "_id": "672b1f9e956e6880fdb8c1e5",
+  "author": "Qwen",
+  "downloads": 1745830,
+  "downloadsAllTime": 12532590,
+  "id": "Qwen/Qwen2.5-Coder-32B-Instruct"
+ },
+ {
+  "_id": "642db7de8ce1f7427b879d11",
+  "author": "timm",
+  "downloads": 1744257,
+  "downloadsAllTime": 3467828,
+  "id": "timm/resnet18.a3_in1k"
+ },
+ {
+  "_id": "68a0100a5f41fb9de2102888",
+  "author": "mlx-community",
+  "downloads": 1743442,
+  "downloadsAllTime": 8708913,
+  "id": "mlx-community/parakeet-tdt-0.6b-v3"
+ },
+ {
+  "_id": "621ffdc136468d709f17ea61",
+  "author": "openai",
+  "downloads": 1734001,
+  "downloadsAllTime": 238419097,
+  "id": "openai/clip-vit-base-patch16"
+ },
+ {
+  "_id": "697f459103755de5f6541db0",
+  "author": "Qwen",
+  "downloads": 1731663,
+  "downloadsAllTime": 9293714,
+  "id": "Qwen/Qwen3-Coder-Next-FP8"
+ },
+ {
+  "_id": "69e17b9e48b1ac4c5ec71427",
+  "author": "HauhauCS",
+  "downloads": 1731530,
+  "downloadsAllTime": 10841787,
+  "id": "HauhauCS/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive"
+ },
+ {
+  "_id": "621ffdc036468d709f17583e",
+  "author": "Harveenchadha",
+  "downloads": 1716351,
+  "downloadsAllTime": 7831978,
+  "id": "Harveenchadha/vakyansh-wav2vec2-tamil-tam-250"
+ },
+ {
+  "_id": "66e6cfeb6998c3d86c14e163",
+  "author": "Qwen",
+  "downloads": 1713667,
+  "downloadsAllTime": 28972260,
+  "id": "Qwen/Qwen2.5-0.5B"
+ },
+ {
+  "_id": "621ffdc136468d709f17a20b",
+  "author": "cross-encoder",
+  "downloads": 1702253,
+  "downloadsAllTime": 77038857,
+  "id": "cross-encoder/ms-marco-MiniLM-L12-v2"
+ },
+ {
+  "_id": "621ffdc136468d709f1802d4",
+  "author": "sentence-transformers",
+  "downloads": 1691887,
+  "downloadsAllTime": 78191363,
+  "id": "sentence-transformers/multi-qa-mpnet-base-dot-v1"
+ },
+ {
+  "_id": "63314bc6e092098b57b97fd5",
+  "author": "openai",
+  "downloads": 1687205,
+  "downloadsAllTime": 48476968,
+  "id": "openai/whisper-base"
+ },
+ {
+  "_id": "6a37681bb57803e616606089",
+  "author": "ornith-ai",
+  "downloads": 1676596,
+  "downloadsAllTime": 4267945,
+  "id": "ornith-ai/Ornith-1.0-9B"
+ },
+ {
+  "_id": "621ffdc136468d709f178770",
+  "author": "airesearch",
+  "downloads": 1675254,
+  "downloadsAllTime": 12810669,
+  "id": "airesearch/wav2vec2-large-xlsr-53-th"
+ },
+ {
+  "_id": "642db7ca8ce1f7427b879b93",
+  "author": "timm",
+  "downloads": 1666697,
+  "downloadsAllTime": 78243973,
+  "id": "timm/resnet18.a1_in1k"
+ },
+ {
+  "_id": "68158b914954e5d707baba74",
+  "author": "Qwen",
+  "downloads": 1665085,
+  "downloadsAllTime": 9647410,
+  "id": "Qwen/Qwen3-8B-AWQ"
+ },
+ {
+  "_id": "65e60cda4b2e0f45e49dc03d",
+  "author": "vikhyatk",
+  "downloads": 1659786,
+  "downloadsAllTime": 36676236,
+  "id": "vikhyatk/moondream2"
+ },
+ {
+  "_id": "65edfa624f8aa96f64b47834",
+  "author": "rhasspy",
+  "downloads": 1656603,
+  "downloadsAllTime": 28817562,
+  "id": "rhasspy/faster-whisper-tiny-int8"
+ },
+ {
+  "_id": "655f20e8a81ce416b9fda508",
+  "author": "Systran",
+  "downloads": 1653441,
+  "downloadsAllTime": 19543510,
+  "id": "Systran/faster-whisper-base"
+ },
+ {
+  "_id": "6819064c17c253b3f859a16b",
+  "author": "trl-internal-testing",
+  "downloads": 1650086,
+  "downloadsAllTime": 5421087,
+  "id": "trl-internal-testing/tiny-Qwen3ForCausalLM"
+ },
+ {
+  "_id": "6296be62c2ec00620bfbd250",
+  "author": "mesolitica",
+  "downloads": 1646962,
+  "downloadsAllTime": 7071105,
+  "id": "mesolitica/wav2vec2-xls-r-300m-mixed"
+ },
+ {
+  "_id": "66cfe00769a28ebc9e5f76ee",
+  "author": "Qwen",
+  "downloads": 1643940,
+  "downloadsAllTime": 13185695,
+  "id": "Qwen/Qwen2-VL-7B-Instruct-AWQ"
+ },
+ {
+  "_id": "6a4852d753e5330d3a18c9ac",
+  "author": "prism-ml",
+  "downloads": 1638176,
+  "downloadsAllTime": 2332862,
+  "id": "prism-ml/Bonsai-27B-mlx-1bit"
+ },
+ {
+  "_id": "6a4852b6534648dc27a9d1c2",
+  "author": "prism-ml",
+  "downloads": 1635113,
+  "downloadsAllTime": 2328587,
+  "id": "prism-ml/Ternary-Bonsai-27B-mlx-2bit"
+ },
+ {
+  "_id": "67b79c8700245b72c5706777",
+  "author": "google",
+  "downloads": 1626709,
+  "downloadsAllTime": 25564876,
+  "id": "google/gemma-3-4b-it"
+ },
+ {
+  "_id": "621ffdc136468d709f180e72",
+  "author": "theainerd",
+  "downloads": 1621897,
+  "downloadsAllTime": 31807079,
+  "id": "theainerd/Wav2Vec2-large-xlsr-hindi"
+ },
+ {
+  "_id": "6510e202ed4cd83cd15026ee",
+  "author": "IDEA-Research",
+  "downloads": 1618591,
+  "downloadsAllTime": 32265000,
+  "id": "IDEA-Research/grounding-dino-base"
+ },
+ {
+  "_id": "621ffdc136468d709f17e62a",
+  "author": "neuralmind",
+  "downloads": 1606754,
+  "downloadsAllTime": 22497071,
+  "id": "neuralmind/bert-large-portuguese-cased"
+ },
+ {
+  "_id": "6a006b60d32685d9031d17a2",
+  "author": "handy-computer",
+  "downloads": 1594985,
+  "downloadsAllTime": 3872792,
+  "id": "handy-computer/parakeet-unified-en-0.6b-gguf"
+ },
+ {
+  "_id": "6a3818d2b22e71da5a72eca8",
+  "author": "mudler",
+  "downloads": 1592278,
+  "downloadsAllTime": 1654013,
+  "id": "mudler/ced-gguf"
+ },
+ {
+  "_id": "69f4012e5ca44f21b8ac75a1",
+  "author": "nvidia",
+  "downloads": 1592224,
+  "downloadsAllTime": 6910699,
+  "id": "nvidia/Gemma-4-26B-A4B-NVFP4"
+ },
+ {
+  "_id": "6518674bb4bfc5d912ee6d3c",
+  "author": "google",
+  "downloads": 1577516,
+  "downloadsAllTime": 21484204,
+  "id": "google/siglip-base-patch16-224"
+ },
+ {
+  "_id": "69a2f5edef408247323ee7f4",
+  "author": "unsloth",
+  "downloads": 1576304,
+  "downloadsAllTime": 7769436,
+  "id": "unsloth/Qwen3.5-9B-GGUF"
+ },
+ {
+  "_id": "636585c512188d67e65ad141",
+  "author": "nguyenvulebinh",
+  "downloads": 1571723,
+  "downloadsAllTime": 7437091,
+  "id": "nguyenvulebinh/wav2vec2-base-vi-vlsp2020"
+ }
+]

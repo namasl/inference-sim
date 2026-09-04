@@ -72,6 +72,19 @@ DEFAULT_MAX_LIST = 20_000
 #: How many trending repos the S4 sweep looks at.
 DEFAULT_TRENDING_LIMIT = 100
 
+#: Safety cap on the org-popularity sweep (see ``_sweep_popular_orgs``). The
+#: sweep normally stops itself long before this.
+DEFAULT_ORG_SWEEP_LIMIT = 20_000
+
+#: Cap on per-org fallback lookups, which cost one request each (~65 ms).
+#: Sized so the eligibility gate in ``_org_top_downloads`` fits under it on a
+#: normal day (~184 orgs measured over a 1-day window), because a cap that
+#: truncates would make S2 depend on listing order rather than on the data.
+DEFAULT_MAX_ORG_LOOKUPS = 200
+
+#: How many of an org's top repos a fallback lookup reads to find its best.
+ORG_TOP_N = 5
+
 # Used only to rank phase-2 fetch priority among repos with no known
 # architecture — never to drop anything.
 _LM_LIBRARIES = frozenset({"transformers", "vllm", "sglang", "mlx", "nemo"})
@@ -235,12 +248,20 @@ def _int(value: Any) -> int:
 
 
 def _org_of(info: Any) -> str | None:
-    """The repo owner. Canonical repos (``gpt2``) have no namespace at all."""
+    """The repo owner, **lowercased**. Canonical repos (``gpt2``) have none.
+
+    Lowercased because it is compared against
+    :data:`archwatch.config.FRONTIER_ORGS`, which is all lowercase, and the
+    other connectors emit ``Signal.org`` lowercased too — T3 and S2 must not
+    depend on how a lab happens to capitalise its Hub namespace. The original
+    casing is never lost: it survives in ``model_ids``, ``raw_ref`` and
+    ``urls["hf"]``, which carry the real repo id.
+    """
     author = getattr(info, "author", None)
-    if author:
-        return author
-    repo_id = getattr(info, "id", "") or ""
-    return repo_id.split("/")[0] if "/" in repo_id else None
+    if not author:
+        repo_id = getattr(info, "id", "") or ""
+        author = repo_id.split("/")[0] if "/" in repo_id else None
+    return author.strip().lower() if author else None
 
 
 # ---------------------------------------------------------------------------
@@ -268,9 +289,15 @@ class HFConnector:
         clock: Callable[[], datetime] | None = None,
         max_list: int = DEFAULT_MAX_LIST,
         token: str | bool | None = None,
+        org_downloads: bool = True,
+        max_org_lookups: int = DEFAULT_MAX_ORG_LOOKUPS,
+        org_sweep_limit: int = DEFAULT_ORG_SWEEP_LIMIT,
     ) -> None:
         self.cfg = cfg or DEFAULTS
         self.max_list = max_list
+        self.org_downloads = org_downloads
+        self.max_org_lookups = max_org_lookups
+        self.org_sweep_limit = org_sweep_limit
         self._api = api
         self._fetcher = config_fetcher
         self._clock = clock or (lambda: datetime.now(timezone.utc))
@@ -316,11 +343,14 @@ class HFConnector:
         """
         infos = self._list_trending(limit)
         log.info("hf: %d trending repos", len(infos))
-        return self._to_signals(infos, phase="trending")
+        # Rank is taken before the pre-filter, so it is the repo's true position
+        # on the Hub's trending list rather than its position among survivors.
+        ranks = {info.id: n for n, info in enumerate(infos, start=1)}
+        return self._to_signals(infos, phase="trending", ranks=ranks)
 
     # -- phase 1: listing ---------------------------------------------------
 
-    def _list_kwargs(self, *, newest_first_by: str, limit: int | None) -> dict[str, Any]:
+    def _list_kwargs(self, *, newest_first_by: str, limit: int | None, **extra: Any) -> dict[str, Any]:
         """Sort/limit kwargs for the installed ``huggingface_hub``.
 
         The v1.x API renamed the sort keys to snake_case (``created_at``,
@@ -329,6 +359,7 @@ class HFConnector:
         ``direction=-1``. Probe the signature rather than guessing.
         """
         kwargs: dict[str, Any] = {"expand": list(LIST_EXPAND), "limit": limit}
+        kwargs.update(extra)
         try:
             params = inspect.signature(self.api.list_models).parameters
         except (TypeError, ValueError):  # pragma: no cover - exotic api objects
@@ -391,7 +422,7 @@ class HFConnector:
 
     def _priority(self, info: Any) -> tuple[int, int, int, int, int]:
         """Fetch-order rank. Higher sorts first."""
-        org = (_org_of(info) or "").lower()
+        org = _org_of(info) or ""
         return (
             1 if org in self.cfg.frontier_orgs else 0,
             _int(getattr(info, "downloads", None)),
@@ -449,6 +480,154 @@ class HFConnector:
         )
         return plan
 
+    # -- org track record for S2 --------------------------------------------
+
+    def _sweep_popular_orgs(self) -> tuple[dict[str, tuple[int, int]], bool]:
+        """One descending pass over the Hub's most-downloaded models.
+
+        Returns ``({org: (best all-time, best 30-day)}, conclusive)``.
+
+        This answers S2 for every org at once instead of one request per org.
+        Because the listing is sorted by 30-day downloads descending, the walk
+        can stop the moment it drops below ``min_org_top_downloads``: everything
+        past that point is below the threshold anyway. So the cost is set by the
+        threshold, not by how many orgs the window happened to contain — and any
+        org *absent* from the result provably has no model over the threshold in
+        the last 30 days. ``conclusive`` says whether the walk really did reach
+        the threshold rather than being cut off by ``org_sweep_limit``.
+        """
+        floor = int(self.cfg.thresholds.min_org_top_downloads)
+        best: dict[str, tuple[int, int]] = {}
+        conclusive = False
+        kwargs = self._list_kwargs(newest_first_by="downloads", limit=self.org_sweep_limit)
+        kwargs["expand"] = ["author", "downloads", "downloadsAllTime"]
+        seen = 0
+        try:
+            for info in self.api.list_models(**kwargs):
+                thirty = _int(getattr(info, "downloads", None))
+                if thirty < floor:
+                    conclusive = True
+                    break
+                seen += 1
+                org = _org_of(info)
+                if not org:
+                    continue
+                candidate = (_int(getattr(info, "downloads_all_time", None)), thirty)
+                if candidate > best.get(org, (-1, -1)):
+                    best[org] = candidate
+        except Exception as exc:
+            log.warning("hf: org popularity sweep failed after %d records: %s", seen, exc)
+        if not conclusive:
+            log.warning(
+                "hf: org popularity sweep stopped at org_sweep_limit=%d without reaching "
+                "min_org_top_downloads=%d; absence from the map is inconclusive",
+                self.org_sweep_limit, floor,
+            )
+        log.info("hf: org popularity sweep read %d models, mapped %d orgs (conclusive=%s)",
+                 seen, len(best), conclusive)
+        return best, conclusive
+
+    def _lookup_org(self, org: str) -> tuple[int, int] | None:
+        """One org's best download counts, or None when unobtainable.
+
+        Returning None (rather than zeros) is deliberate: the caller omits the
+        ``extra`` key entirely so a failed lookup reads as "unknown" instead of
+        a measured absence of popularity.
+        """
+        kwargs = self._list_kwargs(newest_first_by="downloads", limit=ORG_TOP_N, author=org)
+        kwargs["expand"] = ["downloads", "downloadsAllTime"]
+        try:
+            infos = list(self.api.list_models(**kwargs))
+        except Exception as exc:
+            log.warning("hf: org lookup failed for %s: %s: %s", org, type(exc).__name__, exc)
+            return None
+        if not infos:
+            return None
+        return (
+            max(_int(getattr(i, "downloads_all_time", None)) for i in infos),
+            max(_int(getattr(i, "downloads", None)) for i in infos),
+        )
+
+    def _org_top_downloads(self, survivors: Sequence[Any]) -> dict[str, tuple[int, str]]:
+        """``{org: (top downloads, which metric)}`` for S2. Frontier orgs excluded.
+
+        Frontier orgs satisfy S2 by membership, so looking them up would be a
+        wasted request. Orgs the sweep did not cover get a capped number of
+        per-org fallback lookups — the sweep is 30-day-sorted, so a dormant lab
+        with a large all-time count but little current traffic can be missing
+        from it.
+        """
+        if not self.org_downloads:
+            return {}
+
+        # Aggregate the window's footprint per org: whether it shipped anything
+        # naming an architecture, and its best engagement numbers.
+        agg: dict[str, dict[str, int]] = {}
+        for info in survivors:
+            org = _org_of(info)
+            if not org or org in self.cfg.frontier_orgs:
+                continue
+            row = agg.setdefault(org, {"arch": 0, "likes": 0, "downloads": 0})
+            if architectures_of(getattr(info, "config", None)):
+                row["arch"] = 1
+            row["likes"] = max(row["likes"], _int(getattr(info, "likes", None)))
+            row["downloads"] = max(row["downloads"], _int(getattr(info, "downloads", None)))
+        if not agg:
+            return {}
+
+        # The sweep answers every org at once, for three requests.
+        sweep, conclusive = self._sweep_popular_orgs()
+        out: dict[str, tuple[int, str]] = {}
+        for org in agg:
+            hit = sweep.get(org)
+            if hit is not None:
+                out[org] = self._pick_metric(*hit)
+
+        # The sweep is sorted by 30-day downloads, so it is already conclusive
+        # for that metric: an org missing from it provably has no model over
+        # min_org_top_downloads in the last 30 days. The only thing a per-org
+        # lookup can still add is the all-time figure for a *dormant* lab —
+        # large lifetime count, little current traffic. Spending a request on
+        # every unknown org to find those costs ~85 s per poll and answers
+        # nothing for the thousand-odd individual accounts in a normal window,
+        # so the fallback is gated on the org having actually shipped an
+        # architecture that someone has engaged with. The gate is a property of
+        # the data, not of listing order, so which orgs get answered is
+        # reproducible from one run to the next — which matters because the
+        # backtest calibrates min_org_top_downloads against these numbers.
+        eligible = [
+            org for org, row in agg.items()
+            if org not in out and row["arch"] and (row["likes"] or row["downloads"])
+        ]
+        eligible.sort(key=lambda o: (agg[o]["likes"], agg[o]["downloads"]), reverse=True)
+        budget = max(0, int(self.max_org_lookups))
+        if len(eligible) > budget:
+            log.warning(
+                "hf: %d orgs are eligible for a fallback lookup but max_org_lookups=%d; "
+                "%d will report no org_top_downloads (raise the cap to keep S2 reproducible)",
+                len(eligible), budget, len(eligible) - budget,
+            )
+        n_ok = 0
+        for org in eligible[:budget]:
+            hit = self._lookup_org(org)
+            if hit is None:
+                continue
+            out[org] = self._pick_metric(*hit)
+            n_ok += 1
+        log.info(
+            "hf: org track record for %d/%d non-frontier orgs "
+            "(%d from the sweep; %d of %d eligible fallback lookups answered, cap %d)",
+            len(out), len(agg), len(out) - n_ok, n_ok, min(len(eligible), budget), budget,
+        )
+        return out
+
+    @staticmethod
+    def _pick_metric(all_time: int, thirty_day: int) -> tuple[int, str]:
+        """Prefer the lifetime count; fall back to 30-day when it is unavailable."""
+        if all_time:
+            return all_time, "downloads_all_time"
+        return thirty_day, "downloads"
+
     def _fetch_config(self, repo_id: str, revision: str | None) -> dict[str, Any] | None:
         """Download and parse one ``config.json``. Never raises."""
         try:
@@ -501,7 +680,13 @@ class HFConnector:
         return survivors, n_derivative, n_non_lm
 
 
-    def _to_signals(self, infos: Sequence[Any], *, phase: str) -> list[Signal]:
+    def _to_signals(
+        self,
+        infos: Sequence[Any],
+        *,
+        phase: str,
+        ranks: dict[str, int] | None = None,
+    ) -> list[Signal]:
         survivors, n_derivative, n_non_lm = self._prefilter(infos)
         log.info(
             "hf: pre-filter (%s) dropped %d derivative + %d non-LM of %d repos, %d survive",
@@ -512,9 +697,18 @@ class HFConnector:
         for info in self._plan_config_fetches(survivors):
             fetched[info.id] = self._fetch_config(info.id, getattr(info, "sha", None))
 
+        org_downloads = self._org_top_downloads(survivors)
+
         observed_at = _as_utc(self._clock())
         return [
-            self._to_signal(info, fetched.get(info.id), phase=phase, observed_at=observed_at)
+            self._to_signal(
+                info,
+                fetched.get(info.id),
+                phase=phase,
+                observed_at=observed_at,
+                org_top=org_downloads.get(_org_of(info) or ""),
+                rank=(ranks or {}).get(info.id),
+            )
             for info in survivors
         ]
 
@@ -525,6 +719,8 @@ class HFConnector:
         *,
         phase: str,
         observed_at: datetime,
+        org_top: tuple[int, str] | None = None,
+        rank: int | None = None,
     ) -> Signal:
         repo_id: str = info.id
         hub_config = getattr(info, "config", None) or {}
@@ -562,6 +758,36 @@ class HFConnector:
         else:
             config_source = None
 
+        extra: dict[str, Any] = {
+            # --- significance gate inputs (F reads these by name) -----------
+            "downloads": downloads,
+            "likes": likes,
+            "downloads_all_time": _int(getattr(info, "downloads_all_time", None)),
+            "trending_score": trending_score,
+            "trending": phase == "trending",
+            # --- provenance / triage colour --------------------------------
+            "phase": phase,
+            "config_source": config_source,
+            "created_at": created_at,
+            "last_modified": _iso(getattr(info, "last_modified", None)),
+            "library_name": getattr(info, "library_name", None),
+            "pipeline_tag": getattr(info, "pipeline_tag", None),
+            "tags": list(getattr(info, "tags", None) or []),
+            "gated": getattr(info, "gated", None),
+            "private": getattr(info, "private", None),
+            "sha": sha,
+        }
+        # S2's open-world path. Omitted, never zeroed, when unknown: a missing
+        # key reads as "not measured" and simply fails to satisfy S2, whereas a
+        # 0 would assert a measured absence of popularity. Always absent for
+        # frontier orgs, which satisfy S2 by membership.
+        if org_top is not None:
+            extra["org_top_downloads"] = org_top[0]
+            extra["org_top_downloads_basis"] = org_top[1]
+        # S4's trending path.
+        if rank is not None:
+            extra["trending_rank"] = rank
+
         return Signal(
             source=self.name,
             observed_at=observed_at,
@@ -574,25 +800,7 @@ class HFConnector:
             urls=urls,
             evidence=evidence,
             raw_ref=repo_id,
-            extra={
-                # --- significance gate inputs (F reads these by name) -------
-                "downloads": downloads,
-                "likes": likes,
-                "downloads_all_time": _int(getattr(info, "downloads_all_time", None)),
-                "trending_score": trending_score,
-                "trending": phase == "trending",
-                # --- provenance / triage colour ----------------------------
-                "phase": phase,
-                "config_source": config_source,
-                "created_at": created_at,
-                "last_modified": _iso(getattr(info, "last_modified", None)),
-                "library_name": getattr(info, "library_name", None),
-                "pipeline_tag": getattr(info, "pipeline_tag", None),
-                "tags": list(getattr(info, "tags", None) or []),
-                "gated": getattr(info, "gated", None),
-                "private": getattr(info, "private", None),
-                "sha": sha,
-            },
+            extra=extra,
         )
 
 
@@ -612,4 +820,6 @@ __all__ = [
     "LIST_EXPAND",
     "DEFAULT_MAX_LIST",
     "DEFAULT_TRENDING_LIMIT",
+    "DEFAULT_MAX_ORG_LOOKUPS",
+    "DEFAULT_ORG_SWEEP_LIMIT",
 ]

@@ -30,7 +30,8 @@ Kept continuously so the build is resumable if the session dies. Newest entries 
 - [x] Frozen contracts: `archwatch/connectors/base.py`, `archwatch/config.py`
 - [x] `PLAN.md`
 - [x] **Wave 2 COMPLETE** — B, C, D, E, F, G all landed and committed. 573 tests green.
-- [~] Revisions in flight: F (union-find join, T5), G (silent_failures), C (org stats)
+- [x] C org-stats DONE
+- [~] Revisions in flight: F (union-find join, T5), G (silent_failures)
 - [~] Wave 3: H detector + CLI launched
 - [ ] Wave 3: H detector + CLI
 - [x] Wave 4a: I classifier skill (`skills/archwatch-deep-dive/SKILL.md`) — written by orchestrator
@@ -303,3 +304,42 @@ state, built-in 4B NEXTN MTP module". That is stage-2 intelligence arriving *ins
 window, from a source I had originally rated as merely a significance signal. E kept it as
 `extra["perf_notes"]` rather than discarding non-numeric prose — the single best judgment call
 any agent made.
+
+### C — S2 org track record: accepted, and the design improved under measurement
+
+My spec said "query per distinct org, cached within the poll, capped." C measured that and found
+it does not fit: a 1-day window holds **1,310 distinct non-frontier orgs** — ~85 s and 1,310
+requests. It also found two API facts that constrain the approach: `sort="downloadsAllTime"` is
+rejected outright (HTTP 400 — the only download sort is 30-day), and repeated `author=` params do
+not batch.
+
+The replacement is better than what I asked for. **A bulk descending sweep answers every org at
+once in 3 requests** by walking `sort="downloads"` and stopping the moment 30-day downloads fall
+below the threshold — everything past that point is under it *by construction*. That makes
+absence from the sweep **conclusive** for the 30-day metric, and the walk's depth is set by the
+threshold rather than by how many orgs the window happened to contain: 2,471 models read, 688
+orgs mapped, 0.1 s.
+
+A capped per-org fallback then covers the one case a 30-day sort structurally cannot see: a
+**dormant lab** with a large lifetime count but little current traffic. That is a real case, not
+a hypothetical — MBZUAI sits at 198,796 all-time against 76,159 in 30 days.
+
+**The judgment call I most want to keep** is that C *gated* the fallback rather than letting the
+cap truncate it. With 1,310 orgs needing lookups and a cap of 200, you answer an arbitrary 200 of
+them — so S2 would depend on listing order, and the backtest's threshold calibration would rest
+on which orgs happened to be enumerated first. The gate ("shipped an architecture in this window
+and has any traffic") selects 182 orgs, comfortably under the cap, so nothing truncates and the
+selection is reproducible from the data. A cap that silently truncates is the one setting to
+avoid, and C identified that unprompted.
+
+Measured cost: default adds **+7.0 s and +185 requests**, answering 117 of 1,310 non-frontier
+orgs. **Decision: keep it on.** Seven seconds is irrelevant to a 6-hourly job, and the dormant-lab
+path is precisely the "credible lab not on my hand-written allowlist" recall route that S2 exists
+to provide. `max_org_lookups=0` remains available: it keeps the conclusive 30-day answer for
++0.1 s and loses only the dormant case.
+
+C also caught a flaw in its own test scaffolding worth recording: its first fake API ignored both
+`author` and `sort`, so **every org test passed while measuring nothing** — the connector was
+being handed the window fixture as though it were an org's catalogue. It rewrote the fake to
+dispatch the way the real endpoint does. Tests that pass for the wrong reason are the most
+expensive kind, and catching one in your own work is harder than catching it in someone else's.

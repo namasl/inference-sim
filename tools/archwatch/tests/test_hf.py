@@ -77,19 +77,60 @@ def _http_error(status: int, message: str) -> HfHubHTTPError:
 
 
 class FakeApi:
-    """Stands in for ``HfApi``, replaying recorded listing records in order."""
+    """Stands in for ``HfApi``, replaying recorded listing records.
 
-    def __init__(self, records: list[dict], *, fail_after: int | None = None) -> None:
+    Dispatches the way the real endpoint does, because the connector makes three
+    different kinds of call: the creation/trending window listing, the
+    descending-by-downloads org popularity sweep, and a per-``author`` lookup.
+    A fake that ignored ``author`` and ``sort`` would let the org tests pass
+    while measuring nothing.
+    """
+
+    def __init__(
+        self,
+        records: list[dict],
+        *,
+        fail_after: int | None = None,
+        top_downloads: list[dict] | None = None,
+        org_models: dict[str, list[dict]] | None = None,
+        fail_orgs: tuple[str, ...] = (),
+    ) -> None:
         self._records = records
         self.fail_after = fail_after
+        self._top_downloads = top_downloads
+        self._org_models = org_models
+        self._fail_orgs = {o.lower() for o in fail_orgs}
         self.calls: list[dict] = []
 
-    def list_models(self, *, sort=None, limit=None, expand=None, **kwargs):
-        self.calls.append({"sort": sort, "limit": limit, "expand": expand, **kwargs})
-        for n, raw in enumerate(self._records):
+    @property
+    def org_calls(self) -> list[str]:
+        return [c["author"] for c in self.calls if c.get("author")]
+
+    @property
+    def sweep_calls(self) -> list[dict]:
+        return [c for c in self.calls
+                if not c.get("author") and c["sort"] in ("downloads", "downloadsAllTime")]
+
+    def list_models(self, *, sort=None, limit=None, expand=None, author=None, **kwargs):
+        self.calls.append(
+            {"sort": sort, "limit": limit, "expand": expand, "author": author, **kwargs}
+        )
+        if author is not None:
+            if author.lower() in self._fail_orgs:
+                raise _http_error(429, "429 Client Error: Too Many Requests")
+            source = (self._org_models or {}).get(author.lower(), [])
+            fail_after = None
+        elif sort == "downloads":
+            source = self._top_downloads if self._top_downloads is not None else self._records
+            source = sorted(source, key=lambda r: -(r.get("downloads") or 0))
+            fail_after = None
+        else:
+            source = self._records
+            fail_after = self.fail_after
+        for n, raw in enumerate(source):
             if limit is not None and n >= limit:
                 return
-            if self.fail_after is not None and n >= self.fail_after:
+            if fail_after is not None and n >= fail_after:
                 raise _http_error(429, "429 Client Error: Too Many Requests")
             yield _model_info(raw)
 
@@ -97,9 +138,10 @@ class FakeApi:
 class LegacyFakeApi(FakeApi):
     """A huggingface_hub 0.x-shaped API: camelCase sort keys plus ``direction``."""
 
-    def list_models(self, *, sort=None, direction=None, limit=None, expand=None, **kwargs):
+    def list_models(self, *, sort=None, direction=None, limit=None, expand=None,
+                    author=None, **kwargs):
         return super().list_models(sort=sort, limit=limit, expand=expand,
-                                   direction=direction, **kwargs)
+                                   author=author, direction=direction, **kwargs)
 
 
 class FixtureFetcher:
@@ -139,9 +181,19 @@ def cfg() -> DetectorConfig:
     return DetectorConfig(window_days=1, thresholds=Thresholds(), max_hf_config_fetches=200)
 
 
-def make_connector(records, cfg, *, api_cls=FakeApi, fetcher=None, fail_after=None, **kw):
+def make_connector(records, cfg, *, api_cls=FakeApi, fetcher=None, fail_after=None,
+                   top_downloads=None, org_models=None, fail_orgs=(), **kw):
+    """Build a connector over recorded records.
+
+    ``org_downloads`` defaults to False here: most tests are about the window
+    pipeline, and leaving the S2 lookups on would have them silently exercise
+    an org sweep they make no assertions about. The org tests turn it on
+    explicitly and pass the org fixtures.
+    """
     fetcher = fetcher if fetcher is not None else FixtureFetcher()
-    api = api_cls(records, fail_after=fail_after)
+    api = api_cls(records, fail_after=fail_after, top_downloads=top_downloads,
+                  org_models=org_models, fail_orgs=fail_orgs)
+    kw.setdefault("org_downloads", False)
     conn = HFConnector(cfg, api=api, config_fetcher=fetcher, clock=lambda: FIXED_NOW, **kw)
     return conn, api, fetcher
 
@@ -475,7 +527,7 @@ def test_poll_trending_ignores_creation_date(cfg):
     by_id = {s.model_ids[0]: s for s in signals}
     qwen = by_id["Qwen/Qwen3.8-Flash-Next"]
     assert qwen.arch_ids == ["Qwen4ExpForConditionalGeneration"]
-    assert qwen.org == "Qwen"
+    assert qwen.org == "qwen"  # lowercased to match FRONTIER_ORGS
     assert qwen.config is not None  # frontier org, so it won the fetch budget
     assert qwen.extra["trending_score"] > 0
 
@@ -857,3 +909,351 @@ def test_non_lm_filter_applies_to_the_trending_sweep_too(cfg):
     assert "Qwen/Qwen3.8-Flash-Next" in emitted
     assert "deepseek-ai/DeepSeek-V4-Flash-Vision-Exp" in emitted
     assert "zai-org/GLM-5.3" in emitted
+
+
+# ---------------------------------------------------------------------------
+# S2 — org track record (the open-world path)
+# ---------------------------------------------------------------------------
+#
+# Fixtures, all recorded live:
+#   top_downloads.json     the Hub's 300 most-downloaded models (the sweep input),
+#                          spanning 253.8M .. 1.57M 30-day downloads.
+#   org_models.json        {org: its top 5 models by 30-day downloads} — what a
+#                          per-org fallback lookup sees.
+#   org_probe_records.json {org: one real full-expand record it owns} — used as
+#                          synthetic *window* input. Only `createdAt` is
+#                          overridden, because these repos were not created in
+#                          the recorded window and the point under test is org
+#                          attribution, not the window boundary.
+#
+# SWEEP_THRESHOLD sits inside the recorded sweep's range so the sweep terminates
+# within the fixture; that is what makes "absent from the sweep" conclusive.
+
+SWEEP_THRESHOLD = 5_000_000
+IN_WINDOW = "2026-09-04T12:00:00.000Z"
+
+
+def org_cfg(threshold: int = SWEEP_THRESHOLD, **kw) -> DetectorConfig:
+    return DetectorConfig(thresholds=Thresholds(min_org_top_downloads=threshold), **kw)
+
+
+def probe_record(org: str) -> dict:
+    """One real repo owned by ``org``, dated into the recorded window."""
+    return dict(_records("org_probe_records.json")[org], createdAt=IN_WINDOW)
+
+
+def make_org_connector(records, *, cfg=None, **kw):
+    return make_connector(
+        records,
+        cfg or org_cfg(),
+        top_downloads=_records("top_downloads.json"),
+        org_models=_records("org_models.json"),
+        org_downloads=True,
+        **kw,
+    )
+
+
+def test_org_top_downloads_comes_from_the_bulk_sweep():
+    """BAAI is not in FRONTIER_ORGS but owns a 566M-download model — S2 must see it.
+
+    This is the open-world case: without this path, a lab absent from the
+    hand-written allowlist can never clear the significance gate on reputation.
+    """
+    conn, api, _ = make_org_connector([probe_record("baai")])
+    (signal,) = conn.poll(window_since())
+
+    assert signal.org == "baai"
+    assert signal.org not in DetectorConfig().frontier_orgs
+    in_sweep = [r for r in _records("top_downloads.json")
+                if (r.get("author") or "").lower() == "baai"
+                and (r.get("downloads") or 0) >= SWEEP_THRESHOLD]
+    assert len(in_sweep) > 1, "fixture must hold several BAAI models for max() to matter"
+    assert signal.extra["org_top_downloads"] == max(r["downloadsAllTime"] for r in in_sweep)
+    assert signal.extra["org_top_downloads"] == 566_091_432
+    assert signal.extra["org_top_downloads_basis"] == "downloads_all_time"
+    assert signal.extra["org_top_downloads"] > DetectorConfig().thresholds.min_org_top_downloads
+    # answered by the sweep, so no per-org request was spent
+    assert api.org_calls == []
+
+
+def test_org_lookup_falls_back_per_org_when_the_sweep_misses():
+    """A dormant lab still gets a real answer.
+
+    MBZUAI's best model has 198,796 all-time downloads — over the default
+    ``min_org_top_downloads`` — but only 76k in the last 30 days, so it never
+    reaches a downloads-sorted sweep. This is the only case the fallback exists
+    for, and the reason the sweep alone is not the whole answer.
+    """
+    conn, api, _ = make_org_connector([probe_record("mbzuai")])
+    (signal,) = conn.poll(window_since())
+
+    assert signal.org == "mbzuai"
+    assert api.org_calls == ["mbzuai"], "exactly one per-org request"
+    top5 = _records("org_models.json")["mbzuai"]
+    assert signal.extra["org_top_downloads"] == max(r["downloadsAllTime"] for r in top5)
+    assert signal.extra["org_top_downloads"] == 198_796
+    assert signal.extra["org_top_downloads_basis"] == "downloads_all_time"
+    assert signal.extra["org_top_downloads"] >= DetectorConfig().thresholds.min_org_top_downloads
+    # ... and its 30-day figure would NOT have cleared the gate
+    assert max(r["downloads"] for r in top5) < DetectorConfig().thresholds.min_org_top_downloads
+
+
+def test_org_lookup_takes_the_best_across_the_orgs_top_models():
+    """bunnycore's best all-time model is not its best 30-day model.
+
+    Exercised at the lookup level because bunnycore's own repos do not pass the
+    fallback eligibility gate — which is itself the point: an org's *track
+    record* spans its whole catalogue, including the three GGUF repos the
+    pre-filter would drop as derivatives.
+    """
+    conn, _, _ = make_org_connector([])
+    top5 = _records("org_models.json")["bunnycore"]
+    assert conn._lookup_org("bunnycore") == (
+        max(r["downloadsAllTime"] for r in top5),
+        max(r["downloads"] for r in top5),
+    ) == (1723, 1437), "all-time best and 30-day best are different repos"
+    assert conn._pick_metric(1723, 1437) == (1723, "downloads_all_time")
+    assert len([r for r in top5 if is_derivative(r["id"])]) == 3
+
+
+def test_org_is_queried_once_per_org_not_once_per_repo():
+    """Two real repos from one org in one window cost one request, cached."""
+    records = [r for r in _records("list_window.json")
+               if (r.get("author") or "").lower() == "nkthebass"]
+    assert len(records) == 2, "fixture must hold two repos from one org"
+    conn, api, _ = make_org_connector(records)
+    signals = conn.poll(window_since())
+
+    assert len(signals) == 2
+    assert api.org_calls == ["nkthebass"]
+    top5 = _records("org_models.json")["nkthebass"]
+    assert {s.extra["org_top_downloads"] for s in signals} == {
+        max(r["downloadsAllTime"] for r in top5)
+    }
+
+
+def test_frontier_orgs_are_never_looked_up():
+    """They satisfy S2 by membership, so the request would be wasted."""
+    conn, api, _ = make_org_connector(_records("list_trending.json"))
+    signals = {s.model_ids[0]: s for s in conn.poll_trending(limit=20)}
+
+    frontier = DetectorConfig().frontier_orgs
+    assert {o.lower() for o in api.org_calls}.isdisjoint(frontier)
+    qwen = signals["Qwen/Qwen3.8-Flash-Next"]
+    assert qwen.org in frontier
+    assert "org_top_downloads" not in qwen.extra
+    assert "org_top_downloads_basis" not in qwen.extra
+
+
+def test_failed_org_lookup_omits_the_key_rather_than_writing_zero():
+    """A missing key means "unknown" and fails S2; a 0 would assert unpopularity."""
+    conn, _, _ = make_org_connector([probe_record("mbzuai")], fail_orgs=("mbzuai",))
+    (signal,) = conn.poll(window_since())  # a 429 must not raise
+    assert "org_top_downloads" not in signal.extra
+    assert "org_top_downloads_basis" not in signal.extra
+
+
+def test_unknown_org_omits_the_key_rather_than_writing_zero():
+    """An org with no models returned is unknown, not measured-as-unpopular."""
+    conn, api, _ = make_connector(
+        [probe_record("verbarex")], org_cfg(), org_downloads=True,
+        top_downloads=_records("top_downloads.json"),
+        org_models={},  # the Hub knows nothing about anyone
+    )
+    (signal,) = conn.poll(window_since())
+    assert api.org_calls == ["verbarex"]
+    assert "org_top_downloads" not in signal.extra
+
+
+def test_a_measured_zero_is_reported_as_zero():
+    """Distinct from the failure cases: this org genuinely has no downloads.
+
+    ``_lookup_org`` returns a real (0, 0), which becomes ``org_top_downloads: 0``
+    — a measured absence of popularity, unlike an omitted key.
+    """
+    conn, _, _ = make_org_connector([])
+    top5 = _records("org_models.json")["parallaxopen"]
+    assert all((r.get("downloads") or 0) == 0 for r in top5), "fixture org must be at zero"
+    assert conn._lookup_org("parallaxopen") == (0, 0)
+    assert conn._pick_metric(0, 0) == (0, "downloads")
+    assert conn._lookup_org("nobody-at-all") is None
+
+
+def test_fallback_is_gated_on_shipping_an_engaged_architecture():
+    """The gate is a property of the data, so which orgs get answered is stable.
+
+    A cap that truncated an arbitrary tail would make S2 depend on listing
+    order, and the backtest calibrates ``min_org_top_downloads`` against these
+    numbers.
+    """
+    # 27aran ships a real architecture but has 0 likes and 0 downloads
+    conn, api, _ = make_org_connector([probe_record("_27aran")])
+    conn.poll(window_since())
+    assert api.org_calls == [], "no engagement, so no request"
+
+    # ParallaxOpen has a like but ships no architectures[] at all
+    conn, api, _ = make_org_connector([probe_record("_parallaxopen")])
+    conn.poll(window_since())
+    assert api.org_calls == [], "no architecture, so no request"
+
+    # VERBAREX ships an architecture with real downloads -> eligible
+    conn, api, _ = make_org_connector([probe_record("verbarex")])
+    (signal,) = conn.poll(window_since())
+    assert api.org_calls == ["verbarex"]
+    assert signal.extra["org_top_downloads"] == 1007
+
+
+def test_org_lookup_fanout_is_capped_and_logged(caplog):
+    """A pathological window cannot balloon into thousands of requests."""
+    records = _records("list_window.json")
+    with caplog.at_level("WARNING", logger="archwatch.connectors.hf"):
+        conn, api, _ = make_org_connector(records, max_org_lookups=4)
+        conn.poll(window_since())
+    assert len(api.org_calls) == 4
+    assert any("max_org_lookups=4" in m for m in caplog.messages)
+
+
+def test_no_cap_warning_when_the_gate_fits_under_the_budget(caplog):
+    with caplog.at_level("WARNING", logger="archwatch.connectors.hf"):
+        conn, api, _ = make_org_connector([probe_record("verbarex")], max_org_lookups=200)
+        conn.poll(window_since())
+    assert len(api.org_calls) == 1
+    assert not any("max_org_lookups" in m for m in caplog.messages)
+
+
+def test_org_lookups_can_be_switched_off_entirely():
+    conn, api, _ = make_connector(_records("list_window.json"), org_cfg(), org_downloads=False)
+    signals = conn.poll(window_since())
+    assert api.org_calls == []
+    assert api.sweep_calls == []
+    assert all("org_top_downloads" not in s.extra for s in signals)
+
+
+def test_sweep_stops_at_the_threshold_and_says_so(caplog):
+    """The sweep's depth is set by the threshold, not by the window's org count."""
+    with caplog.at_level("INFO", logger="archwatch.connectors.hf"):
+        conn, api, _ = make_org_connector([probe_record("baai")])
+        conn.poll(window_since())
+
+    top = sorted(_records("top_downloads.json"), key=lambda r: -(r.get("downloads") or 0))
+    over = [r for r in top if (r.get("downloads") or 0) >= SWEEP_THRESHOLD]
+    assert 0 < len(over) < len(top), "threshold must fall inside the fixture's range"
+    assert any(f"read {len(over)} models" in m and "conclusive=True" in m
+               for m in caplog.messages)
+    assert len(api.sweep_calls) == 1, "one sweep per poll, not one per org"
+
+
+def test_sweep_warns_when_it_cannot_reach_the_threshold(caplog):
+    """Then absence from the map is inconclusive, and the log must say so."""
+    with caplog.at_level("WARNING", logger="archwatch.connectors.hf"):
+        # the fixture bottoms out at 1.57M, so a 100k threshold is never reached
+        conn, _, _ = make_org_connector([probe_record("baai")],
+                                        cfg=org_cfg(threshold=100_000))
+        conn.poll(window_since())
+    assert any("without reaching min_org_top_downloads" in m for m in caplog.messages)
+
+
+def test_org_sweep_uses_a_downloads_sort_not_a_creation_sort():
+    conn, api, _ = make_org_connector([probe_record("baai")])
+    conn.poll(window_since())
+    (sweep,) = api.sweep_calls
+    assert sweep["sort"] == "downloads"
+    assert set(sweep["expand"]) == {"author", "downloads", "downloadsAllTime"}
+    assert sweep["author"] is None
+
+
+class BadSweepApi(FakeApi):
+    """An API whose org-popularity sweep always rate-limits."""
+
+    def list_models(self, *, sort=None, author=None, **kw):
+        if sort == "downloads" and author is None:
+            self.calls.append({"sort": sort, "limit": None, "expand": None, "author": None})
+            raise _http_error(429, "429 Client Error: Too Many Requests")
+        return super().list_models(sort=sort, author=author, **kw)
+
+
+def test_sweep_failure_degrades_to_the_per_org_fallback(caplog):
+    """A 429 on the sweep must not raise; the fallback still answers what it can."""
+    with caplog.at_level("WARNING", logger="archwatch.connectors.hf"):
+        conn, api, _ = make_org_connector([probe_record("baai")], api_cls=BadSweepApi)
+        (signal,) = conn.poll(window_since())      # must not raise
+    assert any("org popularity sweep failed" in m for m in caplog.messages)
+    assert api.org_calls == ["baai"], "the sweep's miss becomes a fallback lookup"
+    assert signal.extra["org_top_downloads"] == 566_091_432
+
+
+def test_org_data_is_omitted_when_both_the_sweep_and_the_lookup_fail():
+    """No number is better than a wrong one: S2 simply goes unsatisfied."""
+    conn, api, _ = make_org_connector([probe_record("baai")], api_cls=BadSweepApi,
+                                      fail_orgs=("baai",))
+    (signal,) = conn.poll(window_since())          # must not raise
+    assert api.org_calls == ["baai"]
+    assert "org_top_downloads" not in signal.extra
+    assert "org_top_downloads_basis" not in signal.extra
+
+
+# ---------------------------------------------------------------------------
+# S4 — trending flag / score / rank
+# ---------------------------------------------------------------------------
+
+
+def test_trending_signals_carry_flag_score_and_rank(cfg):
+    records = _records("list_trending.json")
+    conn, _, _ = make_connector(records, cfg)
+    signals = conn.poll_trending(limit=20)
+
+    raw = {r["id"]: r for r in records}
+    for s in signals:
+        assert s.extra["trending"] is True
+        assert s.extra["trending_score"] == raw[s.model_ids[0]]["trendingScore"]
+        assert isinstance(s.extra["trending_rank"], int) and s.extra["trending_rank"] >= 1
+
+    # rank is the position on the Hub's list, so it survives the pre-filter
+    # removing higher-ranked entries and is strictly increasing down the list
+    ranks = [s.extra["trending_rank"] for s in signals]
+    assert ranks == sorted(ranks)
+    assert len(set(ranks)) == len(ranks)
+    dropped_above = [r["id"] for r in records[:ranks[-1]] if r["id"] not in
+                     {s.model_ids[0] for s in signals}]
+    assert dropped_above, "fixture must drop something, else rank==index proves nothing"
+    assert ranks[-1] > len(signals), "rank must reflect pre-filter position"
+
+
+def test_window_signals_have_no_trending_rank(cfg):
+    conn, _, _ = make_connector(_records("list_window.json"), cfg)
+    for s in conn.poll(window_since()):
+        assert s.extra["trending"] is False
+        assert "trending_rank" not in s.extra
+
+
+# ---------------------------------------------------------------------------
+# org casing
+# ---------------------------------------------------------------------------
+
+
+def test_org_is_lowercased_to_match_frontier_orgs(cfg):
+    """FRONTIER_ORGS is all lowercase; T3/S2 must not hinge on Hub capitalisation."""
+    conn, _, _ = make_connector(_records("list_trending.json"), cfg)
+    signals = {s.model_ids[0]: s for s in conn.poll_trending(limit=20)}
+
+    assert signals["Qwen/Qwen3.8-Flash-Next"].org == "qwen"
+    assert signals["Qwen/Qwen3.8-Flash-Next"].org in DetectorConfig().frontier_orgs
+    for s in signals.values():
+        assert s.org is None or s.org == s.org.lower()
+    # the real repo id keeps its casing, so nothing is lost
+    assert signals["Qwen/Qwen3.8-Flash-Next"].model_ids == ["Qwen/Qwen3.8-Flash-Next"]
+    assert signals["Qwen/Qwen3.8-Flash-Next"].urls["hf"].endswith("/Qwen/Qwen3.8-Flash-Next")
+
+
+def test_org_falls_back_to_the_repo_namespace_lowercased():
+    class Info:
+        id, author, config = "MixedCase/Model", None, {}
+        created_at = FIXED_NOW
+        downloads = likes = trending_score = downloads_all_time = 0
+        tags, library_name, pipeline_tag = [], None, None
+        sha = last_modified = gated = private = None
+
+    conn = HFConnector(DetectorConfig(), api=FakeApi([]), config_fetcher=FixtureFetcher(),
+                       clock=lambda: FIXED_NOW, org_downloads=False)
+    signal = conn._to_signal(Info(), None, phase="window", observed_at=FIXED_NOW)
+    assert signal.org == "mixedcase"
