@@ -293,7 +293,7 @@ def test_nested_text_config_shape_fields_are_not_reported_as_unparsed(
     # The premise: the top level really is nearly empty.
     assert set(config) == {
         "architectures", "model_type", "dtype", "transformers_version",
-        "text_config", "vision_config",
+        "text_config", "vision_config", "quantization_config",
     }
     unparsed = surface.unparsed_fields(config)
     for pivoted in ("num_hidden_layers", "hidden_size", "num_attention_heads",
@@ -307,7 +307,8 @@ def test_nested_text_config_shape_fields_are_not_reported_as_unparsed(
     # What it SHOULD report: the genuinely-unread mechanisms, and the vision tower.
     assert set(unparsed) == {
         "activation_situ_beta", "n_group", "num_nextn_predict_layers", "q_lora_rank",
-        "qk_nope_head_dim", "topk_group", "v_head_dim", "vision_config",
+        "qk_nope_head_dim", "routed_expert_hidden_size", "topk_group", "v_head_dim",
+        "vision_config",
     }
 
 
@@ -740,6 +741,171 @@ def test_match_gaps_on_an_ssm_and_sliding_window_config(surface: Surface) -> Non
     matched = {g.id for g in surface.match_gaps(fixture("mamba-hybrid-sliding-window"))}
     assert "mamba_ssm_state_unmodeled" in matched
     assert "sliding_window_unmodeled" in matched
+
+
+# --- direction correctness: the one defect a reader cannot detect unaided ----------
+
+
+def test_hybrid_linear_attn_weight_direction_is_optimistic(surface: Surface) -> None:
+    """The KDA weight charge is an UNDER-count, against BLIS's own docs.
+
+    BLIS charges every layer 2h^2 + 2h*kv_dim (kv_capacity.go:624) over all layers
+    (:700). A gated-delta-rule layer carries ~5 full-width projections at an EXPANDED
+    inner width once use_full_rank_gate is set, so it has MORE weights than standard
+    attention, not fewer. Kimi-K3: ~19.03G charged vs ~36.19G real = 0.53x.
+
+    docs/reference/models.md:45 calls this a "pessimism". The arithmetic says otherwise,
+    and this entry deliberately disagrees with the doc.
+    """
+    gap = surface.gap_by_id("hybrid_linear_attn_weights")
+    assert gap.direction == "optimistic"
+    assert "0.53x" in gap.impact
+    assert "UNDER-count" in gap.impact
+    assert "DIRECTION CORRECTED" in gap.notes
+
+
+def test_hybrid_gap_names_the_step_time_seam_too(surface: Surface) -> None:
+    """A maintainer following only the capacity seams would fix half the bug.
+
+    trained_physics_model.go:693 charges all L layers the same uniform attention shape on
+    the STEP-TIME path.
+    """
+    gap = surface.gap_by_id("hybrid_linear_attn_weights")
+    assert "sim/latency/trained_physics_model.go:693" in gap.seam_refs
+    assert "sim/latency/kv_capacity.go:700" in gap.seam_refs
+    assert "sim/latency/kv_capacity.go:624" in gap.seam_refs
+
+
+def test_every_gap_direction_is_justified_in_prose(surface: Surface) -> None:
+    """A stated direction must SAY which way BLIS errs, not just assert a field value.
+
+    Enforces the derivation discipline in known-gaps.yaml's header. The requirement is a
+    directional statement a reader can check, because the `direction` field alone is
+    unfalsifiable — which is how hybrid_linear_attn_weights stayed inverted.
+
+    Deliberately NOT requiring a numeric ratio: for several gaps the magnitude honestly
+    depends on runtime context (sliding_window_unmodeled scales with context/window) or on
+    a model-specific component (vision_tower_unmodeled). Demanding a number there would
+    invite fabricating one, which PLAN.md rules out for good reason. Magnitude is asserted
+    separately, only where one was actually measured.
+    """
+    directional = (
+        "under-count", "over-count", "under-estim", "over-estim", "understat", "overstat",
+        "absent from", "not counted", "not charged", "contributes no", "no weight",
+        "low weight", "below", "above", "halve", "optimistic", "pessimistic",
+    )
+    for gap in surface.gaps:
+        if gap.direction == "unknown":
+            continue  # honest abstention needs no justification
+        evidence = f"{gap.impact} {gap.scope} {gap.notes}".lower()
+        assert any(t in evidence for t in directional), (
+            f"{gap.id}: direction={gap.direction} is asserted but never justified in prose"
+        )
+
+
+def test_measured_gap_ratios_are_recorded_and_do_not_drift(surface: Surface) -> None:
+    """The gaps whose magnitude WAS derived must keep the number, so the sign is auditable.
+
+    These four are the ones with a real measurement behind them. Pinning the ratios means a
+    future edit cannot quietly restate a direction without also moving the arithmetic that
+    supports it.
+    """
+    for gap_id, ratio in (
+        ("hybrid_linear_attn_weights", "0.53x"),
+        ("attention_projection_width_ignores_head_dim", "0.70x"),
+        ("latent_moe_expert_hidden_size", "1.997x"),
+        ("mla_step_time_kv_read", "21x"),
+    ):
+        gap = surface.gap_by_id(gap_id)
+        assert gap is not None, gap_id
+        assert ratio in gap.impact, f"{gap_id}: lost its measured ratio {ratio}"
+
+
+def test_a_ratio_below_one_is_never_labelled_pessimistic(surface: Surface) -> None:
+    """Sign consistency: BLIS charging LESS than reality is optimistic, by definition.
+
+    A cheap mechanical guard on the exact class of defect that shipped — a ratio of the
+    form 0.NNx in the impact text is BLIS below reality, so the entry cannot claim
+    pessimism.
+    """
+    import re
+
+    for gap in surface.gaps:
+        for match in re.finditer(r"(\d+\.\d+)x", gap.impact):
+            if float(match.group(1)) < 1.0:
+                assert gap.direction == "optimistic", (
+                    f"{gap.id}: impact states {match.group(0)} (BLIS below reality) "
+                    f"but direction={gap.direction}"
+                )
+
+
+# --- the two gaps the first real stage-2 run found missing --------------------
+
+
+def test_latent_moe_expert_hidden_size_gap(surface: Surface) -> None:
+    """Kimi-K3 runs routed experts at half width; BLIS charges full hidden_size.
+
+    The largest single finding of the stage-2 run: routed experts dominate a big MoE's
+    bytes, so a 2x error here outweighs every other weight gap in the surface.
+    """
+    gap = surface.gap_by_id("latent_moe_expert_hidden_size")
+    assert gap is not None
+    assert gap.direction == "pessimistic"          # BLIS charges 2x reality
+    assert "sim/latency/kv_capacity.go:657" in gap.seam_refs
+    # Wrong on BOTH paths, unlike the MLA gaps.
+    assert "sim/latency/trained_physics_model.go:699" in gap.seam_refs
+    assert "BOTH" in gap.scope
+
+    config = fixture("nested-text-config-frontier")
+    tc = config["text_config"]
+    assert tc["routed_expert_hidden_size"] == 3584
+    assert tc["hidden_size"] == 7168               # experts run at half width
+    assert "latent_moe_expert_hidden_size" in {g.id for g in surface.match_gaps(config)}
+    # BLIS reads none of it, so it is T1 evidence as well.
+    assert "routed_expert_hidden_size" in surface.unparsed_fields(config)
+
+
+def test_kv_cache_dtype_ignored_by_step_time_gap(surface: Surface) -> None:
+    """const bytesPerKVElement = 2.0 never consults EffectiveKVBytesPerParam."""
+    gap = surface.gap_by_id("kv_cache_dtype_ignored_by_step_time")
+    assert gap is not None
+    assert gap.direction == "pessimistic"
+    assert "sim/latency/trained_physics_model.go:491" in gap.seam_refs
+    assert "sim/latency/trained_physics_model.go:671" in gap.seam_refs   # decode KV read
+    # The part worth emphasising: it needs no flag on a 1-byte-compute model.
+    assert "no flag" in gap.scope
+
+
+def test_attention_projection_width_gap(surface: Surface) -> None:
+    """Q and O stay hidden^2; only K/V go through kv_dim."""
+    gap = surface.gap_by_id("attention_projection_width_ignores_head_dim")
+    assert gap is not None
+    assert gap.direction == "optimistic"
+    assert "sim/latency/kv_capacity.go:624" in gap.seam_refs
+    assert "0.70x" in gap.impact
+    assert "explicit_head_dim_step_time_blind" in gap.scope  # cross-referenced
+
+
+def test_head_dim_gap_scope_no_longer_over_claims(surface: Surface) -> None:
+    """It used to say weight sizing "DOES use" head_dim, unqualified. It reaches kv_dim only."""
+    gap = surface.gap_by_id("explicit_head_dim_step_time_blind")
+    assert "kv_dim" in gap.scope
+    assert "attention_projection_width_ignores_head_dim" in gap.scope
+    # And for an MLA model it never touches KV capacity: the MLA branch returns first.
+    assert "sim/latency/kv_capacity.go:151" in gap.scope
+
+
+def test_blockwise_fp8_matches_the_compressed_tensors_spelling(surface: Surface) -> None:
+    """`ignore` is what compressed-tensors emits; without it match_gaps missed real configs."""
+    gap = surface.gap_by_id("blockwise_fp8_flattened")
+    assert "ignore" in gap.keywords
+    assert "modules_to_not_convert" in gap.keywords
+    config = fixture("nested-text-config-frontier")
+    assert config["quantization_config"]["quant_method"] == "compressed-tensors"
+    assert "ignore" in config["quantization_config"]
+    assert "blockwise_fp8_flattened" in {g.id for g in surface.match_gaps(config)}
+    # The mechanism is method-independent, so the impact text must not read as fp8-only.
+    assert "quantization method" in gap.impact or "ANY" in gap.impact
 
 
 def test_match_gaps_is_empty_for_a_plain_dense_model(surface: Surface) -> None:

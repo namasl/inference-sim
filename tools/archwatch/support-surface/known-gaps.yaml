@@ -14,6 +14,28 @@
 #                MoE config is worse than no keyword.
 #   impact       which BLIS number is wrong, in which direction, by how much where known.
 #   direction    pessimistic | optimistic | unknown  (BLIS vs reality)
+#
+#                DERIVE THIS, NEVER INFER IT FROM THE PROSE. A wrong sign is the one
+#                defect a reader cannot detect without redoing the whole derivation, so it
+#                propagates with confidence into every analysis that cites the id — worse
+#                than omitting the entry. Two rules, both learned from getting
+#                hybrid_linear_attn_weights backwards:
+#
+#                  1. Write the arithmetic down: BLIS's charge, the real value, and the
+#                     ratio. `optimistic` means BLIS's number is BELOW reality (ratio < 1)
+#                     — under-counted weights, under-estimated time. `pessimistic` means
+#                     above. Put the ratio in `impact` so the next reader can audit the
+#                     sign without re-deriving it.
+#                  2. Check the verdict against the inputs you could NOT verify locally.
+#                     If it flips when an unverified figure moves, say so rather than
+#                     asserting a direction.
+#
+#                Never infer a direction from a mechanism's NAME. "Linear attention" means
+#                an O(1)-in-sequence recurrent state, not few parameters; a gated
+#                delta-rule layer carries MORE weights than standard attention. And
+#                BLIS's own docs are not authoritative on sign: docs/reference/models.md:45
+#                calls the KDA weight charge a pessimism when the arithmetic makes it an
+#                under-count. Where this file disagrees with the docs, `notes` says so.
 #   scope        what is already correct, so stage 2 does not re-litigate it.
 #   seam_refs    the functions that would need a new branch.
 #   documented_in  docs ref, or "code-only".
@@ -52,26 +74,55 @@ gaps:
     documented_in: "docs/reference/models.md:41"
 
   - id: hybrid_linear_attn_weights
-    mechanism: "Hybrid attention: linear-attention (KDA / delta-rule) layers"
+    mechanism: "Hybrid attention: linear-attention (KDA / gated-delta-rule) layer weights"
     keywords: [linear_attn_config, full_attn_layers, kda_layers, kimi delta attention,
-               linear attention, delta rule, short_conv]
-    impact: "The linear-attention layers are charged FULL-attention weight bytes
-      (Q/K/V/O projections over all num_hidden_layers), though their real parameter
-      shape differs. Weight over-count scales with the linear-attention layer share —
-      Kimi-K3: 69 of 93 layers."
-    direction: pessimistic
+               linear attention, delta rule, short_conv, use_full_rank_gate,
+               short_conv_kernel_size]
+    impact: "Every layer is charged the same standard-attention weight term,
+      2*h^2 + 2*h*kv_dim (sim/latency/kv_capacity.go:624, applied over ALL
+      num_hidden_layers at :700). A gated-delta-rule layer does not have that shape: it
+      carries roughly FIVE full-width projections at an EXPANDED inner width once
+      use_full_rank_gate is set. Worked for Kimi-K3 (h=7168, inner width 12288, 24 MLA +
+      69 KDA of 93 layers): BLIS charges ~204.6M params/layer uniformly = ~19.03G, while
+      the real model is ~232.2M per MLA layer and ~443.7M per KDA layer = ~36.19G. BLIS
+      therefore charges 0.53x the real attention weights — an UNDER-count. Small in
+      absolute terms (~0.6% of total model weights, because routed experts dominate), so
+      the significance is data correctness rather than a large numeric error."
+    direction: optimistic
     scope: "KV capacity IS layer-type-aware (#1635, sizes over
       len(linear_attn_config.full_attn_layers)) and so IS step time (#1636: full layers
       keep the O(N^2)/O(context) attention terms, KDA layers are charged an O(N) prefill
-      / O(state) decode cost). WEIGHTS are the one remaining gap (#1638). blis run warns
+      / O(state) decode cost). WEIGHTS are the one remaining gap (#1638), and they are
+      wrong on BOTH the capacity and the step-time path — see seam_refs. blis run warns
       when a hybrid model is detected (cmd/root.go:938-944)."
-    seam_refs: ["sim/latency/kv_capacity.go:700",
+    seam_refs: ["sim/latency/kv_capacity.go:624",
+                "sim/latency/kv_capacity.go:700",
+                "sim/latency/trained_physics_model.go:693",
                 "sim/model_hardware_config.go:74-76"]
     documented_in: "docs/reference/models.md:45"
-    notes: "Secondary, opposite-signed effect: the KDA step-time substitution charges
-      ~d_head per token, which EXCEEDS the full-attention cost whenever the sequence is
-      shorter than ~d_head (K3: 85-128 tokens). So 'hybrid <= all-full' does not hold at
-      short context (sim/latency/trained_physics_model.go:563-567, :641-645)."
+    notes: "DIRECTION CORRECTED, and it contradicts BLIS's own documentation. This entry
+      previously said `pessimistic`, faithfully reproducing docs/reference/models.md:45,
+      which calls the KDA weight charge 'the one remaining PESSIMISM for those layers'.
+      The parameter arithmetic says the opposite. The error in both was conflating two
+      different senses of 'linear attention': a KDA layer holds an O(1)-in-sequence
+      recurrent state instead of a growing KV CACHE, but that says nothing about its
+      PARAMETER count — with an expanded inner width and a full-rank gate it carries MORE
+      weights than a standard attention layer, not fewer. The verdict is robust to the one
+      input that could not be re-derived locally (the per-MLA-layer figure): the KDA layers
+      alone are short by ~16.4G, so the ratio stays below 1.0 (0.53x -> 0.62x) even if the
+      MLA layers were charged nothing at all. Worth reporting upstream as a docs defect.
+
+      SEAM COVERAGE: trained_physics_model.go:693
+      (bytesAttn := L * d * (2*d + 2*dKV) * bpp / tp) charges all L layers on the
+      STEP-TIME path with the same uniform shape. An earlier version of this entry named
+      only the capacity seams, so a maintainer following it would have fixed half the bug
+      and believed the job done.
+
+      Secondary, opposite-signed effect on a different axis: the KDA step-time
+      substitution charges ~d_head per token, which EXCEEDS the full-attention cost
+      whenever the sequence is shorter than ~d_head (K3: 85-128 tokens). So
+      'hybrid <= all-full' does not hold at short context
+      (sim/latency/trained_physics_model.go:563-567, :641-645)."
 
   - id: mamba_ssm_state_unmodeled
     mechanism: "State-space / recurrent layers declared by any convention other than
@@ -149,6 +200,39 @@ gaps:
                 "sim/latency/kv_capacity.go:650-693"]
     documented_in: "code-only"
 
+  - id: latent_moe_expert_hidden_size
+    mechanism: "Latent MoE: routed experts projecting from a REDUCED hidden width"
+    keywords: [routed_expert_hidden_size, expert_hidden_size, moe_hidden_size,
+               latent_expert_dim, expert_input_dim]
+    impact: "BLIS hardcodes the model's full hidden_size as the routed experts' input
+      width: routedExpertPerLayer = 3 * hiddenDim * expertFFNDim * NumLocalExperts
+      (sim/latency/kv_capacity.go:657). A latent-MoE design projects tokens down to a
+      narrower width first and runs the experts there. Kimi-K3 declares
+      routed_expert_hidden_size: 3584 against hidden_size: 7168 — experts run at HALF
+      width, confirmed in the model's shipped modeling_kimi_linear.py. BLIS charges 2x the
+      real routed-expert weights: a 1.997x per-MoE-layer over-count and ~1.98x on the whole
+      model (5.480T vs a real ~2.762T). Nothing in BLIS reads the field — grep
+      routed_expert_hidden_size over sim/ and cmd/ returns no hits — so the width is
+      silently the wrong one."
+    direction: pessimistic
+    scope: "WRONG ON BOTH PATHS, unlike the MLA gaps which are step-time-only. The same
+      hidden width feeds the capacity weight term (kv_capacity.go:657) and the step-time
+      MoE weight and FLOP terms (trained_physics_model.go:699 bytesFfn, :605 and :654
+      flopsFfn), all of which multiply by d = hidden_size. Routed experts carry the large
+      majority of a big MoE's bytes, so this dominates every other weight gap in the
+      surface by orders of magnitude."
+    seam_refs: ["sim/latency/kv_capacity.go:657",
+                "sim/latency/trained_physics_model.go:699",
+                "sim/latency/trained_physics_model.go:605",
+                "sim/latency/trained_physics_model.go:654"]
+    documented_in: "code-only"
+    notes: "The single largest finding of the first stage-2 run against real stubs, and no
+      gap id covered it. Distinct from moe_layer_pattern_lists_unparsed (which layers are
+      MoE) and from novel_moe_routing_unparsed (which experts a token reaches): this is how
+      WIDE each expert is. A ~2x error on the dominant weight term also propagates into
+      auto-sized KV capacity, because model weights are subtracted from the HBM budget
+      before KV blocks are counted."
+
   - id: novel_moe_routing_unparsed
     mechanism: "Grouped / hierarchical / re-scaled expert routing"
     keywords: [n_group, topk_group, topk_method, scoring_func, routed_scaling_factor,
@@ -171,21 +255,33 @@ gaps:
 
   - id: blockwise_fp8_flattened
     mechanism: "Block-wise / group-wise FP8 and mixed-precision checkpoints"
-    keywords: [weight_block_size, modules_to_not_convert, ignored_layers,
-               activation_scheme, fp8, float8, mxfp4, nvfp4, block_quant]
-    impact: "quantization_config with quant_method fp8 becomes a flat 1.0 byte/param
-      (sim/latency/config.go:265-267). The per-block scale tensors are not added, and
-      the modules_to_not_convert set (layernorms, gates, the DSA indexer, lm_head,
-      embeddings, MTP modules kept at bf16) is not excluded, so those modules are
-      charged 1 byte/param instead of 2. Net: a slightly LOW weight estimate."
+    keywords: [weight_block_size, modules_to_not_convert, ignore, ignored_layers,
+               activation_scheme, config_groups, fp8, float8, mxfp4, nvfp4, block_quant]
+    impact: "parseQuantizationConfig resolves ONE scalar bytes/param for the whole
+      checkpoint (sim/latency/config.go:245-294) and EffectiveWeightBytesPerParam applies
+      it to EVERY parameter (sim/model_hardware_config.go:99-104,
+      sim/latency/kv_capacity.go:719-722). Two things are therefore dropped, for ANY
+      quantization method and not only fp8: (1) the per-block / per-group scale tensors,
+      which are real bytes nobody charges; (2) the module exclusion list — spelled
+      `ignore` by compressed-tensors, `modules_to_not_convert` by bitsandbytes/AWQ — which
+      keeps layernorms, gates, the DSA indexer, lm_head, embeddings and MTP modules at
+      full precision. Those excluded modules are charged the quantized width instead of
+      their real one. Both point the same way: a LOW weight estimate."
     direction: optimistic
-    scope: "Uniform-precision GPTQ/AWQ/compressed-tensors bits are read correctly
-      (sim/latency/config.go:250-291); FP4/MXFP4 method names resolve to 0 unless a
-      bits field is present, which then falls back to torch_dtype."
+    scope: "The scalar itself is read correctly for uniform-precision
+      GPTQ/AWQ/compressed-tensors (sim/latency/config.go:250-291); FP4/MXFP4 method names
+      resolve to 0 unless a bits field is present, which then falls back to torch_dtype.
+      The gap is that ONE scalar cannot express a mixed-precision checkpoint, whatever
+      method produced it."
     seam_refs: ["sim/latency/config.go:245-294",
                 "sim/latency/kv_capacity.go:719-722",
                 "sim/model_hardware_config.go:99-104"]
     documented_in: "docs/reference/models.md:39"
+    notes: "KEYWORD FIX: `ignore` was missing, which is the spelling compressed-tensors
+      actually emits (and the one on Kimi-K3), so match_gaps() did not fire on real
+      configs. The impact text was also written as though the mechanism were fp8-specific;
+      it is quantization-method-independent, because the flattening happens in
+      EffectiveWeightBytesPerParam rather than in any per-method branch."
 
   - id: dsa_indexer_unmodeled
     mechanism: "DeepSeek sparse attention (DSA) indexer"
@@ -227,14 +323,47 @@ gaps:
       GLM-5.2: 6144/64 = 96 vs the declared 192 — a 2x error in the attention FLOP and
       KV-bandwidth terms, understating step time."
     direction: optimistic
-    scope: "KV capacity and weight sizing DO use it (EffectiveHeadDim,
-      sim/model_hardware_config.go:46-54); the scoping to the capacity path is
-      deliberate, to keep step-time golden datasets byte-identical."
+    scope: "PARTIAL, and narrower than BLIS's docs suggest. On the capacity path
+      head_dim reaches only kv_dim (EffectiveHeadDim at sim/latency/kv_capacity.go:613,
+      sim/model_hardware_config.go:46-54) — so the K and V projections and the KV
+      footprint are corrected, while the Q and O projections stay hidden^2 (see gap
+      attention_projection_width_ignores_head_dim). For an MLA model head_dim never
+      touches KV capacity at all: the MLA branch returns at
+      sim/latency/kv_capacity.go:151, before EffectiveHeadDim is read at :175 — though it
+      still affects that model's WEIGHT estimate, which has no MLA branch. The scoping
+      away from step time is deliberate, to keep step-time golden datasets
+      byte-identical."
     seam_refs: ["sim/latency/trained_physics_model.go:1078",
                 "sim/latency/trained_physics_model.go:1150",
                 "sim/latency/roofline.go:74",
                 "sim/model_hardware_config.go:43-45"]
     documented_in: "docs/reference/models.md:30"
+
+  - id: attention_projection_width_ignores_head_dim
+    mechanism: "Attention Q/O projection width when num_attention_heads * head_dim
+      != hidden_size"
+    keywords: [head_dim, qk_head_dim, v_head_dim]
+    impact: "The weight estimator hardcodes the Q and O projections at hidden^2
+      (sim/latency/kv_capacity.go:624: hiddenDim*(hiddenDim + 2*kvDim) +
+      hiddenDim*hiddenDim). Only K and V go through kv_dim, which is the one term
+      EffectiveHeadDim reaches. When a model's real attention width
+      num_attention_heads * head_dim exceeds hidden_size — the normal case for modern
+      MLA/GQA designs, e.g. GLM-5.2 at 64*192 = 12288 against hidden_size 6144 — the true
+      Q and O matrices are hidden * (heads*head_dim) each, so BLIS charges roughly half of
+      each. Measured ~0.70x of real attention weights on a real config: an UNDER-count."
+    direction: optimistic
+    scope: "Weights only, and distinct from explicit_head_dim_step_time_blind, which is
+      about the step-time path ignoring head_dim entirely. This one is the capacity/weight
+      path using head_dim for kv_dim but NOT for the Q/O width. Both must be fixed for a
+      model whose attention width differs from hidden_size; fixing either alone leaves the
+      other wrong."
+    seam_refs: ["sim/latency/kv_capacity.go:624",
+                "sim/latency/kv_capacity.go:613-614",
+                "sim/latency/trained_physics_model.go:693"]
+    documented_in: "code-only"
+    notes: "Found by the stage-2 classifier while checking an over-claim in
+      explicit_head_dim_step_time_blind's scope, which had asserted that weight sizing
+      'DOES use' head_dim without qualifying that it reaches only kv_dim."
 
   - id: vision_tower_unmodeled
     mechanism: "Multimodal encoders (vision / audio towers) and their projectors"
@@ -251,6 +380,40 @@ gaps:
     seam_refs: ["sim/latency/config.go:222-227"]
     documented_in: "code-only"
 
+  - id: kv_cache_dtype_ignored_by_step_time
+    mechanism: "KV-cache storage precision on the step-time path"
+    keywords: [kv_cache_scheme, kv_cache_dtype, cache_dtype, kv_quant, fp8_kv]
+    impact: "The step-time model hardcodes const bytesPerKVElement = 2.0
+      (sim/latency/trained_physics_model.go:491) and uses it for both KV bandwidth terms —
+      the prefill KV write at :623 and the dominant decode KV read at :671. The
+      EffectiveKVBytesPerParam accessor that exists precisely to carry this value
+      (sim/model_hardware_config.go:120-125) is honoured on the capacity path
+      (sim/latency/kv_capacity.go:143, :181) and never reaches step time: grep
+      KVBytesPerParam across trained_physics_model.go and roofline.go returns ZERO hits.
+      So --kv-cache-dtype fp8 halves KV capacity bytes while step time still charges 2
+      bytes/element, over-estimating the memory-bound decode term by 2x."
+    direction: pessimistic
+    scope: "Reachable with no flag at all, which is the part worth emphasising: because
+      EffectiveKVBytesPerParam falls back to BytesPerParam, ANY 1-byte-compute model (an
+      fp8 or int8 checkpoint) already has its capacity sized at 1 byte/element while step
+      time charges 2. Explicit --kv-cache-dtype fp8 is the same bug reached deliberately.
+      Direction is pessimistic in every case reachable today (fp8 KV, or fp8/int8 compute);
+      it would invert to optimistic only for the unusual fp32 KV under bf16 compute, where
+      the real width is 4. Capacity and PD KV-transfer sizing are correct; this is
+      step-time only."
+    seam_refs: ["sim/latency/trained_physics_model.go:491",
+                "sim/latency/trained_physics_model.go:623",
+                "sim/latency/trained_physics_model.go:671",
+                "sim/model_hardware_config.go:120-125"]
+    documented_in: "code-only"
+    notes: "Live rather than theoretical: several InferenceX benchmark arms in the real
+      stubs run fp8 KV. Note the constant's own comment asserts 'KV cache uses FP16
+      regardless of weight quantization', which was true before #1565 added
+      --kv-cache-dtype and has been stale since. Config-side keywords are weak by nature —
+      this is an engine argument, not a config.json field — so match_gaps() will usually
+      miss it; kv_cache_scheme inside a compressed-tensors quantization_config is the one
+      config fingerprint that exists."
+
   - id: expert_parallel_sizing_average
     mechanism: "Expert-parallel weight sharding and its residual per-GPU terms"
     keywords: [num_redundant_experts, enable_eplb, ep_size, expert_parallel]
@@ -262,7 +425,9 @@ gaps:
       budget compared against a TP-GPU budget, and the 0.6 GiB/GPU non-torch allowance,
       which was calibrated for non-EP NCCL and does not cover DeepEP / pplx all-to-all
       workspaces. The router/gate is charged on the TP path though vLLM replicates it
-      under EP (~0.1 GiB). All point the same way."
+      under EP (~0.1 GiB). Every one of these under-charges per-GPU memory, so they all
+      point the same way: BLIS reports more free HBM than really exists, and therefore
+      over-estimates KV headroom (optimistic)."
     direction: optimistic
     scope: "Deployment-shaped, not config-shaped: nothing in a config.json triggers
       this, so match_gaps() will rarely fire it. Treat post-EP KV headroom as an upper

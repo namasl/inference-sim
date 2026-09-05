@@ -1,5 +1,7 @@
 {
-  "architectures": ["KimiK3ForConditionalGeneration"],
+  "architectures": [
+    "KimiK3ForConditionalGeneration"
+  ],
   "model_type": "kimi_k3",
   "dtype": "bfloat16",
   "transformers_version": "4.62.0",
@@ -33,14 +35,52 @@
     "activation_situ_beta": 1.0,
     "num_nextn_predict_layers": 1,
     "linear_attn_config": {
-      "kda_layers": [0, 1, 2, 3, 4, 5, 6, 7, 8],
-      "full_attn_layers": [9, 19, 29, 39, 49, 59, 69, 79, 89],
-      "short_conv_kernel_size": 4
-    }
+      "kda_layers": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8
+      ],
+      "full_attn_layers": [
+        9,
+        19,
+        29,
+        39,
+        49,
+        59,
+        69,
+        79,
+        89
+      ],
+      "short_conv_kernel_size": 4,
+      "use_full_rank_gate": true
+    },
+    "routed_expert_hidden_size": 3584
   },
   "vision_config": {
     "hidden_size": 1152,
     "num_hidden_layers": 27,
     "patch_size": 14
+  },
+  "quantization_config": {
+    "quant_method": "compressed-tensors",
+    "config_groups": {
+      "group_0": {
+        "weights": {
+          "num_bits": 8,
+          "type": "float"
+        }
+      }
+    },
+    "ignore": [
+      "lm_head",
+      "re:.*mlp.gate$",
+      "re:.*indexer.*"
+    ]
   }
 }
