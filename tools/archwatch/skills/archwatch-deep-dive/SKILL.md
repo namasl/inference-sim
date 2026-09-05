@@ -17,10 +17,19 @@ Stage 1 (the detector) already answered **"is this architecture new?"** — dete
 without an LLM. Your job is the question no rule can answer: **"does BLIS support it, and
 if not, where exactly?"**
 
-Stage 1 has already computed, and you should TRUST rather than recompute:
-- the Bucket 0 verdict (would BLIS crash on this config)
-- which config fields BLIS does not parse
-- parameter estimates
+Stage 1 computes these deterministically, and you should **verify, not trust** — each has
+been observed wrong in practice:
+
+- **the Bucket 0 verdict.** Observed false positive: a config was rejected for
+  `hidden_act: "gelu"` as "not SwiGLU-family", but the model's own `modeling_*.py` showed a
+  3-matrix GEGLU (`down_proj(act(gate_proj(x)) * up_proj(x))`) — `gelu` names the gate
+  nonlinearity exactly as Llama's `silu` names SwiGLU's. BLIS aborts on a model it would
+  price correctly. Always read the modeling code before endorsing a Bucket 0 reason.
+- **which config fields BLIS does not parse.** Reliable, but names only — you will usually
+  need the *values*, and for list-valued keys the shape is the whole finding.
+- **parameter estimates.** `est_total_params` is archwatch's own number, not BLIS's, and not
+  the published one. All three have been observed to differ by >20%. Only BLIS's figure is
+  relevant to a fidelity claim; derive it yourself from BLIS's formulas.
 
 ## The grounding fact you are reasoning against
 
@@ -41,7 +50,19 @@ latency and KV basis functions.
 
 Read the `issues/<arch_id>.md` stub. Then actually read the sources it links — the HF model
 card, the vLLM/SGLang PR (and its diff, which is often the clearest statement of what is
-novel), the InferenceX entry, any linked paper. Do not classify from the config alone; the
+novel), the InferenceX entry, any linked paper.
+
+**The highest-yield source is the model repo's own `modeling_*.py`, reachable via the config's
+`auto_map`.** It is the only thing that settles what a field *means*: it revealed that a
+Bucket 0 rejection was a false positive, and it was the only source for the expert shapes that
+produced the largest finding in the first three stubs analyzed. Fetch it whenever the config
+has an `auto_map`. Config field names alone are a guess; ratios between them are conventions,
+not mechanisms.
+
+**If the stub has `has_config: false`** — InferenceX-sourced stubs carry no config and often no
+`model_ids` — you must locate the model repo yourself from the display name and fetch its
+`config.json`. Do not attempt a fidelity estimate without a config; say what you could not
+obtain instead. Do not classify from the config alone; the
 config tells you *what fields exist*, and the PR or paper tells you *what they mean*.
 
 ### 2. Name the mechanism
@@ -62,7 +83,15 @@ Read `support-surface/parsed-fields.yaml` (what BLIS parses, with source refs) a
 mechanism, impact, and seam refs). These are the reference you classify against. They are
 harvested from BLIS's own source and `docs/reference/models.md`.
 
-### 4. Classify into exactly one bucket
+### 4. Classify each mechanism, then give the architecture a headline bucket
+
+Real architectures stack four to six mechanisms spanning several buckets. Classifying the
+*architecture* into one bucket discards the mechanism-to-magnitude mapping that is the actual
+decision input.
+
+So: **list every mechanism you identified with its own bucket and its own magnitude**, then
+give the architecture a headline bucket equal to the bucket of the **largest-magnitude**
+finding. Say explicitly which mechanism sets the headline.
 
 - **Bucket 0 — would not run.** The config violates a hard validator. Already determined by
   stage 1; if the stub says Bucket 0, confirm the reason reads correctly and explain what a
@@ -71,27 +100,49 @@ harvested from BLIS's own source and `docs/reference/models.md`.
   parses, and the mechanism is one it already models (dense, uniform MoE, interleaved MoE,
   GQA, quantized weights). BLIS simulates this today. The only follow-up is validating the
   numbers.
-- **Bucket 2 — known-gap mechanism.** The mechanism is real and unmodeled, but BLIS
-  *already knows*: it matches an entry in `known-gaps.yaml`. Cite the specific gap id. Do
-  not re-derive it — the value you add is confirming the match and quantifying it for
-  *this* model's parameters.
+- **Bucket 2 — known-gap mechanism.** The mechanism is real and unmodeled, and it matches an
+  entry in `known-gaps.yaml`. Cite the gap id — and **always re-derive it from BLIS's source
+  anyway.** `known-gaps.yaml` was harvested by a tool: its `file:line` refs have held up, but
+  its *semantic* fields have been observed wrong, including a `direction` field inverted
+  (BLIS was 0.53x optimistic where the entry claimed pessimistic) and an incomplete
+  `seam_refs` list that would have sent a maintainer to fix half the bug. Re-deriving is how
+  every one of those errors was found. Treat the file as a hypothesis, not an authority.
 - **Bucket 3 — new mechanism, no seam.** Nothing in BLIS represents this and it is not on
   the known-gaps list. This is the highest-value finding. Name the functions that would
   need a new branch (see the seam map below).
 
-When torn between 2 and 3, prefer 2 and say why it was close — a false Bucket 3 sends
-someone hunting for work that is already documented.
+**Tie-break on magnitude, not on bucket.** Do NOT prefer 2 when torn. The asymmetry runs the
+other way than it first appears: a false Bucket 2 reads as "already tracked, file it away" and
+**kills the finding**, while a false Bucket 3 costs a maintainer one minute of reading the gap
+list. This was observed concretely — a known-gap entry named a real model and matched its
+config exactly, producing a *seductively correct-looking* Bucket 2 that buried a 1.98x
+parameter over-count no gap id covered. Check whether any gap entry covers the mechanism
+**causing the largest error**, not merely a mechanism the model has.
 
 ### 5. Estimate fidelity impact
 
 This is the part that converts "a new architecture exists" into a decision. Answer: **how
 wrong is BLIS today for this model, and in which direction?**
 
-Quantify wherever the surface supports it. The canonical example: BLIS sizes decode KV
-reads as standard `2 * dKV * tokens`, so for an MLA model whose real per-token KV is
-`kv_lora_rank + qk_rope_head_dim`, the KV-read term is over-counted by the ratio of those
-two quantities — compute it from *this* config and state it, along with the direction
-(over-counted KV traffic makes decode step time and TTFT read pessimistically slow).
+Quantify wherever the surface supports it. The canonical example: BLIS sizes decode KV reads
+as standard `2 * dKV * tokens`, so for an MLA model whose real per-token KV is
+`kv_lora_rank + qk_rope_head_dim`, the KV-read term is over-counted by the ratio of those two
+quantities — compute it from *this* config and state it, with the direction (over-counted KV
+traffic makes decode step time and TTFT read pessimistically slow).
+
+Three details that change the number, all observed to matter:
+
+- **`dKV` uses integer division.** `hidden_size // num_attention_heads`, not the exact
+  quotient. Compute it the way Go does.
+- **Check which layer count the term is scoped to.** Some terms use all layers, others only
+  the full-attention ones. Using the wrong one silently rescales the ratio.
+- **For sparse or windowed attention the honest answer is a context-dependent band, not a
+  scalar.** State the context length you evaluated at, and give the range across the range of
+  contexts a user would actually run — the error can grow by an order of magnitude across it.
+
+**Watch for interacting gaps.** Two entries filed separately can have opposite signs on the
+same term, so fixing the cheap one first makes the model worse. If you spot that, say so
+explicitly — nothing in `known-gaps.yaml` links its entries.
 
 Be explicit about scope: BLIS often gets capacity right while getting step time wrong (MLA
 is exactly this). "KV capacity is already correct; step time is over-counted ~20x" is far
@@ -114,9 +165,15 @@ Two rules that the tooling depends on:
 - **Do not set a `stage2: complete` flag or otherwise mark status in the front matter.**
   Completion is detected by there being non-empty content after the marker.
 
-Include: bucket + one-line verdict; the mechanism description; the fidelity impact estimate;
-the affected seams (file:line); what you read to reach this; and your confidence with any
-open questions.
+Include: the headline bucket + one-line verdict; the per-mechanism table (mechanism, bucket,
+magnitude, direction); the fidelity impact estimate; the affected seams **named by function**,
+with a line number only where you read that exact line yourself; what you read to reach this;
+and your confidence with any open questions.
+
+Two things worth a line each when they apply, both cheap and both what a maintainer wants:
+**inert matches** (a keyword fired but the field is degenerate or redundant — say so, so nobody
+re-litigates it) and **an escape hatch** (e.g. a Bucket 0 on KV-capacity derivation can often
+be bypassed with `--total-kv-blocks`, letting the model run today).
 
 ## Seam map — where a new mechanism lands in BLIS
 
@@ -135,9 +192,13 @@ For Bucket 3, name the specific functions. The full set of seams for adding a me
 
 > **Cite functions, not line numbers.** Line refs rot fast — the ones originally written into
 > this skill were harvested from a different checkout of BLIS than the one being analyzed, and
-> every one of them had drifted. Verified `file:line` refs live in
-> `support-surface/parsed-fields.yaml`, which carries a test that bounds-checks each ref against
-> the real Go files. Read them from there; do not trust a line number quoted in prose.
+> every one of them had drifted.
+>
+> `support-surface/parsed-fields.yaml` and `known-gaps.yaml` carry harvested `file:line` refs,
+> and a test bounds-checks them — but **that test only verifies the line exists, not that it
+> still says what we claim** (its own docstring says so). So a ref there is a pointer worth
+> following, never evidence on its own. Open the function and read it. When you cite a line in
+> your own analysis, cite one you have actually read in the checkout you are analyzing.
 
 Note there is **no plugin or registry seam for architectures** in BLIS — adding mechanism
 support means editing these shared functions, not registering a new type. Say so when
