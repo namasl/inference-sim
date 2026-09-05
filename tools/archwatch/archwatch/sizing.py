@@ -7,9 +7,21 @@ does not put a parameter count in ``config.json``, model cards lie or omit it, a
 fetching the safetensors index for every candidate would cost another request per
 repo. So we reconstruct the count from the shape fields we already have.
 
-Scope: this is a *sizing estimate*, not an accounting of BLIS's weight model. It
-aims at the number the lab would print in its own release post ("671B total, 37B
-active"), because that is what S1 is really thresholding on.
+Scope: this is a *sizing estimate*, not an accounting of BLIS's weight model. It aims at
+the number the lab would print in its own release post ("671B total, 37B active"),
+because that is what S1 is really thresholding on.
+
+**Three different figures exist for one model** and they must not be conflated:
+
+1. the **published** count — what the lab announces. This module targets it.
+2. **archwatch's** estimate — this module's output, ``est_total_params``. It is a
+   config-only reconstruction, so it misses anything the config does not declare (see
+   the Llama-4 shared expert below).
+3. **BLIS's** weight accounting — ``computeModelWeightBytes``. Deliberately *not*
+   reproduced: where BLIS's arithmetic is wrong about a real model (its
+   ``swiGLUActivations`` set treats bare ``gelu`` as ungated; it sizes Q/O projections as
+   ``hidden**2`` rather than ``n_heads*head_dim``), matching it would import the error.
+   A divergence between (2) and (3) is itself a finding, which is why they stay separate.
 
 The formula
 -----------
@@ -183,9 +195,43 @@ KV_HEADS_FIELDS: tuple[str, ...] = (
 INTERMEDIATE_FIELDS: tuple[str, ...] = ("intermediate_size", "ffn_hidden_size")
 
 # A gated MLP has three weight matrices (gate, up, down); an ungated one has two.
-# Mirrors BLIS's swiGLUActivations set plus the common HF spellings.
+#
+# ``hidden_act`` names the *nonlinearity*, not the MLP topology, so this set is a prior
+# over the population rather than a decoding of the field. A spelling is listed only when
+# a real model that declares it is demonstrably gated in its own modeling code:
+#
+#   silu                  Llama/Qwen/Mistral: down(silu(gate(x)) * up(x)) — SwiGLU
+#   gelu                  Spark2_5 (XHToken/Spark-X2.5-4B): modeling_spark.py has
+#                         Spark2_5MLP = down_proj(act_fn(gate_proj(x)) * up_proj(x)) —
+#                         a GEGLU. "gelu" names the gate nonlinearity there exactly as
+#                         Llama's "silu" names SwiGLU's.
+#   gelu_pytorch_tanh     Gemma 2/3: GeGLU.
+#   gelu_tanh             the same function under its shorter alias.
+#   swiglu/geglu/reglu/glu/gelu_pytorch_tanh_glu/situ
+#                         self-describing; the name IS the gated form.
+#
+# Deliberately EXCLUDED, because no known gated model declares them: ``gelu_new``
+# (GPT-2/GPT-Neo/GPT-J lineage, all ungated), ``quick_gelu`` (CLIP vision), ``gelu_fast``,
+# ``relu``. Adding a spelling on suspicion rather than on a gated exemplar would make
+# this set a constant and the distinction pointless.
+#
+# ``gelu`` is the genuinely ambiguous one: BERT-family encoders declare it and are NOT
+# gated, so listing it over-counts them. That is the right direction to be wrong in.
+# ``est_total_params`` feeds the S1 scale gate, so an under-count DROPS a model
+# (unrecoverable), while an over-count only inflates a number: every gelu encoder is a
+# ~100-400M model that stays far below the 3B threshold either way, whereas a gelu-gated
+# 3.5B decoder under-counted by 23% falls out of the report entirely. This is the bug that
+# occasioned the note — Spark2_5 was reported at 3.17B against a real 4.11B.
+#
+# NOTE this intentionally diverges from BLIS's own swiGLUActivations
+# (sim/latency/kv_capacity.go), which lists silu/swiglu/geglu/situ and so treats bare
+# "gelu" as ungated. That is the same bug on BLIS's side; sizing targets the *published*
+# parameter count, not BLIS's arithmetic, so it does not reproduce BLIS's error.
 GATED_ACTIVATIONS: frozenset[str] = frozenset(
-    {"silu", "swiglu", "swish", "geglu", "gelu_pytorch_tanh_glu", "situ", "reglu", "glu"}
+    {
+        "silu", "swish", "swiglu", "geglu", "reglu", "glu", "situ",
+        "gelu", "gelu_pytorch_tanh", "gelu_tanh", "gelu_pytorch_tanh_glu",
+    }
 )
 
 # An expert count below this is dense-equivalent (BLIS's sim.MoEMinExperts).
@@ -350,6 +396,13 @@ def estimate_params(config: dict[str, Any] | None) -> ParamEstimate:
     mlp_matrices = 3 if gated in GATED_ACTIVATIONS else 2
     if mlp_matrices == 2:
         est.notes.append(f"hidden_act={gated!r} treated as ungated (2-matrix MLP)")
+    elif gated.startswith("gelu"):
+        # Worth surfacing: a gelu spelling is ambiguous in a way silu is not, and an
+        # encoder that declares it is over-counted by half its MLP.
+        est.notes.append(
+            f"hidden_act={gated!r} treated as GATED (3-matrix MLP); correct for a "
+            "gelu-gated decoder such as Spark2_5, an over-count for a BERT-family encoder"
+        )
 
     est.is_moe = n_experts >= MOE_MIN_EXPERTS
     est.num_experts = n_experts

@@ -16,6 +16,7 @@ from pathlib import Path
 import pytest
 
 from archwatch.sizing import (
+    GATED_ACTIVATIONS,
     MOE_MIN_EXPERTS,
     ParamEstimate,
     estimate_active_params,
@@ -316,13 +317,16 @@ def test_mtp_module_is_excluded_and_noted():
 
 
 def test_ungated_activation_uses_two_matrices():
+    """``relu``, not ``gelu``: bare ``gelu`` is a *gated* spelling in modern decoders (see
+    test_gelu_is_gated_three_matrix_on_a_real_config). Using gelu here was the bug."""
     base = {"hidden_size": 4096, "num_hidden_layers": 32, "vocab_size": 32000,
             "num_attention_heads": 32, "intermediate_size": 11008}
     gated = estimate_total_params({**base, "hidden_act": "silu"})
-    ungated = estimate_total_params({**base, "hidden_act": "gelu"})
+    ungated = estimate_total_params({**base, "hidden_act": "relu"})
     assert gated is not None and ungated is not None
     assert ungated < gated
-    assert any("ungated" in n for n in estimate_params({**base, "hidden_act": "gelu"}).notes)
+    assert ungated == gated - 32 * 4096 * 11008, "exactly one matrix per layer"
+    assert any("ungated" in n for n in estimate_params({**base, "hidden_act": "relu"}).notes)
 
 
 def test_tie_word_embeddings_drops_lm_head():
@@ -447,3 +451,105 @@ def test_nonstandard_field_names_return_none_and_name_the_gap():
     assert est.total is None
     assert est.active is None
     assert est.missing == ["num_hidden_layers", "num_attention_heads", "intermediate_size"]
+
+
+# ---------------------------------------------------------------------------
+# Gated vs ungated MLP: the gelu family
+# ---------------------------------------------------------------------------
+# hidden_act names the nonlinearity, not the MLP topology. Bare "gelu" was treated as
+# ungated, which under-counted a real gelu-gated decoder by 23%. Since est_total_params
+# feeds the S1 scale gate, an under-count can drop a model out of the report entirely.
+
+
+def test_gelu_is_gated_three_matrix_on_a_real_config():
+    """``XHToken/Spark-X2.5-4B`` (``Spark2_5ForCausalLM``), the config that found the bug.
+
+    Its shipped ``modeling_spark.py`` defines
+    ``Spark2_5MLP = down_proj(act_fn(gate_proj(x)) * up_proj(x))`` — a three-matrix GEGLU.
+    ``gelu`` names the gate nonlinearity there exactly as Llama's ``silu`` names SwiGLU's.
+
+    **``intermediate_size / hidden_size == 4.0`` here, and that is a convention, NOT
+    evidence of an ungated MLP.** 4.0 is the classic BERT/GPT ratio and gated models more
+    often use ~2.67, so the ratio reads as "ungated" and is simply wrong: only the
+    modeling code settles it. The stage-2 classifier misread it this way first. Do not
+    "fix" this test back on the strength of the ratio.
+    """
+    cfg = load("dense_gelu_gated_spark")
+    assert cfg["hidden_act"] == "gelu"
+    assert cfg["intermediate_size"] / cfg["hidden_size"] == 4.0  # convention, not evidence
+
+    est = estimate_params(cfg)
+    assert est.total == 4_110_604_800, "3-matrix GEGLU; published is ~4.112G"
+    assert est.total == pytest.approx(4.112 * B, rel=0.001)
+
+    # The pre-fix 2-matrix figure, for the record: 23% low, and the exact number the
+    # classifier reproduced.
+    two_matrix = 3_166_886_400
+    assert est.total - two_matrix == (
+        cfg["num_hidden_layers"] * cfg["hidden_size"] * cfg["intermediate_size"]
+    ), "the difference is exactly one gate matrix per layer"
+    assert two_matrix / est.total == pytest.approx(0.77, abs=0.01)
+
+
+def test_gelu_and_silu_size_identically():
+    """Both name a gate nonlinearity, so neither may change the matrix count."""
+    base = {"hidden_size": 2560, "num_hidden_layers": 36, "vocab_size": 131072,
+            "num_attention_heads": 16, "num_key_value_heads": 4, "head_dim": 256,
+            "intermediate_size": 10240, "tie_word_embeddings": True}
+    assert estimate_total_params({**base, "hidden_act": "gelu"}) == \
+        estimate_total_params({**base, "hidden_act": "silu"})
+
+
+@pytest.mark.parametrize(
+    "act",
+    ["silu", "swish", "swiglu", "geglu", "reglu", "glu", "situ",
+     "gelu", "gelu_pytorch_tanh", "gelu_tanh", "gelu_pytorch_tanh_glu"],
+)
+def test_every_gated_spelling_has_a_gated_exemplar(act):
+    """Each entry is listed because a real model declaring it is gated in its own
+    modeling code — silu (Llama), gelu (Spark2_5), gelu_pytorch_tanh (Gemma 2/3), and the
+    self-describing names. The set is a prior over the population, so it must not grow on
+    suspicion."""
+    assert act in GATED_ACTIVATIONS
+
+
+@pytest.mark.parametrize("act", ["gelu_new", "quick_gelu", "gelu_fast", "relu"])
+def test_spellings_with_no_gated_exemplar_stay_ungated(act):
+    """``gelu_new`` is the GPT-2/GPT-Neo/GPT-J spelling and those MLPs are ungated;
+    ``quick_gelu`` is CLIP's vision activation. Listing them on the strength of the
+    over-count-is-safer argument alone would make the set a constant."""
+    assert act not in GATED_ACTIVATIONS
+
+
+def test_a_gelu_encoder_is_over_counted_and_that_is_the_safe_direction():
+    """The cost of treating gelu as gated: a BERT-family encoder gains half its MLP.
+
+    Recorded rather than hidden, because it is a real inaccuracy. It is the right
+    direction to be wrong in: est_total_params feeds S1, and every gelu encoder stays far
+    below the 3B threshold either way, whereas under-counting a gelu-gated 3.5B decoder
+    drops it out of the report.
+    """
+    bert_base = {"architectures": ["BertForMaskedLM"], "hidden_size": 768,
+                 "num_hidden_layers": 12, "vocab_size": 30522, "num_attention_heads": 12,
+                 "intermediate_size": 3072, "hidden_act": "gelu",
+                 "tie_word_embeddings": True}
+    est = estimate_params(bert_base)
+    assert est.total is not None
+    assert est.total < 3 * B, "still nowhere near the S1 gate, so the gate is unaffected"
+    assert any("over-count for a BERT-family encoder" in n for n in est.notes)
+
+
+def test_the_gated_set_deliberately_diverges_from_blis():
+    """BLIS's swiGLUActivations lists silu/swiglu/geglu/situ, so it treats bare gelu as
+    ungated — the same bug, reported separately. Sizing targets the published parameter
+    count, so it must not reproduce BLIS's error."""
+    blis_swiglu_set = {"silu", "swiglu", "geglu", "situ"}
+    assert blis_swiglu_set < GATED_ACTIVATIONS
+    assert "gelu" in GATED_ACTIVATIONS - blis_swiglu_set
+
+
+def test_a_missing_activation_still_does_not_widen_guesses():
+    """This fix is about a known-gated activation being misclassified, not about guessing
+    more. A config lacking required fields still returns None."""
+    assert estimate_total_params({"hidden_act": "gelu"}) is None
+    assert estimate_total_params({"hidden_act": "gelu", "hidden_size": 2560}) is None
